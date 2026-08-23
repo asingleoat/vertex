@@ -1,9 +1,334 @@
+//! Persistent Sokol viewer process and render-thread orchestration.
 const std = @import("std");
 const vertex = @import("vertex");
 const sokol = @import("sokol");
 const ig = @import("cimgui");
 
-pub fn main() void {
-    std.debug.print("vertex-view stub: layout={s} sokol={s}\n", .{ @tagName(vertex.build_options.vertex_layout), @typeName(sokol.gfx.Buffer) });
-    _ = ig;
+const server_mod = @import("server.zig");
+const mesh_render = @import("render/mesh.zig");
+const ui = @import("ui.zig");
+
+const sapp = sokol.app;
+const sg = sokol.gfx;
+const sglue = sokol.glue;
+const simgui = sokol.imgui;
+const slog = sokol.log;
+const Scene = vertex.scene.Scene;
+const Aabb = vertex.geometry.current.Aabb;
+
+const State = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    scene: Scene = undefined,
+    server: server_mod.Server = undefined,
+    renderer: mesh_render.Renderer = undefined,
+    orbit: vertex.camera.Orbit = .default,
+    ortho: vertex.camera.Ortho2D = .{},
+    camera_mode: ui.CameraMode = .orbit,
+    scrub: u32 = 0,
+    follow_latest: bool = true,
+    fitted_once: bool = false,
+    rendered_frames: u64 = 0,
+    exit_after_frames: ?u64 = null,
+    sg_ready: bool = false,
+    imgui_ready: bool = false,
+    scene_ready: bool = false,
+    server_ready: bool = false,
+    renderer_ready: bool = false,
+};
+
+// Sokol's C callbacks carry no Zig context. This is the documented single
+// global exception; every helper and edge below otherwise receives `*State`.
+var state: State = undefined;
+
+/// Starts the persistent viewer. Process startup owns and leak-checks `init.gpa`;
+/// all viewer allocations are released by the Sokol cleanup callback.
+pub fn main(init: std.process.Init) !void {
+    state = .{
+        .gpa = init.gpa,
+        .io = init.io,
+        .environ = init.minimal.environ,
+    };
+    if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_EXIT_AFTER_FRAMES")) |value| {
+        if (value.len != 0) {
+            state.exit_after_frames = std.fmt.parseInt(u64, value, 10) catch |err| blk: {
+                std.log.warn("ignoring invalid VERTEX_EXIT_AFTER_FRAMES: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+        }
+    }
+
+    sapp.run(.{
+        .init_cb = initCallback,
+        .frame_cb = frameCallback,
+        .cleanup_cb = cleanupCallback,
+        .event_cb = eventCallback,
+        .width = 1280,
+        .height = 720,
+        .window_title = "vertex",
+        .logger = .{ .func = slog.func },
+    });
+}
+
+fn initCallback() callconv(.c) void {
+    sg.setup(.{
+        .environment = sglue.environment(),
+        .logger = .{ .func = slog.func },
+    });
+    state.sg_ready = true;
+    simgui.setup(.{ .logger = .{ .func = slog.func } });
+    state.imgui_ready = true;
+
+    state.scene = Scene.init(state.gpa);
+    state.scene_ready = true;
+    state.server = server_mod.Server.init(state.gpa, state.io);
+    state.server_ready = true;
+    state.server.start(state.environ) catch |err| {
+        std.log.err("could not start vertex viewer socket: {s}", .{@errorName(err)});
+        sapp.quit();
+        return;
+    };
+
+    state.renderer = mesh_render.Renderer.init(state.gpa);
+    state.renderer_ready = true;
+    state.orbit = .default;
+}
+
+fn frameCallback() callconv(.c) void {
+    if (!state.scene_ready or !state.renderer_ready) {
+        finishCiFrame(&state);
+        return;
+    }
+
+    const saw_first_geometry = drainInbox(&state);
+    if (state.follow_latest) state.scrub = state.scene.frameCount() -| 1;
+    if (!state.fitted_once and saw_first_geometry) {
+        fitCamera(&state);
+        state.fitted_once = true;
+    }
+
+    const renderer_synced = blk: {
+        state.renderer.sync(&state.scene) catch |err| {
+            std.log.err("mesh renderer sync failed: {s}", .{@errorName(err)});
+            break :blk false;
+        };
+        break :blk true;
+    };
+
+    const width = @max(sapp.widthf(), 1);
+    const height = @max(sapp.heightf(), 1);
+    const aspect = width / height;
+    const vp = switch (state.camera_mode) {
+        .orbit => state.orbit.viewProj(aspect),
+        .ortho_2d => state.ortho.viewProj(aspect),
+    };
+    const pass_action: sg.PassAction = .{
+        .colors = blk: {
+            var colors: [sg.max_color_attachments]sg.ColorAttachmentAction = @splat(.{});
+            colors[0] = .{
+                .load_action = .CLEAR,
+                .store_action = .STORE,
+                .clear_value = .{ .r = 0.075, .g = 0.085, .b = 0.10, .a = 1 },
+            };
+            break :blk colors;
+        },
+        .depth = .{ .load_action = .CLEAR, .store_action = .DONTCARE, .clear_value = 1 },
+    };
+    sg.beginPass(.{ .action = pass_action, .swapchain = sglue.swapchain() });
+
+    if (renderer_synced) drawScene(&state, vp);
+
+    simgui.newFrame(.{
+        .width = sapp.width(),
+        .height = sapp.height(),
+        .delta_time = sapp.frameDuration(),
+        .dpi_scale = sapp.dpiScale(),
+    });
+    const frame_duration = sapp.frameDuration();
+    const fps = if (frame_duration > 0) 1.0 / frame_duration else 0;
+    if (ui.draw(
+        &state.scene,
+        &state.scrub,
+        &state.follow_latest,
+        &state.camera_mode,
+        state.server.socketPath(),
+        state.server.connected.load(.acquire),
+        fps,
+    )) fitCamera(&state);
+    simgui.render();
+
+    sg.endPass();
+    sg.commit();
+    finishCiFrame(&state);
+}
+
+fn cleanupCallback() callconv(.c) void {
+    if (state.server_ready) {
+        state.server.stop();
+        state.server_ready = false;
+    }
+    if (state.renderer_ready) {
+        state.renderer.deinit();
+        state.renderer_ready = false;
+    }
+    if (state.scene_ready) {
+        std.debug.print(
+            "vertex-view: structures={d} frames={d} blobs={d}\n",
+            .{ state.scene.structures.len, state.scene.frameCount(), state.scene.live_blobs },
+        );
+        state.scene.deinit();
+        state.scene_ready = false;
+    }
+    if (state.imgui_ready) {
+        simgui.shutdown();
+        state.imgui_ready = false;
+    }
+    if (state.sg_ready) {
+        sg.shutdown();
+        state.sg_ready = false;
+    }
+}
+
+fn eventCallback(event_ptr: [*c]const sapp.Event) callconv(.c) void {
+    const event = event_ptr.*;
+    _ = simgui.handleEvent(event);
+
+    if (isMouseEvent(event.type) and ig.igGetIO().*.WantCaptureMouse) return;
+    switch (event.type) {
+        .MOUSE_MOVE => handleMouseMove(&state, event),
+        .MOUSE_SCROLL => handleScroll(&state, event),
+        .KEY_DOWN => if (!event.key_repeat) handleKey(&state, event.key_code),
+        else => {},
+    }
+}
+
+fn drainInbox(s: *State) bool {
+    var saw_geometry = false;
+    const items = s.server.inbox.drain(s.io);
+    for (items) |item| {
+        const message = vertex.protocol.decode(item.header, item.payload) catch |err| {
+            std.log.warn("discarding invalid viewer message: {s}", .{@errorName(err)});
+            s.gpa.free(item.payload);
+            continue;
+        };
+        s.scene.apply(message) catch |err| {
+            std.log.warn("discarding inapplicable viewer message: {s}", .{@errorName(err)});
+            s.gpa.free(item.payload);
+            continue;
+        };
+        switch (message) {
+            .mesh, .points, .lines => saw_geometry = true,
+            else => {},
+        }
+        s.gpa.free(item.payload);
+    }
+    s.server.inbox.consume();
+    return saw_geometry;
+}
+
+fn drawScene(s: *State, vp: vertex.camera.Mat4) void {
+    const structures = s.scene.structures.slice();
+    const visible = structures.items(.ui);
+    const kinds = structures.items(.kind);
+    for (visible, kinds, 0..) |ui_state, kind, i| {
+        if (!ui_state.visible or kind != .mesh) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        s.renderer.draw(&s.scene, structure_index, version_index, vp, .{ 0.20, 0.62, 0.92, 1.0 });
+    }
+}
+
+fn visibleBounds(s: *const State) Aabb {
+    var result: Aabb = .empty;
+    const structures = s.scene.structures.slice();
+    const ui_states = structures.items(.ui);
+    for (ui_states, 0..) |ui_state, i| {
+        if (!ui_state.visible) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        const versions = structures.items(.versions)[i].items;
+        const bounds = vertex.geometry.current.bounds(s.scene.positionsOf(versions[version_index]));
+        if (bounds.isEmpty()) continue;
+        result.min = result.min.min(bounds.min);
+        result.max = result.max.max(bounds.max);
+    }
+    return result;
+}
+
+fn fitCamera(s: *State) void {
+    const bounds = visibleBounds(s);
+    switch (s.camera_mode) {
+        .orbit => s.orbit.fit(bounds),
+        .ortho_2d => s.ortho.fit(bounds),
+    }
+}
+
+fn handleMouseMove(s: *State, event: sapp.Event) void {
+    const left = event.modifiers & sapp.modifier_lmb != 0;
+    const middle = event.modifiers & sapp.modifier_mmb != 0;
+    const shift = event.modifiers & sapp.modifier_shift != 0;
+    const pan = middle or (shift and left);
+    const viewport_height = @max(sapp.heightf(), 1);
+    switch (s.camera_mode) {
+        .orbit => {
+            if (pan) {
+                s.orbit.pan(event.mouse_dx, event.mouse_dy, viewport_height);
+            } else if (left) {
+                s.orbit.rotate(-event.mouse_dx * 0.01, -event.mouse_dy * 0.01);
+            }
+        },
+        .ortho_2d => if (pan) s.ortho.pan(event.mouse_dx, event.mouse_dy, viewport_height),
+    }
+}
+
+fn handleScroll(s: *State, event: sapp.Event) void {
+    switch (s.camera_mode) {
+        .orbit => s.orbit.dolly(event.scroll_y),
+        .ortho_2d => {
+            const width = @max(sapp.widthf(), 1);
+            const height = @max(sapp.heightf(), 1);
+            const cursor_ndc = [2]f32{
+                2 * event.mouse_x / width - 1,
+                1 - 2 * event.mouse_y / height,
+            };
+            s.ortho.zoomAt(@exp(-event.scroll_y * 0.1), cursor_ndc);
+        },
+    }
+}
+
+fn handleKey(s: *State, key: sapp.Keycode) void {
+    switch (key) {
+        .F => fitCamera(s),
+        ._2 => s.camera_mode = .ortho_2d,
+        ._3 => s.camera_mode = .orbit,
+        .SPACE => s.follow_latest = !s.follow_latest,
+        .LEFT => {
+            s.follow_latest = false;
+            s.scrub -|= 1;
+        },
+        .RIGHT => {
+            s.follow_latest = false;
+            s.scrub = @min(s.scrub +| 1, s.scene.frameCount() -| 1);
+        },
+        else => {},
+    }
+}
+
+fn isMouseEvent(event_type: sapp.EventType) bool {
+    return switch (event_type) {
+        .MOUSE_DOWN, .MOUSE_UP, .MOUSE_SCROLL, .MOUSE_MOVE, .MOUSE_ENTER, .MOUSE_LEAVE => true,
+        else => false,
+    };
+}
+
+fn finishCiFrame(s: *State) void {
+    s.rendered_frames += 1;
+    if (s.exit_after_frames) |limit| {
+        if (s.rendered_frames >= limit) sapp.quit();
+    }
+}
+
+test {
+    _ = server_mod;
 }

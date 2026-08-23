@@ -57,6 +57,9 @@ pub fn build(b: *Build) !void {
         },
     });
     mod_viewer.addOptions("build_options", build_options);
+    addRuntimeLibPaths(b, mod_viewer);
+    const viewer_tests = b.addTest(.{ .root_module = mod_viewer });
+    test_step.dependOn(&b.addRunArtifact(viewer_tests).step);
     const viewer = b.addExecutable(.{ .name = "vertex-view", .root_module = mod_viewer });
     b.installArtifact(viewer);
     b.step("run-viewer", "Run the viewer").dependOn(&b.addRunArtifact(viewer).step);
@@ -125,6 +128,7 @@ pub fn build(b: *Build) !void {
     const check_step = b.step("check", "Type-check all artifacts without installing");
     check_step.dependOn(&viewer.step);
     check_step.dependOn(&vertex_tests.step);
+    check_step.dependOn(&viewer_tests.step);
 }
 
 /// Native builds inside the nix dev shell: zig's compiler detects the native
@@ -151,6 +155,19 @@ fn resolveTarget(b: *Build) Build.ResolvedTarget {
         while (prefixes.next()) |prefix| b.addSearchPrefix(prefix);
     };
     return b.resolveTargetQuery(query);
+}
+
+/// The viewer links nix-provided GL/X11 libraries; embed their lib dirs as
+/// rpaths so it runs outside the dev shell too, plus NixOS's GL driver dir
+/// (/run/opengl-driver/lib) which libglvnd needs to find the vendor driver.
+fn addRuntimeLibPaths(b: *Build, mod: *Build.Module) void {
+    const prefixes = b.graph.environ_map.get("ZIG_SEARCH_PREFIXES") orelse "";
+    var it = std.mem.tokenizeScalar(u8, prefixes, ':');
+    while (it.next()) |prefix| {
+        const lib_dir = std.fs.path.join(b.allocator, &.{ prefix, "lib" }) catch @panic("OOM");
+        mod.addRPath(.{ .cwd_relative = lib_dir });
+    }
+    mod.addRPath(.{ .cwd_relative = "/run/opengl-driver/lib" });
 }
 
 fn nonEmpty(value: ?[]const u8) ?[]const u8 {
