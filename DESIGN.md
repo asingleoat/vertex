@@ -83,7 +83,8 @@ Messages (v1):
 
 - `Hello { version, source_name }`
 - `BeginRun` — new generation; existing structures become stale-pending
-- `BeginFrame { index, label? }` (frame 0 implicit)
+- `BeginFrame { index, label? }` — frame 0 is implicit after `BeginRun`; the
+  client's `step()` sends `EndFrame` + `BeginFrame(n+1)`
 - `Mesh { name, dim: 2|3, positions: Positions bytes, indices: [u32×3] }`
 - `MeshPositions { name, positions }` — topology-unchanged update; new version
   reuses the previous version's index buffer (the smoothing/relaxation/flow case)
@@ -111,9 +112,14 @@ Semantics:
      (see M5).
 - **Staleness.** At `EndRun`, structures not touched during the run are marked
   stale (dimmed in UI, toggleable auto-remove).
-- Reserved payload encoding for future memfd/shared-memory blobs (fd passing via
-  `SCM_RIGHTS`) if profiling ever shows socket copies matter. Not built in v1 —
-  Unix sockets move GB/s; a 1M-vertex mesh is ~12 MB.
+- **Copies on the path (v1):** client → kernel is zero-copy (`writev` from the
+  caller's slices); the viewer's socket thread reads each payload into one
+  16-byte-aligned allocation, `protocol.decode` returns views into it, and
+  `Scene.apply` copies sections into their 64-byte-aligned blobs. That second
+  copy is the obvious later optimization (read straight into blobs), and a
+  memfd/shared-memory payload encoding (fd passing via `SCM_RIGHTS`) is
+  reserved if profiling ever shows socket copies matter. Unix sockets move
+  GB/s; a 1M-vertex mesh is ~12 MB.
 
 ## Client library
 
@@ -146,11 +152,11 @@ Principles:
   no lifetime coupling (the call returns after the kernel has the bytes).
 - `connect` fails loudly by default; `.optional = true` degrades to no-op so a
   sketch still runs headless.
-- The API is defined against a **`Sink` vtable** with one v1 implementation
-  (`SocketSink`). The future dylib mode is a `DirectSink` that writes straight
-  into the viewer's scene store — same sketch code, zero protocol changes.
-  This is the "IPC now, dylib later" seam; keep it honest (no socket-isms in
-  the interface).
+- The API is defined against a **`Sink` vtable** carrying `protocol.Message`
+  values, with one v1 implementation (`SocketSink`, which encodes + `writev`s).
+  The future dylib mode is a `DirectSink` that hands the same messages to
+  `Scene.apply` in-process — same sketch code, zero serialization, zero
+  protocol changes. This is the "IPC now, dylib later" seam.
 
 ## Viewer internals
 
@@ -215,17 +221,19 @@ inspector tooltip.
 ## Hot-recompile loop
 
 - Terminal 1: `zig build run-viewer` — stays up for days.
-- Terminal 2: `zig build sketch --watch` — Zig's built-in watcher plus
-  incremental compilation gives sub-second rebuild; the run step re-executes,
-  connects, streams, exits.
-- If `--watch` re-run semantics prove unreliable for run steps, fallback is
-  `watchexec -e zig -- zig build sketch` (watchexec is in the dev shell).
-  Verify during M1.
+- Terminal 2: `zig build run-sketch --watch` (`-Dsketch=<name>`, default
+  `current`) — verified: the run step re-executes on every save; the exe
+  connects, streams, exits. `watchexec` is in the dev shell as a fallback.
+- Sketches and benches are discovered by listing `sketches/` and `bench/`.
+  Zig master caches the configure phase; `build.zig` declares the directories
+  via `dependOnDirectory` and poisons the cache until the maker implements
+  directory mode (a TODO upstream), so new files are always picked up.
 
 ## Nix
 
-- `flake.nix` with `zig-overlay` (pinned Zig + zls) or nixpkgs Zig if recent
-  enough.
+- `flake.nix`: Zig master (0.17-dev) from `mitchellh/zig-overlay`, zls from
+  the `zigtools/zls` flake, both locked in `flake.lock`. sokol-zig and dcimgui
+  track zig master, so the Zig deps stay on their master branches.
 - Dev shell system deps for sokol on Linux: `libX11 libXi libXcursor libGL`
   plus `pkg-config`, `watchexec`, `gdb`, optionally `renderdoc`.
 - Zig packages (sokol-zig, cimgui) via `build.zig.zon` — pragmatic split:
@@ -235,14 +243,16 @@ inspector tooltip.
 
 ### Known NixOS friction (accepted, with mitigations)
 
-1. **sokol-shdc** is distributed as a prebuilt binary → won't run bare on
-   NixOS. Mitigate: build sokol-tools from source in the flake (or nix-ld),
-   and **check generated shader `.zig` files into the repo** so shdc is only
-   needed when shaders change.
-2. **System lib discovery**: `linkSystemLibrary` needs the dev shell's library
-   paths; wire `NIX_LDFLAGS`/pkg-config paths into `build.zig` search prefixes.
+1. **sokol-shdc** is a prebuilt binary → the flake wraps it with
+   `autoPatchelfHook` (`packages.sokol-shdc`, pinned to the commit sokol-zig
+   references). Generated shader `.zig` files under `src/viewer/shaders/` are
+   checked in; `zig build shaders` regenerates them.
+2. **System libs / libc headers**: zig reads `NIX_CFLAGS_COMPILE`/`NIX_LDFLAGS`
+   from the dev shell; `glibc.dev` is listed explicitly because the external
+   translate-c (Aro) used by dcimgui does not go through the cc wrapper.
 3. **Wayland**: sokol_app's Linux backend is X11/GLX → runs under XWayland.
    Fine for a dev tool; noted in case of future native-Wayland desire.
+4. **Zig master packages** live in a project-local `zig-pkg/` (gitignored).
 
 ## Milestones
 
