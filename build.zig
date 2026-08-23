@@ -130,8 +130,16 @@ fn listZigFiles(b: *Build, dir: []const u8) !?[]const []const u8 {
 }
 
 /// Names (without extension) of files in `dir` ending in `ext`, sorted. Null if the dir is absent.
+/// The configure phase is cached on zig master; declaring the directory as a
+/// configure dependency makes a new sketch/bench file re-run it.
 fn listFiles(b: *Build, dir: []const u8, ext: []const u8) !?[]const []const u8 {
     const io = b.graph.io;
+    // `dependOnDirectory` is the right declaration, but the maker's directory
+    // mode is still a TODO on zig master (lib/compiler/Maker.zig), so it does
+    // not yet invalidate anything. Poison the configure cache until it does;
+    // the configure phase for this build.zig is cheap.
+    b.dependOnDirectory(b.path(dir));
+    b.graph.poisonCache();
     var d = b.root.openDir(io, dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
