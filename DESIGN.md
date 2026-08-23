@@ -256,10 +256,11 @@ inspector tooltip.
 
 ## Milestones
 
-- **M1 — walking skeleton.** Flake + build.zig; viewer opens a sokol window
-  with imgui and an orbit camera on a hardcoded cube; socket server accepts a
-  connection; client lib sends one mesh; it renders. Proves the entire thread
-  end-to-end, including the `--watch` loop.
+- **M1 — walking skeleton.** ✅ (2026-08-23) Flake + build.zig; viewer with
+  imgui, orbit/ortho cameras, socket server, mesh rendering (all layouts,
+  timeline, staleness); client streams an animated icosphere sketch.
+  Verified end-to-end headless (Xvfb/llvmpipe) and via `--watch`.
+  Not in M1: points/lines draw as UI entries only.
 - **M2 — protocol + scene.** All structure types and quantities, frames,
   upsert/staleness, coalesced GPU uploads, 2D camera mode.
 - **M3 — UI.** Structure tree, colormaps, timeline scrubber, fit-to-scene,
