@@ -1,0 +1,23 @@
+.{
+    .name = .vertex,
+    .version = "0.1.0",
+    .fingerprint = 0xe9f17935ecb5680d,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .sokol = .{
+            .url = "git+https://github.com/floooh/sokol-zig.git#54776d69dac1650221a84191a07269fc4e1e82cd",
+            .hash = "sokol-0.1.0-pb1HKxTaNgA8rXBh41wxEucgmR4YPuoOXGeXbFyGPvTK",
+        },
+        .cimgui = .{
+            .url = "git+https://github.com/floooh/dcimgui.git#3ce8ee7bf4fe088a7687ee7640520f1af41ca862",
+            .hash = "cimgui-0.1.0-44ClkR8dmgDqqnfloyLE1bUAtl4zSKTT1wxaHSEC0ikV",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "bench",
+        "sketches",
+    },
+}

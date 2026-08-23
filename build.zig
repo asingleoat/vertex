@@ -1,0 +1,148 @@
+const std = @import("std");
+const Build = std.Build;
+const cimgui = @import("cimgui");
+
+/// Vertex stream memory layout. Selected once per build; the `vertex` module's
+/// `Positions` type, the wire format, blob storage and GPU strides all derive
+/// from it (STYLE.md §3). Changing it is a protocol version bump.
+pub const Layout = enum { aos3, aos4, soa };
+
+pub fn build(b: *Build) !void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+
+    const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
+    const sketch_name = b.option([]const u8, "sketch", "Sketch to run with `zig build run-sketch` (default: current)") orelse "current";
+
+    const build_options = b.addOptions();
+    build_options.addOption(Layout, "vertex_layout", vertex_layout);
+
+    // ---- `vertex`: pure core (geometry, protocol, scene) + client library ----
+    const mod_vertex = b.addModule("vertex", .{
+        .root_source_file = b.path("src/vertex.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod_vertex.addOptions("build_options", build_options);
+
+    // ---- tests ----
+    const test_step = b.step("test", "Run unit tests");
+    const vertex_tests = b.addTest(.{ .root_module = mod_vertex });
+    test_step.dependOn(&b.addRunArtifact(vertex_tests).step);
+
+    // ---- viewer: sokol + imgui edges ----
+    const cimgui_conf = cimgui.getConfig(false);
+    const dep_sokol = b.dependency("sokol", .{
+        .target = target,
+        .optimize = optimize,
+        .gl = true,
+        .with_sokol_imgui = true,
+    });
+    const dep_cimgui = b.dependency("cimgui", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    dep_sokol.artifact("sokol_clib").root_module.addIncludePath(dep_cimgui.path(cimgui_conf.include_dir));
+
+    const mod_viewer = b.createModule(.{
+        .root_source_file = b.path("src/viewer/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "vertex", .module = mod_vertex },
+            .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+            .{ .name = cimgui_conf.module_name, .module = dep_cimgui.module(cimgui_conf.module_name) },
+        },
+    });
+    mod_viewer.addOptions("build_options", build_options);
+    const viewer = b.addExecutable(.{ .name = "vertex-view", .root_module = mod_viewer });
+    b.installArtifact(viewer);
+    b.step("run-viewer", "Run the viewer").dependOn(&b.addRunArtifact(viewer).step);
+
+    // ---- sketches: one exe per sketches/*.zig ----
+    const run_sketch_step = b.step("run-sketch", "Build and run -Dsketch=<name> (default: current)");
+    var found_sketch = false;
+    if (try listZigFiles(b, "sketches")) |names| for (names) |name| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("sketches/{s}.zig", .{name})),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "vertex", .module = mod_vertex }},
+        });
+        const exe = b.addExecutable(.{ .name = b.fmt("sketch-{s}", .{name}), .root_module = mod });
+        b.installArtifact(exe);
+        if (std.mem.eql(u8, name, sketch_name)) {
+            const run = b.addRunArtifact(exe);
+            run.has_side_effects = true; // always re-run under --watch
+            run_sketch_step.dependOn(&run.step);
+            found_sketch = true;
+        }
+    };
+    if (!found_sketch) run_sketch_step.dependOn(&b.addFail(b.fmt("no sketch named '{s}' in sketches/", .{sketch_name})).step);
+
+    // ---- benches: one ReleaseFast exe per bench/*.zig ----
+    const bench_step = b.step("bench", "Build and run all benchmarks (ReleaseFast)");
+    if (try listZigFiles(b, "bench")) |names| for (names) |name| {
+        const mod_bench_vertex = b.createModule(.{
+            .root_source_file = b.path("src/vertex.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        });
+        mod_bench_vertex.addOptions("build_options", build_options);
+        const mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("bench/{s}.zig", .{name})),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{.{ .name = "vertex", .module = mod_bench_vertex }},
+        });
+        const exe = b.addExecutable(.{ .name = b.fmt("bench-{s}", .{name}), .root_module = mod });
+        const run = b.addRunArtifact(exe);
+        run.has_side_effects = true;
+        bench_step.dependOn(&run.step);
+    };
+
+    // ---- shaders: regenerate src/shaders/*.zig from *.glsl via sokol-shdc (from PATH) ----
+    const shaders_step = b.step("shaders", "Regenerate src/shaders/*.zig with sokol-shdc (output is checked in)");
+    if (try listFiles(b, "src/shaders", ".glsl")) |names| for (names) |name| {
+        const cmd = b.addSystemCommand(&.{
+            "sokol-shdc",
+            "-i", b.fmt("src/shaders/{s}.glsl", .{name}),
+            "-o", b.fmt("src/shaders/{s}.zig", .{name}),
+            "-l", "glsl430",
+            "-f", "sokol_zig",
+        });
+        cmd.has_side_effects = true;
+        shaders_step.dependOn(&cmd.step);
+    };
+
+    // ---- check: compile everything without installing (for zls) ----
+    const check_step = b.step("check", "Type-check all artifacts without installing");
+    check_step.dependOn(&viewer.step);
+    check_step.dependOn(&vertex_tests.step);
+}
+
+fn listZigFiles(b: *Build, dir: []const u8) !?[]const []const u8 {
+    return listFiles(b, dir, ".zig");
+}
+
+/// Names (without extension) of files in `dir` ending in `ext`, sorted. Null if the dir is absent.
+fn listFiles(b: *Build, dir: []const u8, ext: []const u8) !?[]const []const u8 {
+    const io = b.graph.io;
+    var d = b.build_root.handle.openDir(io, dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    defer d.close(io);
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = d.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ext)) continue;
+        try names.append(b.allocator, b.dupe(entry.name[0 .. entry.name.len - ext.len]));
+    }
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    return names.items;
+}
