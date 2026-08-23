@@ -1,0 +1,323 @@
+//! Allocation-free camera and column-major matrix math for the pure core.
+const std = @import("std");
+const geometry = @import("../geometry/geometry.zig");
+const layout = @import("../geometry/layout.zig");
+
+const Vec3 = layout.Vec3;
+const Aabb = geometry.current.Aabb;
+
+/// Column-major 4x4 matrix matching the shader's `[16]f32` uniform. Values
+/// own no memory and every operation is allocation-free.
+pub const Mat4 = extern struct {
+    m: [16]f32,
+
+    /// Multiplicative identity; it owns no memory and never allocates.
+    pub const identity: Mat4 = .{ .m = .{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    } };
+
+    /// Multiplies two column-major matrices without allocating.
+    pub fn mul(a: Mat4, b: Mat4) Mat4 {
+        var result: Mat4 = .{ .m = @splat(0) };
+        for (0..4) |column| {
+            for (0..4) |row| {
+                var value: f32 = 0;
+                for (0..4) |k| value += a.m[k * 4 + row] * b.m[column * 4 + k];
+                result.m[column * 4 + row] = value;
+            }
+        }
+        return result;
+    }
+
+    /// Builds a right-handed OpenGL perspective projection without allocating.
+    /// NDC depth is `[-1, 1]`; inputs must satisfy `aspect, near > 0` and `far > near`.
+    pub fn perspective(fovy_rad: f32, aspect: f32, near: f32, far: f32) Mat4 {
+        std.debug.assert(fovy_rad > 0 and fovy_rad < std.math.pi);
+        std.debug.assert(aspect > 0 and near > 0 and far > near);
+        const f = 1.0 / @tan(fovy_rad * 0.5);
+        return .{ .m = .{
+            f / aspect, 0, 0,                               0,
+            0,          f, 0,                               0,
+            0,          0, (far + near) / (near - far),     -1,
+            0,          0, (2 * far * near) / (near - far), 0,
+        } };
+    }
+
+    /// Builds a right-handed OpenGL orthographic projection without allocating.
+    pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) Mat4 {
+        std.debug.assert(right != left and top != bottom and far != near);
+        return .{ .m = .{
+            2 / (right - left),               0,                                0,                            0,
+            0,                                2 / (top - bottom),               0,                            0,
+            0,                                0,                                -2 / (far - near),            0,
+            -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1,
+        } };
+    }
+
+    /// Builds a right-handed view matrix without allocating. `up` must not be
+    /// parallel to the eye-to-target direction.
+    pub fn lookAt(eye_position: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
+        const forward = target.sub(eye_position).normalize();
+        const right = forward.cross(up_hint).normalize();
+        const up = right.cross(forward);
+        std.debug.assert(forward.length() > 0 and right.length() > 0);
+        return .{ .m = .{
+            right.x,                  up.x,                  -forward.x,                0,
+            right.y,                  up.y,                  -forward.y,                0,
+            right.z,                  up.z,                  -forward.z,                0,
+            -right.dot(eye_position), -up.dot(eye_position), forward.dot(eye_position), 1,
+        } };
+    }
+
+    /// Transforms a point and performs homogeneous divide without allocating.
+    pub fn transformPoint(matrix: Mat4, point: Vec3) Vec3 {
+        const x = matrix.m[0] * point.x + matrix.m[4] * point.y + matrix.m[8] * point.z + matrix.m[12];
+        const y = matrix.m[1] * point.x + matrix.m[5] * point.y + matrix.m[9] * point.z + matrix.m[13];
+        const z = matrix.m[2] * point.x + matrix.m[6] * point.y + matrix.m[10] * point.z + matrix.m[14];
+        const w = matrix.m[3] * point.x + matrix.m[7] * point.y + matrix.m[11] * point.z + matrix.m[15];
+        if (w == 0) return .init(x, y, z);
+        return .init(x / w, y / w, z / w);
+    }
+};
+
+/// Persistent 3D turntable camera. It owns no memory; all controls and matrix
+/// queries are deterministic and allocation-free.
+pub const Orbit = struct {
+    target: Vec3,
+    distance: f32,
+    yaw: f32,
+    pitch: f32,
+    fovy: f32 = 0.8,
+    near: f32 = 0.01,
+    far: f32 = 1000,
+
+    /// Conventional initial orbit pose looking down the negative Z axis.
+    pub const default: Orbit = .{
+        .target = .zero,
+        .distance = 5,
+        .yaw = 0,
+        .pitch = 0,
+    };
+
+    /// Returns the world-space eye position without allocating.
+    pub fn eye(self: Orbit) Vec3 {
+        const cos_pitch = @cos(self.pitch);
+        const offset = Vec3.init(
+            cos_pitch * @sin(self.yaw),
+            @sin(self.pitch),
+            cos_pitch * @cos(self.yaw),
+        );
+        return self.target.add(offset.scale(self.distance));
+    }
+
+    /// Returns the allocation-free right-handed view matrix for this pose.
+    pub fn view(self: Orbit) Mat4 {
+        return .lookAt(self.eye(), self.target, .init(0, 1, 0));
+    }
+
+    /// Returns the allocation-free perspective projection for `aspect`.
+    pub fn proj(self: Orbit, aspect: f32) Mat4 {
+        return .perspective(self.fovy, aspect, self.near, self.far);
+    }
+
+    /// Returns `projection * view` without allocating.
+    pub fn viewProj(self: Orbit, aspect: f32) Mat4 {
+        return self.proj(aspect).mul(self.view());
+    }
+
+    /// Applies turntable rotation without allocating and clamps pitch away
+    /// from the world-up singularity.
+    pub fn rotate(self: *Orbit, dx: f32, dy: f32) void {
+        self.yaw += dx;
+        const limit: f32 = std.math.pi / 2.0 - 1e-4;
+        self.pitch = std.math.clamp(self.pitch + dy, -limit, limit);
+    }
+
+    /// Pans in screen space without allocating. Deltas are pixels and scale
+    /// with distance so dragging remains stable across dolly levels.
+    pub fn pan(self: *Orbit, dx: f32, dy: f32, viewport_height: f32) void {
+        std.debug.assert(viewport_height > 0);
+        const forward = self.target.sub(self.eye()).normalize();
+        const right = forward.cross(.init(0, 1, 0)).normalize();
+        const up = right.cross(forward);
+        const world_per_pixel = 2 * self.distance * @tan(self.fovy * 0.5) / viewport_height;
+        self.target = self.target
+            .add(right.scale(-dx * world_per_pixel))
+            .add(up.scale(dy * world_per_pixel));
+    }
+
+    /// Applies exponential scroll dolly without allocating. Positive scroll
+    /// moves toward the target while preserving a positive distance.
+    pub fn dolly(self: *Orbit, scroll: f32) void {
+        self.distance = @max(1e-4, self.distance * @exp(-scroll * 0.1));
+    }
+
+    /// Fits a bounding sphere around `aabb` into a square frustum without
+    /// allocating. Empty bounds restore `default`.
+    pub fn fit(self: *Orbit, aabb: Aabb) void {
+        if (aabb.isEmpty()) {
+            self.* = default;
+            return;
+        }
+        self.target = aabb.center();
+        const radius = aabb.radius();
+        self.distance = if (radius > 0)
+            @max(1e-4, radius * 1.05 / @sin(self.fovy * 0.5))
+        else
+            1;
+        self.near = @max(1e-4, self.distance - radius * 1.2);
+        self.far = @max(self.near + 1, self.distance + radius * 1.2);
+    }
+};
+
+/// Persistent orthographic 2D camera. It owns no memory and every operation
+/// is allocation-free.
+pub const Ortho2D = struct {
+    center: [2]f32 = .{ 0, 0 },
+    half_height: f32 = 1,
+
+    /// Returns an allocation-free orthographic view-projection for `aspect`.
+    pub fn viewProj(self: Ortho2D, aspect: f32) Mat4 {
+        std.debug.assert(aspect > 0 and self.half_height > 0);
+        const half_width = self.half_height * aspect;
+        return .ortho(
+            self.center[0] - half_width,
+            self.center[0] + half_width,
+            self.center[1] - self.half_height,
+            self.center[1] + self.half_height,
+            -1,
+            1,
+        );
+    }
+
+    /// Pans by screen-pixel deltas without allocating. Positive screen Y is
+    /// downward, so it moves the world center in the opposite Y direction.
+    pub fn pan(self: *Ortho2D, dx: f32, dy: f32, viewport_height: f32) void {
+        std.debug.assert(viewport_height > 0);
+        const world_per_pixel = 2 * self.half_height / viewport_height;
+        self.center[0] -= dx * world_per_pixel;
+        self.center[1] += dy * world_per_pixel;
+    }
+
+    /// Multiplies the zoom scale while keeping the NDC cursor's world point
+    /// fixed. This operation owns no memory and never allocates.
+    pub fn zoomAt(self: *Ortho2D, factor: f32, cursor_ndc: [2]f32) void {
+        std.debug.assert(factor > 0);
+        const old_half_height = self.half_height;
+        const new_half_height = @max(1e-6, old_half_height * factor);
+        const shift = old_half_height - new_half_height;
+        self.center[0] += cursor_ndc[0] * shift;
+        self.center[1] += cursor_ndc[1] * shift;
+        self.half_height = new_half_height;
+    }
+
+    /// Fits XY bounds into a square viewport without allocating. Empty bounds
+    /// restore the default center and scale.
+    pub fn fit(self: *Ortho2D, aabb: Aabb) void {
+        if (aabb.isEmpty()) {
+            self.* = .{};
+            return;
+        }
+        const center = aabb.center();
+        const extent = aabb.extent();
+        self.center = .{ center.x, center.y };
+        self.half_height = @max(1e-6, @max(extent.x, extent.y) * 0.5 * 1.05);
+    }
+};
+
+/// Runtime camera mode wrapper. It owns no memory and dispatches only to
+/// allocation-free camera math.
+pub const Camera = union(enum) {
+    orbit: Orbit,
+    ortho: Ortho2D,
+
+    /// Returns the active mode's view-projection matrix without allocating.
+    pub fn viewProj(self: Camera, aspect: f32) Mat4 {
+        return switch (self) {
+            .orbit => |camera| camera.viewProj(aspect),
+            .ortho => |camera| camera.viewProj(aspect),
+        };
+    }
+
+    /// Fits the active mode to `aabb` without allocating or changing modes.
+    pub fn fit(self: *Camera, aabb: Aabb) void {
+        switch (self.*) {
+            .orbit => |*camera| camera.fit(aabb),
+            .ortho => |*camera| camera.fit(aabb),
+        }
+    }
+};
+
+const testing = std.testing;
+
+test "Mat4 identity multiplication and fixed size" {
+    const translation: Mat4 = .{ .m = .{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        2, 3, 4, 1,
+    } };
+    try testing.expectEqual(64, @sizeOf(Mat4));
+    try testing.expectEqualSlices(f32, &translation.m, &Mat4.identity.mul(translation).m);
+    try testing.expectEqualSlices(f32, &translation.m, &translation.mul(Mat4.identity).m);
+}
+
+test "perspective maps the negative Z axis into OpenGL NDC" {
+    const projection = Mat4.perspective(std.math.pi / 2.0, 1, 0.1, 100);
+    const point = projection.transformPoint(.init(0, 0, -2));
+    try testing.expectApproxEqAbs(@as(f32, 0), point.x, 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0), point.y, 1e-6);
+    try testing.expect(point.z >= -1 and point.z <= 1);
+}
+
+test "lookAt centers its target" {
+    const target = Vec3.init(1, 2, 3);
+    const view = Mat4.lookAt(.init(4, 5, 7), target, .init(0, 1, 0));
+    const transformed = view.transformPoint(target);
+    try testing.expectApproxEqAbs(@as(f32, 0), transformed.x, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0), transformed.y, 1e-5);
+}
+
+test "Orbit fit contains every unit-cube corner" {
+    const bounds: Aabb = .{ .min = .init(-1, -1, -1), .max = .init(1, 1, 1) };
+    var camera: Orbit = .default;
+    camera.fit(bounds);
+    const matrix = camera.viewProj(1);
+    for ([_]f32{ -1, 1 }) |x| {
+        for ([_]f32{ -1, 1 }) |y| {
+            for ([_]f32{ -1, 1 }) |z| {
+                const ndc = matrix.transformPoint(.init(x, y, z));
+                try testing.expect(@abs(ndc.x) <= 1);
+                try testing.expect(@abs(ndc.y) <= 1);
+                try testing.expect(ndc.z >= -1 and ndc.z <= 1);
+            }
+        }
+    }
+}
+
+test "Ortho2D zoomAt preserves the cursor world point" {
+    var camera: Ortho2D = .{ .center = .{ 2, -3 }, .half_height = 4 };
+    const cursor = [2]f32{ 0.25, -0.5 };
+    const before = [2]f32{
+        camera.center[0] + cursor[0] * camera.half_height,
+        camera.center[1] + cursor[1] * camera.half_height,
+    };
+    camera.zoomAt(0.4, cursor);
+    const after = [2]f32{
+        camera.center[0] + cursor[0] * camera.half_height,
+        camera.center[1] + cursor[1] * camera.half_height,
+    };
+    try testing.expectApproxEqAbs(before[0], after[0], 1e-5);
+    try testing.expectApproxEqAbs(before[1], after[1], 1e-5);
+}
+
+test "Orbit rotation clamps pitch" {
+    var camera: Orbit = .default;
+    camera.rotate(0, 100);
+    try testing.expect(camera.pitch < std.math.pi / 2.0);
+    camera.rotate(0, -200);
+    try testing.expect(camera.pitch > -std.math.pi / 2.0);
+}
