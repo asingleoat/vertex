@@ -66,7 +66,7 @@ pub const Vec3 = extern struct {
     }
 };
 
-/// 16-byte element for the `.aos4` layout; bit-castable to `@Vector(4, f32)`.
+/// 16-byte element for the `.aos4` layout; converts to/from `@Vector(4, f32)` at zero cost.
 pub const Vec3Padded = extern struct {
     x: f32,
     y: f32,
@@ -80,10 +80,10 @@ pub const Vec3Padded = extern struct {
         return .{ .x = v.x, .y = v.y, .z = v.z };
     }
     pub inline fn toVector(v: Vec3Padded) @Vector(4, f32) {
-        return @bitCast(v);
+        return .{ v.x, v.y, v.z, v.w };
     }
     pub inline fn fromVector(v: @Vector(4, f32)) Vec3Padded {
-        return @bitCast(v);
+        return .{ .x = v[0], .y = v[1], .z = v[2], .w = v[3] };
     }
 };
 

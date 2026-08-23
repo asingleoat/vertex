@@ -3,12 +3,25 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Bleeding-edge Zig (master / 0.17-dev): the std.Io work lands there first,
+    # and sokol-zig + dcimgui master track zig master.
+    zig-overlay = {
+      url = "github:mitchellh/zig-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    # zls built from source against the same master line.
+    zls = {
+      url = "github:zigtools/zls";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, zig-overlay, zls }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      zigFor = pkgs: zig-overlay.packages.${pkgs.stdenv.hostPlatform.system}.master;
+      zlsFor = pkgs: zls.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
       # sokol-shdc is distributed as a prebuilt binary (no nix-ld here), so
       # patchelf it into a proper derivation. Pinned to the sokol-tools-bin
@@ -34,8 +47,8 @@
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
-            zig
-            zls
+            (zigFor pkgs)
+            (zlsFor pkgs)
             pkg-config
             watchexec   # fallback for `zig build --watch`
             gdb

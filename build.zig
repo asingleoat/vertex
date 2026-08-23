@@ -9,7 +9,7 @@ pub const Layout = enum { aos3, aos4, soa };
 
 pub fn build(b: *Build) !void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
 
     const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
     const sketch_name = b.option([]const u8, "sketch", "Sketch to run with `zig build run-sketch` (default: current)") orelse "current";
@@ -86,13 +86,13 @@ pub fn build(b: *Build) !void {
         const mod_bench_vertex = b.createModule(.{
             .root_source_file = b.path("src/vertex.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         });
         mod_bench_vertex.addOptions("build_options", build_options);
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("bench/{s}.zig", .{name})),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
             .imports = &.{.{ .name = "vertex", .module = mod_bench_vertex }},
         });
         const exe = b.addExecutable(.{ .name = b.fmt("bench-{s}", .{name}), .root_module = mod });
@@ -106,10 +106,14 @@ pub fn build(b: *Build) !void {
     if (try listFiles(b, "src/viewer/shaders", ".glsl")) |names| for (names) |name| {
         const cmd = b.addSystemCommand(&.{
             "sokol-shdc",
-            "-i", b.fmt("src/viewer/shaders/{s}.glsl", .{name}),
-            "-o", b.fmt("src/viewer/shaders/{s}.zig", .{name}),
-            "-l", "glsl430",
-            "-f", "sokol_zig",
+            "-i",
+            b.fmt("src/viewer/shaders/{s}.glsl", .{name}),
+            "-o",
+            b.fmt("src/viewer/shaders/{s}.zig", .{name}),
+            "-l",
+            "glsl430",
+            "-f",
+            "sokol_zig",
         });
         cmd.has_side_effects = true;
         shaders_step.dependOn(&cmd.step);
@@ -128,7 +132,7 @@ fn listZigFiles(b: *Build, dir: []const u8) !?[]const []const u8 {
 /// Names (without extension) of files in `dir` ending in `ext`, sorted. Null if the dir is absent.
 fn listFiles(b: *Build, dir: []const u8, ext: []const u8) !?[]const []const u8 {
     const io = b.graph.io;
-    var d = b.build_root.handle.openDir(io, dir, .{ .iterate = true }) catch |err| switch (err) {
+    var d = b.root.openDir(io, dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
     };
