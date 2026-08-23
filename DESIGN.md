@@ -27,19 +27,20 @@ vertex/
 ├── build.zig
 ├── build.zig.zon            # sokol-zig, cimgui
 ├── src/
-│   ├── protocol/protocol.zig  # wire format: message types, encode/decode (shared)
-│   ├── client/vertex.zig      # client lib your geometry code imports
-│   ├── viewer/
-│   │   ├── main.zig           # sokol_app entry, frame loop
-│   │   ├── server.zig         # socket listener thread → staging queue
-│   │   ├── scene.zig          # structure store, versions, frames, staleness
-│   │   ├── camera.zig         # orbit-3D + ortho-2D controllers
-│   │   ├── pick.zig           # ID-buffer pass + readback
-│   │   ├── ui.zig             # imgui panels: structure tree, timeline, inspector
-│   │   └── render/            # mesh.zig, points.zig, lines.zig, vectors.zig, colormap.zig
-│   └── shaders/               # sokol-shdc sources; generated .zig checked in
-├── examples/                  # demo sketches (lloyd relaxation, convex hull)
-└── sketches/                  # your actual experiments; each file = runnable exe
+│   ├── vertex.zig             # root of the `vertex` module (pure core + client)
+│   ├── geometry/              # layout.zig (Positions), geometry.zig (kernels), fixtures.zig
+│   ├── protocol/protocol.zig  # wire format: message types, encode/decode (pure)
+│   ├── scene/                 # scene.zig (structure store, versions, frames), camera.zig
+│   ├── client/client.zig      # client lib your geometry code imports (Sink + socket)
+│   └── viewer/                # `vertex-view` exe: the effectful edges only
+│       ├── main.zig           # sokol_app entry, frame loop
+│       ├── server.zig         # socket listener thread → staging queue
+│       ├── pick.zig           # ID-buffer pass + readback
+│       ├── ui.zig             # imgui panels: structure tree, timeline, inspector
+│       ├── render/            # mesh.zig, points.zig, lines.zig, vectors.zig, colormap.zig
+│       └── shaders/           # sokol-shdc sources; generated .zig checked in
+├── bench/                     # one ReleaseFast exe per file; helpers in bench/lib/
+└── sketches/                  # your experiments; each file = runnable exe (run-sketch)
 ```
 
 Three artifacts from one `build.zig`:
@@ -65,7 +66,9 @@ sokol-gfx passes: solid → edges/lines → points → vectors → [pick pass] �
 ## Wire protocol
 
 Transport: Unix domain socket at `$XDG_RUNTIME_DIR/vertex.sock` (override via
-`VERTEX_SOCK`). Framing: `[u32 len][u16 type][payload]`, native endianness
+`VERTEX_SOCK`). Framing: `[u32 len][u16 kind][u16 flags][payload]` (8-byte
+header; variable sections inside a payload start at 16-byte offsets so a
+decoded payload's slices are directly usable), native endianness
 (the magic doubles as an endianness check). Handshake: magic `VTXP` + `u16`
 protocol version; the viewer only talks to a client with the identical version
 and rejects anything else. Stream payloads are the in-memory blob bytes

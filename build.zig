@@ -101,13 +101,13 @@ pub fn build(b: *Build) !void {
         bench_step.dependOn(&run.step);
     };
 
-    // ---- shaders: regenerate src/shaders/*.zig from *.glsl via sokol-shdc (from PATH) ----
-    const shaders_step = b.step("shaders", "Regenerate src/shaders/*.zig with sokol-shdc (output is checked in)");
-    if (try listFiles(b, "src/shaders", ".glsl")) |names| for (names) |name| {
+    // ---- shaders: regenerate src/viewer/shaders/*.zig from *.glsl via sokol-shdc (from PATH) ----
+    const shaders_step = b.step("shaders", "Regenerate src/viewer/shaders/*.zig with sokol-shdc (output is checked in)");
+    if (try listFiles(b, "src/viewer/shaders", ".glsl")) |names| for (names) |name| {
         const cmd = b.addSystemCommand(&.{
             "sokol-shdc",
-            "-i", b.fmt("src/shaders/{s}.glsl", .{name}),
-            "-o", b.fmt("src/shaders/{s}.zig", .{name}),
+            "-i", b.fmt("src/viewer/shaders/{s}.glsl", .{name}),
+            "-o", b.fmt("src/viewer/shaders/{s}.zig", .{name}),
             "-l", "glsl430",
             "-f", "sokol_zig",
         });
