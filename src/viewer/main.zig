@@ -104,6 +104,7 @@ fn frameCallback() callconv(.c) void {
     const saw_first_geometry = drainInbox(&state);
     if (state.follow_latest) state.scrub = state.scene.frameCount() -| 1;
     if (!state.fitted_once and saw_first_geometry) {
+        if (allStructures2d(&state.scene)) state.camera_mode = .ortho_2d;
         fitCamera(&state);
         state.fitted_once = true;
     }
@@ -137,7 +138,9 @@ fn frameCallback() callconv(.c) void {
     };
     sg.beginPass(.{ .action = pass_action, .swapchain = sglue.swapchain() });
 
-    if (renderer_synced) drawScene(&state, vp);
+    if (renderer_synced) drawScene(&state, vp, .{ width, height }) catch |err| {
+        std.log.err("renderer draw failed: {s}", .{@errorName(err)});
+    };
 
     simgui.newFrame(.{
         .width = sapp.width(),
@@ -227,16 +230,84 @@ fn drainInbox(s: *State) bool {
     return saw_geometry;
 }
 
-fn drawScene(s: *State, vp: vertex.camera.Mat4) void {
+fn drawScene(s: *State, vp: vertex.camera.Mat4, viewport: [2]f32) std.mem.Allocator.Error!void {
     const structures = s.scene.structures.slice();
-    const visible = structures.items(.ui);
+    const ui_states = structures.items(.ui);
     const kinds = structures.items(.kind);
-    for (visible, kinds, 0..) |ui_state, kind, i| {
+    const versions = structures.items(.versions);
+
+    // Solid meshes establish depth before every overlay and primitive pass.
+    for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .mesh) continue;
         const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
-        s.renderer.draw(&s.scene, structure_index, version_index, vp, .{ 0.20, 0.62, 0.92, 1.0 });
+        std.debug.assert(version_index < version_list.items.len);
+        try s.renderer.draw(&s.scene, structure_index, version_index, vp, .{ 0.72, 0.78, 0.86, 1.0 });
     }
+    for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
+        if (!ui_state.visible or kind != .mesh or !ui_state.wireframe) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        std.debug.assert(version_index < version_list.items.len);
+        try s.renderer.drawWireframe(
+            &s.scene,
+            structure_index,
+            version_index,
+            vp,
+            viewport,
+            .{ 0.12, 0.15, 0.20, 1.0 },
+        );
+    }
+    for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
+        if (!ui_state.visible or kind != .lines) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        std.debug.assert(version_index < version_list.items.len);
+        try s.renderer.drawLines(
+            &s.scene,
+            structure_index,
+            version_index,
+            vp,
+            viewport,
+            .{ 0.96, 0.55, 0.18, 1.0 },
+        );
+    }
+    for (ui_states, versions, 0..) |ui_state, version_list, i| {
+        if (!ui_state.visible) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        std.debug.assert(version_index < version_list.items.len);
+        try s.renderer.drawVectors(
+            &s.scene,
+            structure_index,
+            version_index,
+            vp,
+            .{ 0.96, 0.28, 0.22, 1.0 },
+        );
+    }
+    for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
+        if (!ui_state.visible or kind != .points) continue;
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
+        std.debug.assert(version_index < version_list.items.len);
+        try s.renderer.drawPoints(
+            &s.scene,
+            structure_index,
+            version_index,
+            vp,
+            viewport,
+            .{ 0.25, 0.82, 0.58, 1.0 },
+        );
+    }
+}
+
+fn allStructures2d(scene: *const Scene) bool {
+    if (scene.structures.len == 0) return false;
+    const structures = scene.structures.slice();
+    for (structures.items(.dim)) |dim| {
+        if (dim != .d2) return false;
+    }
+    return true;
 }
 
 fn visibleBounds(s: *const State) Aabb {

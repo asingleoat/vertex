@@ -121,7 +121,11 @@ pub fn build(b: *Build) !void {
             "sokol_zig",
         });
         cmd.has_side_effects = true;
-        shaders_step.dependOn(&cmd.step);
+        // shdc output isn't zig-fmt clean; format it so `zig fmt --check` stays green.
+        const fmt = b.addSystemCommand(&.{ b.graph.zig_exe, "fmt", b.fmt("src/viewer/shaders/{s}.zig", .{name}) });
+        fmt.has_side_effects = true;
+        fmt.step.dependOn(&cmd.step);
+        shaders_step.dependOn(&fmt.step);
     };
 
     // ---- check: compile everything without installing (for zls) ----

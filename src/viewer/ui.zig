@@ -9,7 +9,7 @@ const StructureIndex = vertex.scene.StructureIndex;
 /// Camera mode selected by UI and keyboard controls. The value owns no memory.
 pub const CameraMode = enum { orbit, ortho_2d };
 
-/// Draws all M1 panels and mutates only viewer UI state. It allocates nothing,
+/// Draws all viewer panels and mutates only viewer UI state. It allocates nothing,
 /// borrows every argument for the call, and returns whether Fit was pressed.
 pub fn draw(
     scene: *Scene,
@@ -43,6 +43,8 @@ fn drawStructures(scene: *Scene, scrub: u32) void {
         const stale = structures.items(.stale);
         const versions = structures.items(.versions);
         for (names, kinds, ui_states, stale, versions, 0..) |name_index, kind, *ui_state, is_stale, version_list, i| {
+            ig.igPushIDInt(@intCast(i));
+            defer ig.igPopID();
             const name = scene.string(name_index);
             _ = ig.igCheckbox(name.ptr, &ui_state.visible);
             ig.igSameLine();
@@ -51,8 +53,10 @@ fn drawStructures(scene: *Scene, scrub: u32) void {
             var vertex_count: u32 = 0;
             var face_count: usize = 0;
             var segment_count: usize = 0;
+            var displayed_version: ?vertex.scene.Version = null;
             if (scene.versionAt(structure_index, scrub)) |version_index| {
                 const version = version_list.items[version_index];
+                displayed_version = version;
                 vertex_count = scene.positionsOf(version).len();
                 if (kind == .mesh) face_count = scene.facesOf(version).len;
                 if (kind == .lines) segment_count = scene.segmentsOf(version).len;
@@ -67,19 +71,136 @@ fn drawStructures(scene: *Scene, scrub: u32) void {
                 ),
                 .points => std.fmt.bufPrint(
                     &buffer,
-                    "points  vertices={d} faces=0  (not drawn yet){s}",
+                    "points  vertices={d}{s}",
                     .{ vertex_count, if (is_stale) "  [stale]" else "" },
                 ),
                 .lines => std.fmt.bufPrint(
                     &buffer,
-                    "lines  vertices={d} faces=0 segments={d}  (not drawn yet){s}",
+                    "lines  vertices={d} segments={d}{s}",
                     .{ vertex_count, segment_count, if (is_stale) "  [stale]" else "" },
                 ),
             } catch "structure summary too long";
             text(detail);
+
+            ig.igIndent();
+            if (displayed_version) |version| {
+                drawQuantityControls(scene, structure_index, version, ui_state);
+            }
+            switch (kind) {
+                .mesh => {
+                    _ = ig.igCheckbox("Wireframe", &ui_state.wireframe);
+                    _ = ig.igSliderFloat("Line width", &ui_state.line_width, 0.5, 8.0);
+                },
+                .points => _ = ig.igSliderFloat("Point size", &ui_state.point_size, 1.0, 16.0),
+                .lines => _ = ig.igSliderFloat("Line width", &ui_state.line_width, 0.5, 8.0),
+            }
+            ig.igUnindent();
+            ig.igSeparator();
         }
     }
     ig.igEnd();
+}
+
+fn drawQuantityControls(
+    scene: *const Scene,
+    structure_index: StructureIndex,
+    version: vertex.scene.Version,
+    ui_state: *vertex.scene.UiState,
+) void {
+    const quantities = scene.quantities(structure_index, version);
+    var active: ?vertex.scene.QuantityRef = null;
+    for (quantities) |quantity| {
+        if (quantity.name == ui_state.active_quantity) {
+            active = quantity;
+            break;
+        }
+    }
+
+    var preview_buffer: [320]u8 = undefined;
+    const preview = if (active) |quantity|
+        quantityLabel(scene, quantity, &preview_buffer)
+    else
+        "(none)";
+    if (ig.igBeginCombo("Quantity", preview.ptr, ig.ImGuiComboFlags_None)) {
+        if (ig.igSelectableEx(
+            "(none)",
+            ui_state.active_quantity == .none,
+            ig.ImGuiSelectableFlags_None,
+            .{ .x = 0, .y = 0 },
+        )) {
+            ui_state.active_quantity = .none;
+            active = null;
+        }
+        for (quantities) |quantity| {
+            var label_buffer: [320]u8 = undefined;
+            const label = quantityLabel(scene, quantity, &label_buffer);
+            const selected = quantity.name == ui_state.active_quantity;
+            if (ig.igSelectableEx(label.ptr, selected, ig.ImGuiSelectableFlags_None, .{ .x = 0, .y = 0 })) {
+                ui_state.active_quantity = quantity.name;
+                active = quantity;
+            }
+            if (selected) ig.igSetItemDefaultFocus();
+        }
+        ig.igEndCombo();
+    }
+
+    const scalar_active = if (active) |quantity| quantity.kind == .scalar else false;
+    ig.igBeginDisabled(!scalar_active);
+    const colormap_names = [_][*:0]const u8{ "viridis", "turbo", "coolwarm", "plasma" };
+    if (ig.igBeginCombo("Colormap", colormap_names[@backingInt(ui_state.colormap)], ig.ImGuiComboFlags_None)) {
+        inline for (std.enums.values(vertex.colormap.Colormap), 0..) |cm, cm_i| {
+            const selected = cm == ui_state.colormap;
+            if (ig.igSelectableEx(
+                colormap_names[cm_i],
+                selected,
+                ig.ImGuiSelectableFlags_None,
+                .{ .x = 0, .y = 0 },
+            )) ui_state.colormap = cm;
+            if (selected) ig.igSetItemDefaultFocus();
+        }
+        ig.igEndCombo();
+    }
+    ig.igEndDisabled();
+
+    if (active) |quantity| switch (quantity.kind) {
+        .scalar => {
+            const values = std.mem.bytesAsSlice(f32, scene.blobBytes(quantity.blob));
+            const value_range = vertex.colormap.range(values);
+            var buffer: [128]u8 = undefined;
+            const readout = std.fmt.bufPrint(
+                &buffer,
+                "range [{d:.5}, {d:.5}]",
+                .{ value_range[0], value_range[1] },
+            ) catch "range unavailable";
+            text(readout);
+        },
+        .vector => _ = ig.igSliderFloatEx(
+            "Vector scale",
+            &ui_state.vector_scale,
+            0.1,
+            10.0,
+            "%.3f",
+            ig.ImGuiSliderFlags_Logarithmic,
+        ),
+    };
+}
+
+fn quantityLabel(
+    scene: *const Scene,
+    quantity: vertex.scene.QuantityRef,
+    buffer: *[320]u8,
+) [:0]const u8 {
+    const name = scene.string(quantity.name);
+    const suffix: []const u8 = if (quantity.target == .face) " (faces — not rendered yet)" else "";
+    const available = buffer[0 .. buffer.len - 1];
+    const label = std.fmt.bufPrint(available, "{s}{s}", .{ name, suffix }) catch {
+        const fallback = "quantity name too long";
+        @memcpy(buffer[0..fallback.len], fallback);
+        buffer[fallback.len] = 0;
+        return buffer[0..fallback.len :0];
+    };
+    buffer[label.len] = 0;
+    return buffer[0..label.len :0];
 }
 
 fn drawTimeline(

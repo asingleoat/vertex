@@ -261,7 +261,7 @@ inspector tooltip.
   timeline, staleness); client streams an animated icosphere sketch.
   Verified end-to-end headless (Xvfb/llvmpipe) and via `--watch`.
   Not in M1: points/lines draw as UI entries only.
-- **M2 — all renderables + scalar colormaps.** Points (instanced round
+- **M2 — all renderables + scalar colormaps.** ✅ (2026-08-23) Points (instanced round
   sprites), lines/polylines (instanced screen-space quads), vector quantities
   (instanced arrows), vertex-target scalar quantities through comptime
   colormap LUTs (viridis/turbo/coolwarm/plasma) on meshes and points,

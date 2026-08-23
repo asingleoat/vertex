@@ -37,6 +37,8 @@ pub const UiState = struct {
     active_quantity: StringIndex = .none,
     point_size: f32 = 4,
     line_width: f32 = 1.5,
+    colormap: @import("colormap.zig").Colormap = .viridis,
+    vector_scale: f32 = 1.0,
 };
 
 /// One chronological geometry snapshot. Blob references are owned by the

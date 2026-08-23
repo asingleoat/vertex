@@ -7,6 +7,7 @@ pub const fixtures = @import("geometry/fixtures.zig");
 pub const testutil = @import("testutil.zig");
 pub const protocol = @import("protocol/protocol.zig");
 pub const scene = @import("scene/scene.zig");
+pub const colormap = @import("scene/colormap.zig");
 pub const camera = @import("scene/camera.zig");
 pub const client = @import("client/client.zig");
 
