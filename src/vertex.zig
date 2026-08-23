@@ -3,6 +3,8 @@
 pub const build_options = @import("build_options");
 pub const layout = @import("geometry/layout.zig");
 pub const geometry = @import("geometry/geometry.zig");
+pub const fixtures = @import("geometry/fixtures.zig");
+pub const testutil = @import("testutil.zig");
 pub const protocol = @import("protocol/protocol.zig");
 pub const scene = @import("scene/scene.zig");
 pub const client = @import("client/client.zig");
