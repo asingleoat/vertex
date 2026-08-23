@@ -8,7 +8,7 @@ const cimgui = @import("cimgui");
 pub const Layout = enum { aos3, aos4, soa };
 
 pub fn build(b: *Build) !void {
-    const target = b.standardTargetOptions(.{});
+    const target = resolveTarget(b);
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
 
     const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
@@ -48,6 +48,8 @@ pub fn build(b: *Build) !void {
         .root_source_file = b.path("src/viewer/main.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true, // sokol + imgui are C/C++; be explicit so libc startup is linked
+        .link_libcpp = true,
         .imports = &.{
             .{ .name = "vertex", .module = mod_vertex },
             .{ .name = "sokol", .module = dep_sokol.module("sokol") },
@@ -123,6 +125,44 @@ pub fn build(b: *Build) !void {
     const check_step = b.step("check", "Type-check all artifacts without installing");
     check_step.dependOn(&viewer.step);
     check_step.dependOn(&vertex_tests.step);
+}
+
+/// Native builds inside the nix dev shell: zig's compiler detects the native
+/// dynamic linker by probing /usr/bin/env (the *system* glibc) while the shell
+/// links against nixpkgs' glibc, and executables whose interpreter and libc
+/// disagree fail to load. flake.nix exports ZIG_DYNAMIC_LINKER and
+/// ZIG_GLIBC_VERSION; with them the target is pinned to the shell's glibc.
+/// That makes zig treat the target as non-native, which disables its
+/// NIX_CFLAGS_COMPILE/NIX_LDFLAGS discovery, so the shell also exports the
+/// system libraries sokol links as ZIG_SEARCH_PREFIXES (a graph-wide
+/// mechanism that dependencies see too). Only those libraries are added —
+/// leaking nixpkgs' glibc headers in breaks zig's bundled libc++ build.
+fn resolveTarget(b: *Build) Build.ResolvedTarget {
+    var query = b.standardTargetOptionsQueryOnly(.{});
+    const env = b.graph.environ_map;
+    if (query.isNative()) if (nonEmpty(env.get("ZIG_DYNAMIC_LINKER"))) |dl| {
+        query.dynamic_linker = .init(dl);
+        query.cpu_model = .native;
+        // Without an explicit ABI zig falls back to probing /lib64, which on
+        // NixOS is a musl stub; this shell is glibc.
+        query.abi = .gnu;
+        if (nonEmpty(env.get("ZIG_GLIBC_VERSION"))) |v| query.glibc_version = parseMajorMinor(v);
+        var prefixes = std.mem.tokenizeScalar(u8, env.get("ZIG_SEARCH_PREFIXES") orelse "", ':');
+        while (prefixes.next()) |prefix| b.addSearchPrefix(prefix);
+    };
+    return b.resolveTargetQuery(query);
+}
+
+fn nonEmpty(value: ?[]const u8) ?[]const u8 {
+    const v = value orelse return null;
+    return if (v.len == 0) null else v;
+}
+
+fn parseMajorMinor(text: []const u8) ?std.SemanticVersion {
+    var it = std.mem.splitScalar(u8, text, '.');
+    const major = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
+    const minor = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
+    return .{ .major = major, .minor = minor, .patch = 0 };
 }
 
 fn listZigFiles(b: *Build, dir: []const u8) !?[]const []const u8 {
