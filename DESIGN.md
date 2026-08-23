@@ -261,13 +261,17 @@ inspector tooltip.
   timeline, staleness); client streams an animated icosphere sketch.
   Verified end-to-end headless (Xvfb/llvmpipe) and via `--watch`.
   Not in M1: points/lines draw as UI entries only.
-- **M2 — protocol + scene.** All structure types and quantities, frames,
-  upsert/staleness, coalesced GPU uploads, 2D camera mode.
-- **M3 — UI.** Structure tree, colormaps, timeline scrubber, fit-to-scene,
-  camera/UI-state persistence polish.
-- **M4 — picking.** ID-buffer pass, GL readback, inspector tooltip showing
-  element index + quantity values.
-- **M5 — beyond.** Timeline memory eviction policy for topology-evolving runs
+- **M2 — all renderables + scalar colormaps.** Points (instanced round
+  sprites), lines/polylines (instanced screen-space quads), vector quantities
+  (instanced arrows), vertex-target scalar quantities through comptime
+  colormap LUTs (viridis/turbo/coolwarm/plasma) on meshes and points,
+  wireframe overlay from CPU-extracted unique edges with depth bias,
+  per-structure UI controls (quantity/colormap selectors, sizes, wireframe),
+  2D auto-detection on first fit.
+- **M3 — picking + inspection.** ID-buffer pass, GL readback, inspector
+  tooltip with element index and quantity values; face-target scalar
+  rendering (needs the same per-primitive plumbing).
+- **M4 — beyond.** Timeline memory eviction policy for topology-evolving runs
   (cap total bytes; decimate to every k-th frame or drop oldest, configurable),
   memfd blob path if profiling demands, `DirectSink` dylib experiment for
   interactive stepping, keeping previous run for A/B compare.
