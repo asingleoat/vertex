@@ -112,14 +112,15 @@ Semantics:
      (see M5).
 - **Staleness.** At `EndRun`, structures not touched during the run are marked
   stale (dimmed in UI, toggleable auto-remove).
-- **Copies on the path (v1):** client → kernel is zero-copy (`writev` from the
+- **Copies on the path:** client → kernel is zero-copy (`writev` from the
   caller's slices); the viewer's socket thread reads each payload into one
   16-byte-aligned allocation, `protocol.decode` returns views into it, and
-  `Scene.apply` copies sections into their 64-byte-aligned blobs. That second
-  copy is the obvious later optimization (read straight into blobs), and a
-  memfd/shared-memory payload encoding (fd passing via `SCM_RIGHTS`) is
-  reserved if profiling ever shows socket copies matter. Unix sockets move
-  GB/s; a 1M-vertex mesh is ~12 MB.
+  `Scene.apply` copies sections into their 64-byte-aligned blobs. Measured
+  (2026-08-24, `sketches/stress.zig`, 40 × 1M-vertex `MeshPositions`, aos3,
+  llvmpipe viewer): client 2.0 GB/s, viewer decode+apply 2.6 GB/s (517 MB
+  in 199 ms). A 60 Hz stream of 12 MB frames needs 0.7 GB/s, so the
+  read-straight-into-blobs and memfd (`SCM_RIGHTS`) optimizations are
+  **not warranted**; revisit only if a real workload shows ingest time.
 
 ## Client library
 
@@ -305,7 +306,12 @@ an explicit choice rather than a background experiment.
 - **M3 — picking + inspection.** ✅ (2026-08-23) ID-buffer pass, GL readback, inspector
   tooltip with element index and quantity values; face-target scalar
   rendering (needs the same per-primitive plumbing).
-- **M4 — beyond.** Timeline memory eviction policy for topology-evolving runs
-  (cap total bytes; decimate to every k-th frame or drop oldest, configurable),
-  memfd blob path if profiling demands, `DirectSink` dylib experiment for
-  interactive stepping, keeping previous run for A/B compare.
+- **M4 — retention + budget.** ✅ (2026-08-24) Previous run retained
+  (`Retention.max_runs`, default 2) with `versionAtRun` and a "Compare
+  previous run" ghost pass (wireframe/dimmed); memory budget
+  (`VERTEX_MEMORY_BUDGET_MB`, UI drag) enforced by evicting old-run versions
+  first, then decimating current-run frames (odd frames, then every 4th,
+  …), never a structure's latest or frame 0; memory/eviction readouts;
+  ingest statistics on exit; `sketches/stress.zig`. memfd path closed by
+  measurement (see "Copies on the path"). Dylib mode: design note above,
+  awaiting a decision.

@@ -30,10 +30,28 @@ pub const Kind = enum(u8) { mesh, points, lines };
 /// Quantity payload kind; this value owns no memory and never allocates.
 pub const QuantityKind = enum(u8) { scalar, vector };
 
+/// Run-history and live-blob limits. The value owns no memory and changing it
+/// allocates nothing; a lowered byte budget is enforced on the next apply or an
+/// explicit `Scene.enforceBudget` call.
+pub const Retention = struct {
+    max_runs: u8 = 2,
+    budget_bytes: usize = 2 * 1024 * 1024 * 1024,
+};
+
+/// Allocation-free snapshot of live blob/version accounting. The returned
+/// value owns no memory.
+pub const MemoryStats = struct {
+    blob_bytes: usize,
+    blob_count: u32,
+    versions: u32,
+    evicted_versions: u32,
+};
+
 /// Persistent per-name viewer state. It owns no memory and never allocates.
 pub const UiState = struct {
     visible: bool = true,
     wireframe: bool = false,
+    ghost: bool = true,
     active_quantity: StringIndex = .none,
     point_size: f32 = 4,
     line_width: f32 = 1.5,
@@ -104,6 +122,11 @@ pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
 
+const EvictionCandidate = struct {
+    structure: StructureIndex,
+    version: u32,
+};
+
 /// Owns all scene strings, structures, versions, blobs, notifications, and
 /// logs. Every allocation uses the allocator supplied to `init`.
 pub const Scene = struct {
@@ -118,11 +141,16 @@ pub const Scene = struct {
     freed_blobs: std.ArrayList(BlobIndex) = .empty,
     frame_labels: std.ArrayList(StringIndex) = .empty,
     log: std.ArrayList(LogEntry) = .empty,
+    retention: Retention = .{},
     run: u32 = 0,
     frame: u32 = 0,
+    previous_frame_count: u32 = 0,
     run_active: bool = false,
     source_name: StringIndex = .none,
     live_blobs: u32 = 0,
+    blob_bytes: usize = 0,
+    evicted_versions: u32 = 0,
+    decimation_level: u8 = 1,
 
     /// Initializes an empty scene without allocating. The caller must keep
     /// `gpa` valid until `deinit`.
@@ -174,11 +202,15 @@ pub const Scene = struct {
                 // Frame 0 is implicit on the wire (no begin_frame(0) is sent),
                 // so it must exist in frame_labels for frameCount/scrubbing.
                 try self.frame_labels.ensureTotalCapacity(self.gpa, 1);
+                self.previous_frame_count = self.frameCount();
                 self.run +%= 1;
                 self.frame = 0;
                 self.frame_labels.clearRetainingCapacity();
                 self.frame_labels.appendAssumeCapacity(.none);
                 self.run_active = true;
+                self.evicted_versions = 0;
+                self.decimation_level = 1;
+                self.releaseExpiredRuns();
                 var structures = self.structures.slice();
                 @memset(structures.items(.touched), false);
                 return;
@@ -187,51 +219,79 @@ pub const Scene = struct {
         }
 
         if (!self.run_active) return error.NoRunActive;
-        switch (message) {
+        const created_blob = switch (message) {
             .hello, .begin_run => unreachable,
-            .begin_frame => |begin| try self.beginFrame(begin.index, begin.label),
-            .end_frame => {},
-            .end_run => self.endRun(),
-            .mesh => |mesh| try self.registerGeometry(
-                mesh.name,
-                .mesh,
-                mesh.dim,
-                mesh.positions,
-                std.mem.sliceAsBytes(mesh.faces),
-            ),
-            .mesh_positions => |update| try self.updateMeshPositions(update),
-            .points => |points| try self.registerGeometry(
-                points.name,
-                .points,
-                points.dim,
-                points.positions,
-                null,
-            ),
-            .lines => |lines| try self.registerGeometry(
-                lines.name,
-                .lines,
-                lines.dim,
-                lines.positions,
-                std.mem.sliceAsBytes(lines.segments),
-            ),
-            .scalar_quantity => |quantity| try self.putQuantity(
-                quantity.structure,
-                quantity.name,
-                quantity.target,
-                .scalar,
-                @intCast(quantity.values.len),
-                std.mem.sliceAsBytes(quantity.values),
-            ),
-            .vector_quantity => |quantity| try self.putQuantity(
-                quantity.structure,
-                quantity.name,
-                quantity.target,
-                .vector,
-                quantity.vectors.len(),
-                quantity.vectors.bytes(),
-            ),
-            .log => |entry| try self.appendLog(entry),
-        }
+            .begin_frame => |begin| blk: {
+                try self.beginFrame(begin.index, begin.label);
+                break :blk false;
+            },
+            .end_frame => false,
+            .end_run => blk: {
+                self.endRun();
+                break :blk false;
+            },
+            .mesh => |mesh| blk: {
+                try self.registerGeometry(
+                    mesh.name,
+                    .mesh,
+                    mesh.dim,
+                    mesh.positions,
+                    std.mem.sliceAsBytes(mesh.faces),
+                );
+                break :blk true;
+            },
+            .mesh_positions => |update| blk: {
+                try self.updateMeshPositions(update);
+                break :blk true;
+            },
+            .points => |points| blk: {
+                try self.registerGeometry(
+                    points.name,
+                    .points,
+                    points.dim,
+                    points.positions,
+                    null,
+                );
+                break :blk true;
+            },
+            .lines => |lines| blk: {
+                try self.registerGeometry(
+                    lines.name,
+                    .lines,
+                    lines.dim,
+                    lines.positions,
+                    std.mem.sliceAsBytes(lines.segments),
+                );
+                break :blk true;
+            },
+            .scalar_quantity => |quantity| blk: {
+                try self.putQuantity(
+                    quantity.structure,
+                    quantity.name,
+                    quantity.target,
+                    .scalar,
+                    @intCast(quantity.values.len),
+                    std.mem.sliceAsBytes(quantity.values),
+                );
+                break :blk true;
+            },
+            .vector_quantity => |quantity| blk: {
+                try self.putQuantity(
+                    quantity.structure,
+                    quantity.name,
+                    quantity.target,
+                    .vector,
+                    quantity.vectors.len(),
+                    quantity.vectors.bytes(),
+                );
+                break :blk true;
+            },
+            .log => |entry| blk: {
+                try self.appendLog(entry);
+                break :blk false;
+            },
+        };
+        if (created_blob) self.enforceBudget();
     }
 
     /// Copies bytes into a new 64-byte-aligned, refcount-one blob and queues
@@ -261,6 +321,7 @@ pub const Scene = struct {
         refcount.* -= 1;
         if (refcount.* != 0) return;
 
+        self.blob_bytes -= blobs.items(.bytes)[i].len;
         self.gpa.free(blobs.items(.bytes)[i]);
         blobs.items(.bytes)[i] = emptyBlobBytes();
         var pending = self.new_blobs.items.len;
@@ -319,10 +380,78 @@ pub const Scene = struct {
         return @intCast(versions.len - 1);
     }
 
+    /// Selects the latest version in exactly `run` at or before `frame` without
+    /// allocating. No version from another run is used as a fallback.
+    pub fn versionAtRun(self: *const Scene, structure_index: StructureIndex, run: u32, frame: u32) ?u32 {
+        const structures = self.structures.slice();
+        const versions = structures.items(.versions)[indexOf(structure_index)].items;
+        var i = versions.len;
+        while (i > 0) {
+            i -= 1;
+            const version = versions[i];
+            if (version.run == run and version.frame <= frame) return @intCast(i);
+        }
+        return null;
+    }
+
+    /// Reports whether the current run has a version at exactly `frame` for
+    /// `structure_index`. The lookup borrows scene state and never allocates.
+    pub fn hasExactVersion(self: *const Scene, structure_index: StructureIndex, frame: u32) bool {
+        const structures = self.structures.slice();
+        const versions = structures.items(.versions)[indexOf(structure_index)].items;
+        for (versions) |version| {
+            if (version.run == self.run and version.frame == frame) return true;
+        }
+        return false;
+    }
+
     /// Returns the number of frames in the current run (frame 0 is implicit,
     /// so this is 1 right after begin_run); borrows scene state, never allocates.
     pub fn frameCount(self: *const Scene) u32 {
         return @intCast(self.frame_labels.items.len);
+    }
+
+    /// Returns the known frame count for the current or immediately previous
+    /// run without allocating. Older and future runs return zero.
+    pub fn frameCountOfRun(self: *const Scene, run: u32) u32 {
+        if (run == self.run) return self.frameCount();
+        if (self.run > 1 and run == self.run - 1) return self.previous_frame_count;
+        return 0;
+    }
+
+    /// Returns live blob bytes/count, retained version count, and evictions
+    /// since the current run began. It scans flat version arrays without allocation.
+    pub fn memoryStats(self: *const Scene) MemoryStats {
+        var version_count: usize = 0;
+        const structures = self.structures.slice();
+        for (structures.items(.versions)) |versions| version_count += versions.items.len;
+        std.debug.assert(version_count <= std.math.maxInt(u32));
+        return .{
+            .blob_bytes = self.blob_bytes,
+            .blob_count = self.live_blobs,
+            .versions = @intCast(version_count),
+            .evicted_versions = self.evicted_versions,
+        };
+    }
+
+    /// Enforces the configured byte budget by releasing old-run versions first,
+    /// then progressively decimating current-run history. The operation allocates
+    /// nothing; released quantity side-array ranges remain as harmless holes.
+    pub fn enforceBudget(self: *Scene) void {
+        while (self.blob_bytes > self.retention.budget_bytes) {
+            if (self.findOldRunCandidate()) |candidate| {
+                self.removeVersion(candidate.structure, candidate.version);
+                continue;
+            }
+
+            var candidate = self.findDecimationCandidate();
+            while (candidate == null and self.decimation_level < 16) {
+                self.decimation_level += 1;
+                candidate = self.findDecimationCandidate();
+            }
+            if (candidate == null) return;
+            self.removeVersion(candidate.?.structure, candidate.?.version);
+        }
     }
 
     /// Returns a borrowed interned string without allocation. The `.none`
@@ -411,8 +540,7 @@ pub const Scene = struct {
                 BlobIndex.none;
 
             const replace_history = version_list.items.len != 0 and
-                (version_list.items[version_list.items.len - 1].run != self.run or
-                    structures.items(.kind)[i] != kind or structures.items(.dim)[i] != dim);
+                (structures.items(.kind)[i] != kind or structures.items(.dim)[i] != dim);
             version_list.appendAssumeCapacity(.{
                 .run = self.run,
                 .frame = self.frame,
@@ -422,6 +550,7 @@ pub const Scene = struct {
                 .quantity_len = 0,
             });
             if (replace_history) self.collapseToLatest(structure_index);
+            self.releaseExpiredVersions(structure_index);
 
             structures = self.structures.slice();
             structures.items(.kind)[i] = kind;
@@ -494,8 +623,7 @@ pub const Scene = struct {
             .quantity_start = quantity_start,
             .quantity_len = previous.quantity_len,
         });
-        if (previous.run != self.run) self.collapseToLatest(structure_index);
-
+        self.releaseExpiredVersions(structure_index);
         structures = self.structures.slice();
         structures.items(.touched)[i] = true;
         structures.items(.stale)[i] = false;
@@ -593,8 +721,8 @@ pub const Scene = struct {
                 .quantity_start = quantity_start,
                 .quantity_len = @intCast(additional),
             });
-            if (previous.run != self.run) self.collapseToLatest(structure_index);
         }
+        self.releaseExpiredVersions(structure_index);
 
         structures = self.structures.slice();
         if (structures.items(.ui)[i].active_quantity == .none) {
@@ -637,7 +765,8 @@ pub const Scene = struct {
         std.debug.assert(versions.items.len > 0);
         const latest = versions.items[versions.items.len - 1];
 
-        for (versions.items[0 .. versions.items.len - 1]) |version| self.releaseVersion(structure_index, version);
+        const removed_count = versions.items.len - 1;
+        for (versions.items[0..removed_count]) |version| self.releaseVersion(structure_index, version);
         const start: usize = latest.quantity_start;
         const len: usize = latest.quantity_len;
         std.mem.copyForwards(QuantityRef, quantity_list.items[0..len], quantity_list.items[start .. start + len]);
@@ -645,12 +774,106 @@ pub const Scene = struct {
         versions.items[0] = latest;
         versions.items[0].quantity_start = 0;
         versions.items.len = 1;
+        self.evicted_versions +|= @intCast(removed_count);
     }
 
     fn releaseVersion(self: *Scene, structure_index: StructureIndex, version: Version) void {
         self.releaseBlob(version.positions);
         if (version.topology != .none) self.releaseBlob(version.topology);
         for (self.quantities(structure_index, version)) |quantity| self.releaseBlob(quantity.blob);
+    }
+
+    fn releaseExpiredRuns(self: *Scene) void {
+        var structure_i: usize = 0;
+        while (structure_i < self.structures.len) : (structure_i += 1) {
+            const structure_index: StructureIndex = @fromBackingInt(@intCast(structure_i));
+            self.releaseExpiredVersions(structure_index);
+        }
+    }
+
+    fn releaseExpiredVersions(self: *Scene, structure_index: StructureIndex) void {
+        const retained_runs: u32 = self.retention.max_runs;
+        if (self.run < retained_runs) return;
+        const last_expired_run = self.run - retained_runs;
+        while (true) {
+            const structures = self.structures.slice();
+            const versions = structures.items(.versions)[indexOf(structure_index)].items;
+            if (versions.len <= 1) return;
+            var expired: ?u32 = null;
+            for (versions, 0..) |version, version_i| {
+                if (version.run <= last_expired_run) {
+                    expired = @intCast(version_i);
+                    break;
+                }
+            }
+            if (expired) |version_i| {
+                self.removeVersion(structure_index, version_i);
+            } else return;
+        }
+    }
+
+    fn findOldRunCandidate(self: *const Scene) ?EvictionCandidate {
+        const structures = self.structures.slice();
+        const version_lists = structures.items(.versions);
+        var best: ?EvictionCandidate = null;
+        for (version_lists, 0..) |version_list, structure_i| {
+            if (version_list.items.len == 1) continue;
+            for (version_list.items, 0..) |version, version_i| {
+                if (version.run >= self.run) continue;
+                const candidate: EvictionCandidate = .{
+                    .structure = @fromBackingInt(@intCast(structure_i)),
+                    .version = @intCast(version_i),
+                };
+                if (best) |current| {
+                    const current_versions = version_lists[indexOf(current.structure)].items;
+                    const current_version = current_versions[current.version];
+                    if (version.run > current_version.run or
+                        (version.run == current_version.run and version.frame >= current_version.frame)) continue;
+                }
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    fn findDecimationCandidate(self: *const Scene) ?EvictionCandidate {
+        const stride = @as(u32, 1) << @intCast(self.decimation_level);
+        const structures = self.structures.slice();
+        const version_lists = structures.items(.versions);
+        var best: ?EvictionCandidate = null;
+        for (version_lists, 0..) |version_list, structure_i| {
+            if (version_list.items.len <= 1) continue;
+            for (version_list.items[0 .. version_list.items.len - 1], 0..) |version, version_i| {
+                if (version.run != self.run or version.frame == 0 or version.frame % stride == 0) continue;
+                const candidate: EvictionCandidate = .{
+                    .structure = @fromBackingInt(@intCast(structure_i)),
+                    .version = @intCast(version_i),
+                };
+                if (best) |current| {
+                    const current_versions = version_lists[indexOf(current.structure)].items;
+                    if (version.frame >= current_versions[current.version].frame) continue;
+                }
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    fn removeVersion(self: *Scene, structure_index: StructureIndex, version_index: u32) void {
+        const structure_i = indexOf(structure_index);
+        var structures = self.structures.slice();
+        const versions = &structures.items(.versions)[structure_i];
+        const version_i: usize = version_index;
+        std.debug.assert(version_i < versions.items.len);
+        const removed = versions.items[version_i];
+        self.releaseVersion(structure_index, removed);
+        std.mem.copyForwards(
+            Version,
+            versions.items[version_i .. versions.items.len - 1],
+            versions.items[version_i + 1 ..],
+        );
+        versions.items.len -= 1;
+        self.evicted_versions +|= 1;
     }
 
     fn intern(self: *Scene, text: []const u8) std.mem.Allocator.Error!StringIndex {
@@ -701,6 +924,7 @@ pub const Scene = struct {
         };
         self.new_blobs.appendAssumeCapacity(blob_index);
         self.live_blobs += 1;
+        self.blob_bytes += owned.len;
         return blob_index;
     }
 
@@ -710,6 +934,7 @@ pub const Scene = struct {
         var blobs = self.blobs.slice();
         const i = indexOf(blob_index);
         std.debug.assert(blobs.items(.refcount)[i] == 1);
+        self.blob_bytes -= blobs.items(.bytes)[i].len;
         self.gpa.free(blobs.items(.bytes)[i]);
         blobs.items(.bytes)[i] = emptyBlobBytes();
         blobs.items(.refcount)[i] = 0;
@@ -736,6 +961,26 @@ fn latestVersionValue(scene: *const Scene, structure_index: StructureIndex) Vers
 
 fn applyMesh(scene: *Scene, name: []const u8, positions: layout.Positions.Const, faces: []const [3]u32) !void {
     try scene.apply(.{ .mesh = .{ .name = name, .dim = .d3, .positions = positions, .faces = faces } });
+}
+
+fn expectMemoryAccounting(scene: *const Scene) !void {
+    const blobs = scene.blobs.slice();
+    const bytes = blobs.items(.bytes);
+    const refcounts = blobs.items(.refcount);
+    var live_bytes: usize = 0;
+    var live_count: u32 = 0;
+    var version_count: u32 = 0;
+    for (bytes, refcounts) |blob_bytes, refcount| {
+        if (refcount == 0) continue;
+        live_bytes += blob_bytes.len;
+        live_count += 1;
+    }
+    const structures = scene.structures.slice();
+    for (structures.items(.versions)) |versions| version_count += @intCast(versions.items.len);
+    const stats = scene.memoryStats();
+    try testing.expectEqual(live_bytes, stats.blob_bytes);
+    try testing.expectEqual(live_count, stats.blob_count);
+    try testing.expectEqual(version_count, stats.versions);
 }
 
 fn applyEncoded(
@@ -789,7 +1034,7 @@ test "encoded protocol stream applies headlessly into the scene" {
     try testing.expect(!scene.run_active);
 }
 
-test "upsert keeps UI while previous-run geometry is replaced" {
+test "upsert keeps UI and retains comparable previous-run geometry" {
     var scene = Scene.init(testing.allocator);
     defer scene.deinit();
     const positions = try layout.Positions.alloc(testing.allocator, 3);
@@ -807,7 +1052,9 @@ test "upsert keeps UI while previous-run geometry is replaced" {
     try applyMesh(&scene, "surface", positions.toConst(), &faces);
 
     structures = scene.structures.slice();
-    try testing.expectEqual(1, structures.items(.versions)[indexOf(structure_index)].items.len);
+    try testing.expectEqual(2, structures.items(.versions)[indexOf(structure_index)].items.len);
+    try testing.expect(scene.versionAtRun(structure_index, 1, 0) != null);
+    try testing.expect(scene.versionAtRun(structure_index, 2, 0) != null);
     try testing.expect(!structures.items(.ui)[indexOf(structure_index)].visible);
     try testing.expect(!structures.items(.stale)[indexOf(structure_index)]);
 }
@@ -941,6 +1188,193 @@ test "blob free list reuses indices and records both notifications" {
     try testing.expectEqualStrings("second", scene.blobBytes(second));
 }
 
+test "budget decimates odd frames first and versionAt uses the nearest kept frame" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
+    const faces: [10][3]u32 = @splat(.{ 0, 1, 2 });
+    const topology_bytes = std.mem.sliceAsBytes(&faces).len;
+    // Topology plus three position streams is about 1.5 mesh snapshots for all
+    // build-selected position layouts and makes the first odd/even choice visible.
+    scene.retention.budget_bytes = topology_bytes + 3 * positions.bytes().len;
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    const surface = scene.find("surface").?;
+    try expectMemoryAccounting(&scene);
+    var frame: u32 = 1;
+    while (frame <= 8) : (frame += 1) {
+        try scene.apply(.{ .begin_frame = .{ .index = frame, .label = "" } });
+        try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+        const latest = latestVersionValue(&scene, surface);
+        try testing.expectEqual(frame, latest.frame);
+        try testing.expectEqual(scene.run, latest.run);
+        try testing.expect(scene.blob_bytes <= scene.retention.budget_bytes);
+        try expectMemoryAccounting(&scene);
+        if (frame == 3) {
+            try testing.expect(!scene.hasExactVersion(surface, 1));
+            try testing.expect(scene.hasExactVersion(surface, 2));
+        }
+    }
+
+    const stats = scene.memoryStats();
+    try testing.expect(stats.evicted_versions > 0);
+    try testing.expect(scene.hasExactVersion(surface, 8));
+    try testing.expect(!scene.hasExactVersion(surface, 6));
+    const shown = scene.structures.slice().items(.versions)[indexOf(surface)].items[scene.versionAt(surface, 6).?];
+    try testing.expectEqual(@as(u32, 4), shown.frame);
+}
+
+test "budget evicts previous-run versions before current-run decimation" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    const surface = scene.find("surface").?;
+    try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "" } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    try scene.apply(.{ .end_run = {} });
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+
+    scene.retention.budget_bytes = scene.blob_bytes - 1;
+    scene.enforceBudget();
+    try testing.expect(scene.versionAtRun(surface, 1, 0) == null);
+    try testing.expect(scene.versionAtRun(surface, 1, 1) != null);
+    try testing.expect(scene.hasExactVersion(surface, 0));
+    try testing.expectEqual(@as(u8, 1), scene.decimation_level);
+    try testing.expectEqual(@as(u32, 1), scene.evicted_versions);
+    try expectMemoryAccounting(&scene);
+}
+
+test "max_runs retains run two and drops run one when run three begins" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+    scene.retention.max_runs = 2;
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    const surface = scene.find("surface").?;
+    try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "run-one" } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    try scene.apply(.{ .end_run = {} });
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "run-two" } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    try scene.apply(.{ .end_run = {} });
+    try scene.apply(.{ .begin_run = {} });
+
+    try testing.expect(scene.versionAtRun(surface, 1, 1) == null);
+    try testing.expect(scene.versionAtRun(surface, 2, 0) != null);
+    try testing.expect(scene.versionAtRun(surface, 2, 1) != null);
+    try testing.expectEqual(@as(u32, 1), scene.frameCountOfRun(3));
+    try testing.expectEqual(@as(u32, 2), scene.frameCountOfRun(2));
+    try testing.expectEqual(@as(u32, 0), scene.frameCountOfRun(1));
+    try expectMemoryAccounting(&scene);
+}
+
+test "expired stale placeholder is released once a current replacement exists" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+    scene.retention.max_runs = 1;
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    const surface = scene.find("surface").?;
+    try scene.apply(.{ .end_run = {} });
+    try scene.apply(.{ .begin_run = {} });
+    try testing.expect(scene.versionAtRun(surface, 1, 0) != null);
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    try testing.expect(scene.versionAtRun(surface, 1, 0) == null);
+    try testing.expectEqual(@as(usize, 1), scene.structures.slice().items(.versions)[indexOf(surface)].items.len);
+    try expectMemoryAccounting(&scene);
+}
+
+test "stale structure keeps its last version under budget pressure" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "stale", positions.toConst(), &faces);
+    try applyMesh(&scene, "active", positions.toConst(), &faces);
+    const stale = scene.find("stale").?;
+    const stale_blob = latestVersionValue(&scene, stale).positions;
+    try scene.apply(.{ .end_run = {} });
+    try scene.apply(.{ .begin_run = {} });
+    scene.retention.budget_bytes = 0;
+    try applyMesh(&scene, "active", positions.toConst(), &faces);
+
+    const stale_versions = scene.structures.slice().items(.versions)[indexOf(stale)].items;
+    try testing.expectEqual(@as(usize, 1), stale_versions.len);
+    try testing.expect(scene.versionAt(stale, 0) != null);
+    try testing.expect(scene.blobs.slice().items(.refcount)[indexOf(stale_blob)] > 0);
+    try testing.expect(scene.blob_bytes > scene.retention.budget_bytes);
+    try expectMemoryAccounting(&scene);
+}
+
+test "shared topology survives decimation until incompatible replacement drops its last reference" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    const positions = try layout.Positions.alloc(testing.allocator, 3);
+    defer positions.free(testing.allocator);
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", positions.toConst(), &faces);
+    const surface = scene.find("surface").?;
+    const topology = latestVersionValue(&scene, surface).topology;
+    for (1..3) |frame| {
+        try scene.apply(.{ .begin_frame = .{ .index = @intCast(frame), .label = "" } });
+        try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    }
+    try testing.expectEqual(@as(u32, 3), scene.blobs.slice().items(.refcount)[indexOf(topology)]);
+    scene.retention.budget_bytes = scene.blob_bytes - positions.bytes().len;
+    scene.enforceBudget();
+    try testing.expectEqual(@as(u32, 2), scene.blobs.slice().items(.refcount)[indexOf(topology)]);
+
+    scene.retention.budget_bytes = std.math.maxInt(usize);
+    try scene.apply(.{ .points = .{ .name = "surface", .dim = .d3, .positions = positions.toConst() } });
+    try testing.expectEqual(@as(u32, 0), scene.blobs.slice().items(.refcount)[indexOf(topology)]);
+    try testing.expect(latestVersionValue(&scene, surface).topology == .none);
+    try expectMemoryAccounting(&scene);
+}
+
+test "memoryStats accounts for live blob bytes through retain and release" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    try expectMemoryAccounting(&scene);
+    const first = try scene.createBlob("first");
+    try expectMemoryAccounting(&scene);
+    scene.retainBlob(first);
+    try expectMemoryAccounting(&scene);
+    const second = try scene.createBlob("a longer second blob");
+    try expectMemoryAccounting(&scene);
+    scene.releaseBlob(first);
+    try expectMemoryAccounting(&scene);
+    scene.releaseBlob(first);
+    try expectMemoryAccounting(&scene);
+    scene.releaseBlob(second);
+    try expectMemoryAccounting(&scene);
+    try testing.expectEqual(@as(usize, 0), scene.memoryStats().blob_bytes);
+}
+
 test "log retains the newest 1024 entries" {
     var scene = Scene.init(testing.allocator);
     defer scene.deinit();
@@ -973,8 +1407,12 @@ fn allocationFailureCase(gpa: std.mem.Allocator) !void {
         .target = .vertex,
         .values = &values,
     } });
+    scene.retention.budget_bytes = scene.blob_bytes + positions.bytes().len;
     try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "one" } });
     try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    try scene.apply(.{ .begin_frame = .{ .index = 2, .label = "two" } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
+    try testing.expect(scene.evicted_versions > 0);
     try scene.apply(.{ .end_run = {} });
 }
 

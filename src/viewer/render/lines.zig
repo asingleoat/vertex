@@ -92,6 +92,26 @@ pub const Renderer = struct {
         self.drawEntry(entry, vp, viewport, structures.items(.ui)[structure_i].line_width, draw_color, false);
     }
 
+    /// Draws one previous-run line version in a caller-selected dim color. A
+    /// cache miss may allocate through the renderer allocator; scene state is borrowed.
+    pub fn drawGhostLines(
+        self: *Renderer,
+        scene: *const Scene,
+        structure_index: StructureIndex,
+        version_index: u32,
+        vp: Mat4,
+        viewport: [2]f32,
+        color: [4]f32,
+    ) std.mem.Allocator.Error!void {
+        const structure_i = common.indexOf(structure_index);
+        const structures = scene.structures.slice();
+        std.debug.assert(structures.items(.kind)[structure_i] == .lines);
+        const version = structures.items(.versions)[structure_i].items[version_index];
+        const key: Key = .{ .positions = version.positions, .topology = version.topology };
+        const entry = try self.lineEntry(scene, key, version) orelse return;
+        self.drawEntry(entry, vp, viewport, structures.items(.ui)[structure_i].line_width, color, false);
+    }
+
     /// Returns the same derived endpoint buffer used by the color line pass.
     /// A cache miss may allocate through the renderer allocator; the result is borrowed.
     pub fn entryForPick(
@@ -133,6 +153,26 @@ pub const Renderer = struct {
         var draw_color = color;
         if (structures.items(.stale)[structure_i]) dim(&draw_color);
         self.drawEntry(entry, vp, viewport, ui_state.line_width, draw_color, true);
+    }
+
+    /// Draws a previous-run mesh as biased wireframe regardless of the current
+    /// wireframe toggle. A cache miss may allocate; cached data remains renderer-owned.
+    pub fn drawGhostWireframe(
+        self: *Renderer,
+        scene: *const Scene,
+        structure_index: StructureIndex,
+        version_index: u32,
+        vp: Mat4,
+        viewport: [2]f32,
+        color: [4]f32,
+    ) std.mem.Allocator.Error!void {
+        const structure_i = common.indexOf(structure_index);
+        const structures = scene.structures.slice();
+        std.debug.assert(structures.items(.kind)[structure_i] == .mesh);
+        const version = structures.items(.versions)[structure_i].items[version_index];
+        const key: Key = .{ .positions = version.positions, .topology = version.topology };
+        const entry = try self.wireEntry(scene, key, version) orelse return;
+        self.drawEntry(entry, vp, viewport, structures.items(.ui)[structure_i].line_width, color, true);
     }
 
     /// Destroys pipelines, shaders, every derived buffer, and all retained CPU

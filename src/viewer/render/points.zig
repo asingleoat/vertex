@@ -110,6 +110,38 @@ pub const Renderer = struct {
         sg.draw(0, 4, @intCast(positions.len()));
     }
 
+    /// Draws one previous-run point version with the plain pipeline at a
+    /// reduced size. It borrows all state and performs no CPU allocation.
+    pub fn drawGhost(
+        self: *Renderer,
+        gpu: *common.Gpu,
+        scene: *const Scene,
+        structure_index: StructureIndex,
+        version_index: u32,
+        vp: Mat4,
+        viewport: [2]f32,
+        color: [4]f32,
+    ) void {
+        const structure_i = common.indexOf(structure_index);
+        const structures = scene.structures.slice();
+        std.debug.assert(structures.items(.kind)[structure_i] == .points);
+        const version = structures.items(.versions)[structure_i].items[version_index];
+        const positions = scene.positionsOf(version);
+        if (positions.len() == 0) return;
+
+        var bindings: sg.Bindings = .{};
+        bindPositions(&bindings, gpu.bufferFor(scene, version.positions, .vertex), positions.len());
+        sg.applyPipeline(self.pipeline);
+        sg.applyBindings(bindings);
+        applyPlainUniforms(
+            vp,
+            viewport,
+            structures.items(.ui)[structure_i].point_size * 0.65,
+            color,
+        );
+        sg.draw(0, 4, @intCast(positions.len()));
+    }
+
     /// Destroys every point pipeline and shader handle; no CPU memory is owned.
     pub fn deinit(self: *Renderer) void {
         sg.destroyPipeline(self.scalar_pipeline);

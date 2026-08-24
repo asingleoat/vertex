@@ -25,6 +25,7 @@ pub fn draw(
     scene: *Scene,
     scrub: *u32,
     follow_latest: *bool,
+    compare_previous_run: *bool,
     camera_mode: *CameraMode,
     socket_path: []const u8,
     connected: bool,
@@ -38,11 +39,12 @@ pub fn draw(
     if (selection.*) |selected| {
         if (!hitValid(scene, scrub.*, selected.hit)) selection.* = null;
     }
-    drawStructures(scene, scrub.*, selection, view_proj, viewport);
+    drawStructures(scene, scrub.*, follow_latest.*, selection, view_proj, viewport);
     const fit_requested = drawTimeline(
         scene,
         scrub,
         follow_latest,
+        compare_previous_run,
         camera_mode,
         socket_path,
         connected,
@@ -56,6 +58,7 @@ pub fn draw(
 fn drawStructures(
     scene: *Scene,
     scrub: u32,
+    follow_latest: bool,
     selection: *?Selection,
     view_proj: Mat4,
     viewport: [2]f32,
@@ -88,21 +91,29 @@ fn drawStructures(
             }
 
             var buffer: [256]u8 = undefined;
+            var frame_buffer: [64]u8 = undefined;
+            const frame_note = if (!follow_latest and !scene.hasExactVersion(structure_index, scrub))
+                if (displayed_version) |version|
+                    std.fmt.bufPrint(&frame_buffer, " (showing frame {d})", .{version.frame}) catch ""
+                else
+                    ""
+            else
+                "";
             const detail = switch (kind) {
                 .mesh => std.fmt.bufPrint(
                     &buffer,
-                    "mesh  vertices={d} faces={d}{s}",
-                    .{ vertex_count, face_count, if (is_stale) "  [stale]" else "" },
+                    "mesh  vertices={d} faces={d}{s}{s}",
+                    .{ vertex_count, face_count, if (is_stale) "  [stale]" else "", frame_note },
                 ),
                 .points => std.fmt.bufPrint(
                     &buffer,
-                    "points  vertices={d}{s}",
-                    .{ vertex_count, if (is_stale) "  [stale]" else "" },
+                    "points  vertices={d}{s}{s}",
+                    .{ vertex_count, if (is_stale) "  [stale]" else "", frame_note },
                 ),
                 .lines => std.fmt.bufPrint(
                     &buffer,
-                    "lines  vertices={d} segments={d}{s}",
-                    .{ vertex_count, segment_count, if (is_stale) "  [stale]" else "" },
+                    "lines  vertices={d} segments={d}{s}{s}",
+                    .{ vertex_count, segment_count, if (is_stale) "  [stale]" else "", frame_note },
                 ),
             } catch "structure summary too long";
             text(detail);
@@ -119,6 +130,7 @@ fn drawStructures(
                 .points => _ = ig.igSliderFloat("Point size", &ui_state.point_size, 1.0, 16.0),
                 .lines => _ = ig.igSliderFloat("Line width", &ui_state.line_width, 0.5, 8.0),
             }
+            _ = ig.igCheckbox("Ghost", &ui_state.ghost);
             ig.igUnindent();
             ig.igSeparator();
         }
@@ -416,9 +428,10 @@ pub fn nearestVertexOfFace(
 }
 
 fn drawTimeline(
-    scene: *const Scene,
+    scene: *Scene,
     scrub: *u32,
     follow_latest: *bool,
+    compare_previous_run: *bool,
     camera_mode: *CameraMode,
     socket_path: []const u8,
     connected: bool,
@@ -427,6 +440,7 @@ fn drawTimeline(
     var fit_requested = false;
     if (ig.igBegin("Timeline", null, ig.ImGuiWindowFlags_None)) {
         _ = ig.igCheckbox("Follow latest", follow_latest);
+        _ = ig.igCheckbox("Compare previous run", compare_previous_run);
         const frame_count = scene.frameCount();
         const maximum_u32 = frame_count -| 1;
         const maximum: c_int = @intCast(@min(maximum_u32, @as(u32, std.math.maxInt(c_int))));
@@ -434,6 +448,37 @@ fn drawTimeline(
         if (ig.igSliderInt("Frame", &selected, 0, maximum)) {
             scrub.* = @intCast(selected);
             follow_latest.* = false;
+        }
+        var frame_buffer: [128]u8 = undefined;
+        const kept_line = std.fmt.bufPrint(
+            &frame_buffer,
+            "kept {d}/{d} frames",
+            .{ keptFrameCount(scene), frame_count },
+        ) catch "frame retention unavailable";
+        text(kept_line);
+        if (scene.run > 1) {
+            const previous_line = std.fmt.bufPrint(
+                &frame_buffer,
+                "prev run: {d} frames",
+                .{scene.frameCountOfRun(scene.run - 1)},
+            ) catch "previous run frame count unavailable";
+            text(previous_line);
+        }
+
+        const mebibyte: f32 = 1024 * 1024;
+        const old_budget = scene.retention.budget_bytes;
+        var budget_mb = @as(f32, @floatFromInt(old_budget)) / mebibyte;
+        if (ig.igDragFloatEx(
+            "Memory budget (MB)",
+            &budget_mb,
+            1.0,
+            1.0,
+            65536.0,
+            "%.0f",
+            ig.ImGuiSliderFlags_AlwaysClamp,
+        )) {
+            scene.retention.budget_bytes = @intFromFloat(budget_mb * mebibyte);
+            if (scene.retention.budget_bytes < old_budget) scene.enforceBudget();
         }
 
         ig.igSeparator();
@@ -444,16 +489,58 @@ fn drawTimeline(
         fit_requested = ig.igButton("Fit");
 
         ig.igSeparator();
-        var buffer: [384]u8 = undefined;
-        const status = std.fmt.bufPrint(
-            &buffer,
-            "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}",
-            .{ socket_path, if (connected) "yes" else "no", scene.run, frame_count, fps },
-        ) catch "status line too long";
-        text(status);
+        var buffer: [512]u8 = undefined;
+        const memory = scene.memoryStats();
+        const status = if (memory.evicted_versions == 0)
+            std.fmt.bufPrint(
+                &buffer,
+                "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB",
+                .{
+                    socket_path,
+                    if (connected) "yes" else "no",
+                    scene.run,
+                    frame_count,
+                    fps,
+                    @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
+                    @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
+                },
+            )
+        else
+            std.fmt.bufPrint(
+                &buffer,
+                "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB  evicted {d}",
+                .{
+                    socket_path,
+                    if (connected) "yes" else "no",
+                    scene.run,
+                    frame_count,
+                    fps,
+                    @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
+                    @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
+                    memory.evicted_versions,
+                },
+            );
+        const status_line = status catch "status line too long";
+        text(status_line);
     }
     ig.igEnd();
     return fit_requested;
+}
+
+fn keptFrameCount(scene: *const Scene) u32 {
+    var kept: u32 = 0;
+    var frame: u32 = 0;
+    while (frame < scene.frameCount()) : (frame += 1) {
+        var structures = scene.structures.slice();
+        for (structures.items(.versions), 0..) |_, structure_i| {
+            const structure_index: StructureIndex = @fromBackingInt(@intCast(structure_i));
+            if (scene.hasExactVersion(structure_index, frame)) {
+                kept += 1;
+                break;
+            }
+        }
+    }
+    return kept;
 }
 
 fn drawLog(scene: *const Scene) void {

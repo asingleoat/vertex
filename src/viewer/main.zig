@@ -16,6 +16,8 @@ const simgui = sokol.imgui;
 const slog = sokol.log;
 const Scene = vertex.scene.Scene;
 const Aabb = vertex.geometry.current.Aabb;
+const mebibyte: usize = 1024 * 1024;
+const default_retention: vertex.scene.Retention = .{};
 
 const Probe = struct {
     pixel: [2]u32,
@@ -35,6 +37,7 @@ const State = struct {
     camera_mode: ui.CameraMode = .orbit,
     scrub: u32 = 0,
     follow_latest: bool = true,
+    compare_previous_run: bool = false,
     fitted_once: bool = false,
     rendered_frames: u64 = 0,
     exit_after_frames: ?u64 = null,
@@ -47,6 +50,10 @@ const State = struct {
     left_pressed_in_viewport: bool = false,
     left_dragged: bool = false,
     pending_pin: bool = false,
+    initial_memory_budget: usize = default_retention.budget_bytes,
+    ingest_messages: u64 = 0,
+    ingest_bytes: u64 = 0,
+    ingest_ns: u128 = 0,
     sg_ready: bool = false,
     imgui_ready: bool = false,
     scene_ready: bool = false,
@@ -81,6 +88,21 @@ pub fn main(init: std.process.Init) !void {
             break :blk null;
         };
     }
+    if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_MEMORY_BUDGET_MB")) |value| {
+        if (value.len != 0) {
+            const budget_mb = std.fmt.parseInt(usize, value, 10) catch |err| blk: {
+                std.log.warn("ignoring invalid VERTEX_MEMORY_BUDGET_MB: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+            if (budget_mb) |mb| {
+                if (mb <= std.math.maxInt(usize) / mebibyte) {
+                    state.initial_memory_budget = mb * mebibyte;
+                } else {
+                    std.log.warn("ignoring VERTEX_MEMORY_BUDGET_MB that exceeds addressable memory", .{});
+                }
+            }
+        }
+    }
 
     sapp.run(.{
         .init_cb = initCallback,
@@ -104,6 +126,7 @@ fn initCallback() callconv(.c) void {
     state.imgui_ready = true;
 
     state.scene = Scene.init(state.gpa);
+    state.scene.retention.budget_bytes = state.initial_memory_budget;
     state.scene_ready = true;
     state.server = server_mod.Server.init(state.gpa, state.io);
     state.server_ready = true;
@@ -215,6 +238,7 @@ fn frameCallback() callconv(.c) void {
         &state.scene,
         &state.scrub,
         &state.follow_latest,
+        &state.compare_previous_run,
         &state.camera_mode,
         state.server.socketPath(),
         state.server.connected.load(.acquire),
@@ -249,6 +273,14 @@ fn cleanupCallback() callconv(.c) void {
         std.debug.print(
             "vertex-view: structures={d} frames={d} blobs={d}\n",
             .{ state.scene.structures.len, state.scene.frameCount(), state.scene.live_blobs },
+        );
+        std.debug.print(
+            "vertex-view: ingest messages={d} bytes={d} apply_ms={d:.1}\n",
+            .{
+                state.ingest_messages,
+                state.ingest_bytes,
+                @as(f64, @floatFromInt(state.ingest_ns)) / 1_000_000.0,
+            },
         );
         if (state.probe) |probe| {
             if (probe.last_hit) |hit| {
@@ -338,19 +370,29 @@ fn drainInbox(s: *State) bool {
     var saw_geometry = false;
     const items = s.server.inbox.drain(s.io);
     for (items) |item| {
-        const message = vertex.protocol.decode(item.header, item.payload) catch |err| {
-            std.log.warn("discarding invalid viewer message: {s}", .{@errorName(err)});
-            s.gpa.free(item.payload);
-            continue;
+        s.ingest_messages +|= 1;
+        s.ingest_bytes +|= @intCast(item.payload.len);
+        const message: ?vertex.protocol.Message = blk: {
+            const started = std.Io.Clock.awake.now(s.io);
+            defer {
+                const elapsed: i96 = started.durationTo(std.Io.Clock.awake.now(s.io)).toNanoseconds();
+                if (elapsed > 0) s.ingest_ns +|= @intCast(elapsed);
+            }
+            const decoded = vertex.protocol.decode(item.header, item.payload) catch |err| {
+                std.log.warn("discarding invalid viewer message: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+            s.scene.apply(decoded) catch |err| {
+                std.log.warn("discarding inapplicable viewer message: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+            break :blk decoded;
         };
-        s.scene.apply(message) catch |err| {
-            std.log.warn("discarding inapplicable viewer message: {s}", .{@errorName(err)});
-            s.gpa.free(item.payload);
-            continue;
-        };
-        switch (message) {
-            .mesh, .points, .lines => saw_geometry = true,
-            else => {},
+        if (message) |applied| {
+            switch (applied) {
+                .mesh, .points, .lines => saw_geometry = true,
+                else => {},
+            }
         }
         s.gpa.free(item.payload);
     }
@@ -371,6 +413,43 @@ fn drawScene(s: *State, vp: vertex.camera.Mat4, viewport: [2]f32) std.mem.Alloca
         const version_index = s.scene.versionAt(structure_index, s.scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try s.renderer.draw(&s.scene, structure_index, version_index, vp, .{ 0.72, 0.78, 0.86, 1.0 });
+    }
+    // Previous-run ghosts are depth-tested overlays: meshes use only the
+    // biased wire cache, while lines and smaller points use their plain paths.
+    if (s.compare_previous_run and s.scene.run > 1) {
+        const previous_run = s.scene.run - 1;
+        for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
+            if (!ui_state.visible or !ui_state.ghost) continue;
+            const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+            const version_index = s.scene.versionAtRun(structure_index, previous_run, s.scrub) orelse continue;
+            std.debug.assert(version_index < version_list.items.len);
+            switch (kind) {
+                .mesh => try s.renderer.drawGhostWireframe(
+                    &s.scene,
+                    structure_index,
+                    version_index,
+                    vp,
+                    viewport,
+                    .{ 0.92, 0.18, 0.72, 1.0 },
+                ),
+                .lines => try s.renderer.drawGhostLines(
+                    &s.scene,
+                    structure_index,
+                    version_index,
+                    vp,
+                    viewport,
+                    .{ 0.55, 0.14, 0.43, 1.0 },
+                ),
+                .points => s.renderer.drawGhostPoints(
+                    &s.scene,
+                    structure_index,
+                    version_index,
+                    vp,
+                    viewport,
+                    .{ 0.55, 0.14, 0.43, 1.0 },
+                ),
+            }
+        }
     }
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .mesh or !ui_state.wireframe) continue;
