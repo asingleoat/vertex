@@ -254,6 +254,40 @@ inspector tooltip.
    Fine for a dev tool; noted in case of future native-Wayland desire.
 4. **Zig master packages** live in a project-local `zig-pkg/` (gitignored).
 
+## Dylib mode — design note (not built; decision pending)
+
+The `Sink` seam makes an in-process mode possible, but there are two very
+different things it could mean:
+
+**A. Push mode.** The sketch is built as a shared library exporting
+`vertex_run(sink)`; the viewer loads it on change and runs it on a worker
+thread with a `DirectSink` that hands `protocol.Message` values to
+`Scene.apply`. This only removes the socket hop (one syscall + one copy per
+message) and *costs* crash isolation — an algorithm segfault takes the viewer
+and its camera with it. Given measured socket throughput (see M4 stats), it
+is not worth its downside.
+
+**B. Viewer-driven stepping.** The sketch exports a stepping interface:
+```zig
+pub export fn vertex_init(gpa: *const std.mem.Allocator) ?*anyopaque;      // build initial state
+pub export fn vertex_step(state: *anyopaque, sink: *const Sink) bool;      // one algorithm step; false when done
+pub export fn vertex_deinit(state: *anyopaque) void;
+```
+The viewer gains Step / Run / Pause / Reset controls and a per-step time
+budget, so an iterative algorithm can be single-stepped from the UI while
+the timeline records every step. Hot reload replaces the library between
+steps (new state via `vertex_init`; keeping opaque state across reloads is
+unsafe once the layout of that state may have changed). Implementation
+notes: never `dlclose` — load each new build under a unique path and leak
+the old mapping (TLS/atexit/global-state hazards on unload are real in Zig
+and C); run steps on a worker thread with the sink pushing copied messages
+through the existing `Inbox` so the render thread never blocks; the socket
+mode stays the default for batch runs.
+
+B is the mode with genuine new capability (interactive stepping); it changes
+how sketches are written (state + step instead of `main`), so it should be
+an explicit choice rather than a background experiment.
+
 ## Milestones
 
 - **M1 — walking skeleton.** ✅ (2026-08-23) Flake + build.zig; viewer with
