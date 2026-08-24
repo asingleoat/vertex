@@ -307,39 +307,50 @@ anything but opaque `platform.Handle` values; a port starts by filling in one
 row of this table at a time, with the inline payload path working before
 shared memory does.
 
-## Dylib mode — design note (not built; decision pending)
+## Dylib mode — viewer-driven stepping
 
-The `Sink` seam makes an in-process mode possible, but there are two very
-different things it could mean:
+Chosen 2026-08-24 (over "push mode", which would only remove the socket hop
+that the shared-memory path already made irrelevant, at the cost of crash
+isolation). A *stepping sketch* lives in `steps/<name>.zig`:
 
-**A. Push mode.** The sketch is built as a shared library exporting
-`vertex_run(sink)`; the viewer loads it on change and runs it on a worker
-thread with a `DirectSink` that hands `protocol.Message` values to
-`Scene.apply`. This only removes the socket hop (one syscall + one copy per
-message) and *costs* crash isolation — an algorithm segfault takes the viewer
-and its camera with it. Given measured socket throughput (see M4 stats), it
-is not worth its downside.
-
-**B. Viewer-driven stepping.** The sketch exports a stepping interface:
 ```zig
-pub export fn vertex_init(gpa: *const std.mem.Allocator) ?*anyopaque;      // build initial state
-pub export fn vertex_step(state: *anyopaque, sink: *const Sink) bool;      // one algorithm step; false when done
-pub export fn vertex_deinit(state: *anyopaque) void;
+pub const State = struct { ... };
+pub fn init(gpa: std.mem.Allocator, session: *vertex.Session) !State;  // register initial structures
+pub fn step(state: *State, gpa: std.mem.Allocator, session: *vertex.Session) !bool; // false = finished
+pub fn deinit(state: *State, gpa: std.mem.Allocator) void;
+comptime { vertex.dylib.exportSketch(@This()); }
 ```
-The viewer gains Step / Run / Pause / Reset controls and a per-step time
-budget, so an iterative algorithm can be single-stepped from the UI while
-the timeline records every step. Hot reload replaces the library between
-steps (new state via `vertex_init`; keeping opaque state across reloads is
-unsafe once the layout of that state may have changed). Implementation
-notes: never `dlclose` — load each new build under a unique path and leak
-the old mapping (TLS/atexit/global-state hazards on unload are real in Zig
-and C); run steps on a worker thread with the sink pushing copied messages
-through the existing `Inbox` so the render thread never blocks; the socket
-mode stays the default for batch runs.
+`zig build step -Dsketch=<name> --watch` builds `zig-out/lib/libstep-<name>.so`.
+`exportSketch` generates the C-ABI surface (`vertex_abi_version`,
+`vertex_init`, `vertex_step`, `vertex_deinit`); the viewer and the library
+are always built from the same tree, so the ABI only has to be
+self-consistent plus a version check.
 
-B is the mode with genuine new capability (interactive stepping); it changes
-how sketches are written (state + step instead of `main`), so it should be
-an explicit choice rather than a background experiment.
+- **Data path reuses everything.** A `DirectSink` encodes with the wire
+  protocol and hands byte parts to a host callback; the viewer copies them
+  into the same `Inbox` the socket server feeds. Decode, scene, timeline,
+  retention, ghosting and picking are untouched. Shared (memfd) buffers are
+  socket-mode only (`Connection`); the in-process path is inline-copy.
+- **Stepping.** A worker thread owns the library and runs `vertex_step`;
+  each viewer-driven step is one timeline frame. Controls: Load / Reload /
+  Unload, Step / Run / Pause / Reset, steps-per-second pacing. The render
+  thread never calls into the library.
+- **Runs.** Every Reset or reload starts a new run (`init` sends hello +
+  begin_run), so the previous run is retained and "Compare previous run"
+  ghosts the old algorithm against the new one — the code-change A/B loop
+  is: save → auto-reload → compare.
+- **Hot reload.** The viewer polls the library's mtime (~4 Hz), copies the
+  new build to a unique path and `dlopen`s it; libraries are never
+  `dlclose`d (TLS/atexit/global-state hazards on unload — the leaked mapping
+  is small). `vertex_abi_version` mismatch refuses the load.
+- **Leaks and errors.** Each instance gets its own leak-checking
+  `DebugAllocator`; `vertex_deinit` reports leaks and the viewer logs them;
+  a failing step pauses with the error in the log.
+- **Crash isolation is lost** in this mode by construction; the socket mode
+  remains the default and the safe choice for batch runs.
+- Env: `VERTEX_STEP_LIB=<path>` loads at startup, `VERTEX_STEP_AUTORUN=1`
+  starts running; the exit stats line gains `stepper steps=… state=…
+  reloads=… leaks=…` for headless checks.
 
 ## Milestones
 
