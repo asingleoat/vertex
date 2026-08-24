@@ -268,6 +268,32 @@ inspector tooltip.
    Fine for a dev tool; noted in case of future native-Wayland desire.
 4. **Zig master packages** live in a project-local `zig-pkg/` (gitignored).
 
+## Portability plan (Linux first, macOS/Windows later)
+
+Everything platform-specific lives behind `vertex.platform` (comptime-selected
+per `builtin.os.tag`, with `*_unsupported.zig` stubs that compile everywhere
+and return `error.Unsupported` so the inline path stays the fallback) or
+inside a viewer edge module with a documented backend assumption. The
+touchpoints and their counterparts:
+
+| Concern | Linux (now) | macOS | Windows |
+|---|---|---|---|
+| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, THP via `madvise` | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
+| Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | `SCM_RIGHTS` (same API) | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
+| Transport | Unix domain socket via `std.Io.net` | same | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
+| Windowing / GPU | sokol_app X11 + GL 4.3 | sokol_app Cocoa + Metal | sokol_app Win32 + D3D11 |
+| Shaders | `sokol-shdc -l glsl430` | add `metal_macos` | add `hlsl5` |
+| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
+| Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | Metal storage buffer + `primitive_id` | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
+| Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | `$TMPDIR/vertex.sock` | `\\.\pipe` or a temp-dir `AF_UNIX` path |
+| Measurement (`platform.stats`) | `getrusage`, `/proc/self/smaps_rollup` | `getrusage`, `task_info` | `GetProcessMemoryInfo` |
+
+Rules that keep this cheap: no `std.os.linux` or raw GL call outside
+`src/platform/*` and `pick.zig`; the scene and protocol never see handles as
+anything but opaque `platform.Handle` values; a port starts by filling in one
+row of this table at a time, with the inline payload path working before
+shared memory does.
+
 ## Dylib mode — design note (not built; decision pending)
 
 The `Sink` seam makes an in-process mode possible, but there are two very
