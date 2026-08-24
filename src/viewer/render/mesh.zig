@@ -80,6 +80,24 @@ pub const Renderer = struct {
 
     /// Processes freed scene blobs before new blobs, notifies each derived
     /// cache, then clears both scene lists. This is the only notification drain.
+    /// Blob buffers resident on the GPU before trimming kicks in. Well under
+    /// the sokol buffer pool (1024) while leaving room for scrubbing.
+    pub const residency_cap: u32 = 512;
+    /// Derived instance buffers (lines, wireframes, vectors) per cache.
+    pub const derived_cap: u32 = 128;
+
+    /// Marks the frame for residency stamping; call before any draw.
+    pub fn beginFrame(self: *Renderer, frame: u64) void {
+        self.gpu.beginFrame(frame);
+        self.lines.beginFrame(frame);
+        self.vectors.beginFrame(frame);
+    }
+
+    /// Enforces GPU residency caps; call after the frame's passes are committed.
+    pub fn trimResidency(self: *Renderer) u32 {
+        return self.gpu.trimResidency(residency_cap) + self.lines.trim(derived_cap) + self.vectors.trim(derived_cap);
+    }
+
     pub fn sync(self: *Renderer, scene: *Scene) std.mem.Allocator.Error!void {
         try self.gpu.ensureSceneCapacity(scene);
         for (scene.freed_blobs.items) |blob_index| {

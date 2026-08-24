@@ -217,6 +217,15 @@ Timeline memory cost is therefore proportional to what actually changed per
 step, and derived data (unique edge lists for wireframe, arrow instances) is
 cached per-blob, not per-version.
 
+**GPU residency.** Retained versions are bounded only by the memory budget,
+but sokol's buffer pool is finite (1024 slots, set at `sg.setup`). Every blob
+buffer and derived instance buffer is stamped with the frame it was last
+bound; after each frame, if more than `residency_cap` (512) blob buffers or
+`derived_cap` (128) cache entries are resident, those not used this frame
+are destroyed. They are immutable uploads of scene data and are recreated
+on demand when scrubbed back. Regression: `sketches/churn.zig` (400 paced
+versions) — this exhausted the pool before the policy existed.
+
 **Rendering.**
 - Mesh solid pass: flat shading from screen-space derivatives
   (`normalize(cross(dFdx(p), dFdy(p)))`) — no normals or vertex duplication

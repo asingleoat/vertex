@@ -23,6 +23,12 @@ pub const Gpu = struct {
     gpa: std.mem.Allocator,
     blob_gpu: std.ArrayList(?sg.Buffer) = .empty,
     blob_storage_views: std.ArrayList(?sg.View) = .empty,
+    /// Frame in which each blob's GPU buffer was last bound (parallel to blob_gpu).
+    blob_last_used: std.ArrayList(u64) = .empty,
+    /// Current frame number, set by `beginFrame`; stamps buffer use.
+    frame: u64 = 0,
+    /// Number of non-null entries in blob_gpu.
+    resident: u32 = 0,
     ranges: std.AutoHashMapUnmanaged(BlobIndex, [2]f32) = .empty,
     colormaps: [4]?ColormapGpu = @splat(null),
     sampler: sg.Sampler,
@@ -49,9 +55,11 @@ pub const Gpu = struct {
         const additional = scene.blobs.len - self.blob_gpu.items.len;
         try self.blob_gpu.ensureUnusedCapacity(self.gpa, additional);
         try self.blob_storage_views.ensureUnusedCapacity(self.gpa, additional);
+        try self.blob_last_used.ensureUnusedCapacity(self.gpa, additional);
         for (0..additional) |_| {
             self.blob_gpu.appendAssumeCapacity(null);
             self.blob_storage_views.appendAssumeCapacity(null);
+            self.blob_last_used.appendAssumeCapacity(0);
         }
     }
 
@@ -63,17 +71,49 @@ pub const Gpu = struct {
         if (view_slot.*) |view| sg.destroyView(view);
         view_slot.* = null;
         const slot = &self.blob_gpu.items[i];
-        if (slot.*) |buffer| sg.destroyBuffer(buffer);
+        if (slot.*) |buffer| {
+            sg.destroyBuffer(buffer);
+            self.resident -= 1;
+        }
         slot.* = null;
         _ = self.ranges.remove(blob_index);
+    }
+
+    /// Marks the start of a frame; buffers bound from now on are stamped with it.
+    pub fn beginFrame(self: *Gpu, frame: u64) void {
+        self.frame = frame;
+    }
+
+    /// GPU residency policy: retained versions are unbounded (memory budget),
+    /// sokol's buffer pool is not. When more than `cap` blob buffers are
+    /// resident, destroy every one not bound this frame; they are immutable
+    /// uploads of scene blobs and are recreated on demand when scrubbed back.
+    /// Returns how many were destroyed. Call outside a render pass.
+    pub fn trimResidency(self: *Gpu, cap: u32) u32 {
+        if (self.resident <= cap) return 0;
+        var destroyed: u32 = 0;
+        for (self.blob_gpu.items, self.blob_storage_views.items, self.blob_last_used.items) |*slot, *view_slot, last_used| {
+            const buffer = slot.* orelse continue;
+            if (last_used >= self.frame) continue;
+            if (view_slot.*) |view| sg.destroyView(view);
+            view_slot.* = null;
+            sg.destroyBuffer(buffer);
+            slot.* = null;
+            self.resident -= 1;
+            destroyed += 1;
+        }
+        return destroyed;
     }
 
     /// Lazily returns the immutable GPU mirror of a live scene blob. The
     /// returned handle remains owned by this object and no CPU allocation occurs.
     pub fn bufferFor(self: *Gpu, scene: *const Scene, blob_index: BlobIndex, kind: BufferKind) sg.Buffer {
         std.debug.assert(blob_index != .none);
-        const slot = &self.blob_gpu.items[indexOf(blob_index)];
+        const i = indexOf(blob_index);
+        const slot = &self.blob_gpu.items[i];
+        self.blob_last_used.items[i] = self.frame;
         if (slot.*) |buffer| return buffer;
+        self.resident += 1;
         const bytes = scene.blobBytes(blob_index);
         std.debug.assert(bytes.len != 0);
         slot.* = sg.makeBuffer(.{
@@ -158,6 +198,7 @@ pub const Gpu = struct {
         self.ranges.deinit(self.gpa);
         self.blob_storage_views.deinit(self.gpa);
         self.blob_gpu.deinit(self.gpa);
+        self.blob_last_used.deinit(self.gpa);
         self.* = undefined;
     }
 };

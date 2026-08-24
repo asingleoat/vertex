@@ -20,6 +20,8 @@ const Key = struct {
 const Entry = struct {
     buffer: sg.Buffer,
     count: u32,
+    /// Frame in which this entry was last drawn (residency trimming).
+    last_used: u64 = 0,
 };
 
 // Like expanded line endpoints, these base/direction pairs are derived
@@ -43,6 +45,7 @@ pub const Renderer = struct {
     pipeline: sg.Pipeline,
     arrow_buffer: sg.Buffer,
     cache: std.AutoHashMapUnmanaged(Key, Entry) = .empty,
+    frame: u64 = 0,
 
     /// Creates vector GPU state without CPU allocation. The returned owner
     /// must be destroyed before `sg.shutdown`.
@@ -84,6 +87,31 @@ pub const Renderer = struct {
 
     /// Evicts cached instances that depend on a freed scene blob without
     /// allocating.
+    pub fn beginFrame(self: *Renderer, frame: u64) void {
+        self.frame = frame;
+    }
+
+    /// Destroys cached arrow-instance buffers not drawn this frame once the
+    /// cache holds more than `cap` entries (see common.Gpu.trimResidency).
+    pub fn trim(self: *Renderer, cap: u32) u32 {
+        if (self.cache.count() <= cap) return 0;
+        var destroyed: u32 = 0;
+        while (self.findStale()) |key| {
+            const removed = self.cache.fetchRemove(key).?;
+            sg.destroyBuffer(removed.value.buffer);
+            destroyed += 1;
+        }
+        return destroyed;
+    }
+
+    fn findStale(self: *Renderer) ?Key {
+        var iterator = self.cache.iterator();
+        while (iterator.next()) |entry| {
+            if (entry.value_ptr.last_used < self.frame) return entry.key_ptr.*;
+        }
+        return null;
+    }
+
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
         while (self.findMatching(blob_index)) |key| {
             const removed = self.cache.fetchRemove(key).?;
@@ -152,7 +180,10 @@ pub const Renderer = struct {
     }
 
     fn entryFor(self: *Renderer, scene: *const Scene, key: Key, positions: Positions.Const) std.mem.Allocator.Error!?Entry {
-        if (self.cache.get(key)) |entry| return entry;
+        if (self.cache.getPtr(key)) |entry| {
+            entry.last_used = self.frame;
+            return entry.*;
+        }
         const vectors = Positions.Const.fromBytes(scene.blobBytes(key.vectors));
         if (vectors.len() != positions.len() or positions.len() == 0) return null;
         const instances = try self.gpa.alloc(Instance, positions.len());
@@ -169,6 +200,7 @@ pub const Renderer = struct {
                 .label = "vertex expanded vector instances",
             }),
             .count = positions.len(),
+            .last_used = self.frame,
         };
         self.cache.putAssumeCapacityNoClobber(key, entry);
         return entry;

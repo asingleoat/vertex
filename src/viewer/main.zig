@@ -142,6 +142,10 @@ fn initCallback() callconv(.c) void {
     sg.setup(.{
         .environment = sglue.environment(),
         .logger = .{ .func = slog.func },
+        // Retained timeline versions each own GPU buffers until residency
+        // trimming (render/mesh.zig) evicts them; give the pools headroom.
+        .buffer_pool_size = 1024,
+        .view_pool_size = 1024,
     });
     state.sg_ready = true;
     simgui.setup(.{ .logger = .{ .func = slog.func } });
@@ -208,6 +212,7 @@ fn frameCallback() callconv(.c) void {
         state.fitted_once = true;
     }
 
+    state.renderer.beginFrame(state.rendered_frames);
     const renderer_synced = blk: {
         state.renderer.sync(&state.scene) catch |err| {
             std.log.err("mesh renderer sync failed: {s}", .{@errorName(err)});
@@ -305,6 +310,7 @@ fn frameCallback() callconv(.c) void {
 
     sg.endPass();
     sg.commit();
+    _ = state.renderer.trimResidency();
     finishCiFrame(&state);
 }
 

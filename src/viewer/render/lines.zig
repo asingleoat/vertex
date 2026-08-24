@@ -21,6 +21,8 @@ const Key = struct {
 pub const DrawEntry = struct {
     buffer: sg.Buffer,
     count: u32,
+    /// Frame in which this entry was last drawn (residency trimming).
+    last_used: u64 = 0,
 };
 
 const Entry = DrawEntry;
@@ -44,6 +46,7 @@ pub const Renderer = struct {
     pipeline: sg.Pipeline,
     biased_pipeline: sg.Pipeline,
     line_cache: std.AutoHashMapUnmanaged(Key, Entry) = .empty,
+    frame: u64 = 0,
     wire_cache: std.AutoHashMapUnmanaged(Key, Entry) = .empty,
     scratch_edges: std.ArrayList([2]u32) = .empty,
 
@@ -65,6 +68,16 @@ pub const Renderer = struct {
 
     /// Evicts every derived entry whose position or topology key names a freed
     /// scene blob. The operation allocates nothing.
+    pub fn beginFrame(self: *Renderer, frame: u64) void {
+        self.frame = frame;
+    }
+
+    /// Destroys cached instance buffers not drawn this frame once a cache
+    /// holds more than `cap` entries (see common.Gpu.trimResidency).
+    pub fn trim(self: *Renderer, cap: u32) u32 {
+        return trimMap(&self.line_cache, self.frame, cap) + trimMap(&self.wire_cache, self.frame, cap);
+    }
+
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
         evictFrom(&self.line_cache, blob_index);
         evictFrom(&self.wire_cache, blob_index);
@@ -190,7 +203,10 @@ pub const Renderer = struct {
     }
 
     fn lineEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.scene.Version) std.mem.Allocator.Error!?Entry {
-        if (self.line_cache.get(key)) |entry| return entry;
+        if (self.line_cache.getPtr(key)) |entry| {
+            entry.last_used = self.frame;
+            return entry.*;
+        }
         const segments = scene.segmentsOf(version);
         if (segments.len == 0) return null;
         const positions = scene.positionsOf(version);
@@ -202,13 +218,16 @@ pub const Renderer = struct {
             instance.* = .{ .p0 = positions.get(segment[0]), .p1 = positions.get(segment[1]) };
         }
         try self.line_cache.ensureUnusedCapacity(self.gpa, 1);
-        const entry = makeEntry(instances);
+        const entry = makeEntry(instances, self.frame);
         self.line_cache.putAssumeCapacityNoClobber(key, entry);
         return entry;
     }
 
     fn wireEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.scene.Version) std.mem.Allocator.Error!?Entry {
-        if (self.wire_cache.get(key)) |entry| return entry;
+        if (self.wire_cache.getPtr(key)) |entry| {
+            entry.last_used = self.frame;
+            return entry.*;
+        }
         try vertex.geometry.current.uniqueEdges(self.gpa, scene.facesOf(version), &self.scratch_edges);
         if (self.scratch_edges.items.len == 0) return null;
         const positions = scene.positionsOf(version);
@@ -220,7 +239,7 @@ pub const Renderer = struct {
             instance.* = .{ .p0 = positions.get(edge[0]), .p1 = positions.get(edge[1]) };
         }
         try self.wire_cache.ensureUnusedCapacity(self.gpa, 1);
-        const entry = makeEntry(instances);
+        const entry = makeEntry(instances, self.frame);
         self.wire_cache.putAssumeCapacityNoClobber(key, entry);
         return entry;
     }
@@ -269,7 +288,7 @@ fn configureLayout(desc: *sg.PipelineDesc) void {
     };
 }
 
-fn makeEntry(instances: []const Instance) Entry {
+fn makeEntry(instances: []const Instance, frame: u64) Entry {
     std.debug.assert(instances.len <= std.math.maxInt(u32));
     return .{
         .buffer = sg.makeBuffer(.{
@@ -278,6 +297,7 @@ fn makeEntry(instances: []const Instance) Entry {
             .label = "vertex expanded line instances",
         }),
         .count = @intCast(instances.len),
+        .last_used = frame,
     };
 }
 
@@ -293,6 +313,25 @@ fn findMatching(map: *std.AutoHashMapUnmanaged(Key, Entry), blob_index: BlobInde
     while (iterator.next()) |entry| {
         const key = entry.key_ptr.*;
         if (key.positions == blob_index or key.topology == blob_index) return key;
+    }
+    return null;
+}
+
+fn trimMap(map: *std.AutoHashMapUnmanaged(Key, Entry), frame: u64, cap: u32) u32 {
+    if (map.count() <= cap) return 0;
+    var destroyed: u32 = 0;
+    while (findStale(map, frame)) |key| {
+        const removed = map.fetchRemove(key).?;
+        sg.destroyBuffer(removed.value.buffer);
+        destroyed += 1;
+    }
+    return destroyed;
+}
+
+fn findStale(map: *std.AutoHashMapUnmanaged(Key, Entry), frame: u64) ?Key {
+    var iterator = map.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.last_used < frame) return entry.key_ptr.*;
     }
     return null;
 }
