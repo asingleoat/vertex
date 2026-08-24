@@ -181,6 +181,11 @@ fn initCallback() callconv(.c) void {
                 return;
             };
             if (std.process.Environ.getPosix(state.environ, "VERTEX_STEP_AUTORUN")) |autorun| {
+                if (std.process.Environ.getPosix(state.environ, "VERTEX_STEP_PACE")) |pace| {
+                    if (std.mem.eql(u8, pace, "frame")) state.stepper.setPaceMode(.frame);
+                    if (std.mem.eql(u8, pace, "rate")) state.stepper.setPaceMode(.rate);
+                    if (std.mem.eql(u8, pace, "max")) state.stepper.setPaceMode(.max);
+                }
                 if (std.mem.eql(u8, autorun, "1")) state.stepper.requestRun() catch |err| {
                     std.log.err("could not queue VERTEX_STEP_AUTORUN: {s}", .{@errorName(err)});
                     sapp.quit();
@@ -203,7 +208,10 @@ fn frameCallback() callconv(.c) void {
         return;
     }
 
-    if (state.stepper_ready) state.stepper.pollAutoReload();
+    if (state.stepper_ready) {
+        state.stepper.pollAutoReload();
+        state.stepper.frameTick();
+    }
     const saw_first_geometry = drainInbox(&state);
     if (state.follow_latest) state.scrub = state.scene.frameCount() -| 1;
     if (!state.fitted_once and saw_first_geometry) {

@@ -107,6 +107,11 @@ pub const Stepper = struct {
     published_leaks: std.atomic.Value(u64) = .init(0),
     published_abi_ok: std.atomic.Value(bool) = .init(false),
     published_rate_bits: std.atomic.Value(u32) = .init(@bitCast(@as(f32, 0))),
+    /// How Run paces steps; read by the worker, written by the UI/env.
+    published_pace: std.atomic.Value(u8) = .init(@backingInt(PaceMode.frame)),
+    /// Frame-paced Run: the render thread grants at most one credit per
+    /// rendered frame (under `mutex`); the worker consumes one per step.
+    frame_credits: u32 = 0,
 
     input_path: [max_path_bytes + 1]u8 = @splat(0),
     watch_path: Path = .{},
@@ -246,6 +251,38 @@ pub const Stepper = struct {
         };
     }
 
+    /// Run pacing. `frame`: one step per rendered frame (watch the algorithm);
+    /// `rate`: `maxStepsPerSecond` steps per second; `max`: free-wheel until
+    /// the sketch finishes, errors, or is paused — the batch mode whose output
+    /// is then scrubbed on the timeline.
+    pub const PaceMode = enum(u8) { frame, rate, max };
+
+    pub fn paceMode(self: *const Stepper) PaceMode {
+        return @fromBackingInt(@intCast(self.published_pace.load(.acquire)));
+    }
+
+    /// Publishes the pace mode; wakes the worker so a mode change takes effect
+    /// immediately (a frame-paced worker may be waiting for a credit).
+    pub fn setPaceMode(self: *Stepper, mode: PaceMode) void {
+        self.published_pace.store(@backingInt(mode), .release);
+        self.mutex.lockUncancelable(self.io);
+        self.condition.signal(self.io);
+        self.mutex.unlock(self.io);
+    }
+
+    /// Called once per rendered frame by the render thread: grants a step
+    /// credit to a frame-paced running worker. Cheap when idle (one
+    /// uncontended lock).
+    pub fn frameTick(self: *Stepper) void {
+        if (self.status() != .running or self.paceMode() != .frame) return;
+        self.mutex.lockUncancelable(self.io);
+        if (self.frame_credits == 0) {
+            self.frame_credits = 1;
+            self.condition.signal(self.io);
+        }
+        self.mutex.unlock(self.io);
+    }
+
     /// Returns the current worker pacing limit. Zero means unlimited and no
     /// synchronization beyond one atomic load occurs.
     pub fn maxStepsPerSecond(self: *const Stepper) f32 {
@@ -305,10 +342,14 @@ pub const Stepper = struct {
         while (true) {
             self.mutex.lockUncancelable(self.io);
             while (self.command_count == 0 and self.manual_steps == 0 and
-                self.status() != .running)
+                (self.status() != .running or
+                    (self.paceMode() == .frame and self.frame_credits == 0)))
             {
                 self.condition.waitUncancelable(self.io, &self.mutex);
             }
+            const frame_paced = self.command_count == 0 and self.manual_steps == 0 and
+                self.status() == .running and self.paceMode() == .frame;
+            if (frame_paced) self.frame_credits = 0;
             const command: ?Command = if (self.command_count != 0) blk: {
                 const value = self.commands[self.command_read];
                 self.command_read = (self.command_read + 1) % mailbox_capacity;
@@ -332,7 +373,7 @@ pub const Stepper = struct {
                 _ = self.executeOne(false);
                 continue;
             }
-            if (self.status() == .running) _ = self.executeOne(true);
+            if (self.status() == .running) _ = self.executeOne(!frame_paced);
         }
     }
 
@@ -510,6 +551,7 @@ pub const Stepper = struct {
     }
 
     fn pace(self: *Stepper, elapsed_ns: u64) void {
+        if (self.paceMode() != .rate) return;
         const rate = self.maxStepsPerSecond();
         if (rate <= 0) return;
         const target: u64 = @intFromFloat(@as(f64, @floatFromInt(std.time.ns_per_s)) / @as(f64, rate));

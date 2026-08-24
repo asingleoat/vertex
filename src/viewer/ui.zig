@@ -91,16 +91,27 @@ fn drawStepper(stepper: *stepper_mod.Stepper) void {
             std.log.warn("could not queue stepper reset: {s}", .{@errorName(err)});
         };
 
-        var rate = stepper.maxStepsPerSecond();
-        if (ig.igDragFloatEx(
-            "Max steps/s",
-            &rate,
-            1,
-            0,
-            10000,
-            "%.0f",
-            ig.ImGuiSliderFlags_AlwaysClamp,
-        )) stepper.setMaxStepsPerSecond(rate);
+        const pace = stepper.paceMode();
+        ig.igText("Run pace:");
+        ig.igSameLine();
+        if (ig.igRadioButton("Frame", pace == .frame)) stepper.setPaceMode(.frame);
+        ig.igSameLine();
+        if (ig.igRadioButton("Rate", pace == .rate)) stepper.setPaceMode(.rate);
+        ig.igSameLine();
+        if (ig.igRadioButton("Max", pace == .max)) stepper.setPaceMode(.max);
+        if (ig.igIsItemHovered(0)) ig.igSetTooltip("Frame: one step per rendered frame. Rate: steps/s below. Max: free-wheel until the sketch finishes, errors, or Pause; scrub the timeline afterwards.");
+        if (pace == .rate) {
+            var rate = stepper.maxStepsPerSecond();
+            if (ig.igDragFloatEx(
+                "Steps/s",
+                &rate,
+                1,
+                1,
+                10000,
+                "%.0f",
+                ig.ImGuiSliderFlags_AlwaysClamp,
+            )) stepper.setMaxStepsPerSecond(rate);
+        }
         _ = ig.igCheckbox("Auto-reload", stepper.autoReloadPtr());
 
         const snapshot = stepper.snapshot();

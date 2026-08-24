@@ -342,8 +342,13 @@ self-consistent plus a version check.
   socket-mode only (`Connection`); the in-process path is inline-copy.
 - **Stepping.** A worker thread owns the library and runs `vertex_step`;
   each viewer-driven step is one timeline frame. Controls: Load / Reload /
-  Unload, Step / Run / Pause / Reset, steps-per-second pacing. The render
-  thread never calls into the library.
+  Unload, Step / Run / Pause / Reset. Run has three paces: **Frame**
+  (default — one step per rendered frame, so every step is seen), **Rate**
+  (N steps/s), and **Max** (free-wheel until the sketch's own stop
+  condition, an error, or Pause — the batch mode: generate the frames fast,
+  then scrub them). `Step` runs exactly one step unpaced. The render thread
+  never calls into the library; frame pacing is a credit the render thread
+  grants once per frame. `VERTEX_STEP_PACE=frame|rate|max` for headless use.
 - **Runs.** Every Reset or reload starts a new run (`init` sends hello +
   begin_run), so the previous run is retained and "Compare previous run"
   ghosts the old algorithm against the new one — the code-change A/B loop
