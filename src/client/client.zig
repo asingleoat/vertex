@@ -839,7 +839,9 @@ const State = struct {
     }
 };
 
-fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
+/// Encodes one borrowed semantic message into caller-owned scatter/gather
+/// storage. The output borrows all message slices and no allocation occurs.
+pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     switch (message) {
         .hello => |value| protocol.encodeHello(out, value.name),
         .begin_run => protocol.encodeBeginRun(out),

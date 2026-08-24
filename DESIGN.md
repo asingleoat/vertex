@@ -342,7 +342,9 @@ self-consistent plus a version check.
 - **Hot reload.** The viewer polls the library's mtime (~4 Hz), copies the
   new build to a unique path and `dlopen`s it; libraries are never
   `dlclose`d (TLS/atexit/global-state hazards on unload — the leaked mapping
-  is small). `vertex_abi_version` mismatch refuses the load.
+  is small). `vertex_abi_version` mismatch refuses the load. A sketch that
+  was running *or had finished* re-runs after a reload (the developer saved a
+  change to see it play); a never-started or paused sketch stays idle.
 - **Leaks and errors.** Each instance gets its own leak-checking
   `DebugAllocator`; `vertex_deinit` reports leaks and the viewer logs them;
   a failing step pauses with the error in the log.

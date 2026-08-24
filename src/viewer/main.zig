@@ -5,6 +5,7 @@ const sokol = @import("sokol");
 const ig = @import("cimgui");
 
 const server_mod = @import("server.zig");
+const stepper_mod = @import("stepper.zig");
 const mesh_render = @import("render/mesh.zig");
 const pick = @import("pick.zig");
 const ui = @import("ui.zig");
@@ -29,7 +30,9 @@ const State = struct {
     io: std.Io,
     environ: std.process.Environ,
     scene: Scene = undefined,
+    inbox: server_mod.Inbox = .{},
     server: server_mod.Server = undefined,
+    stepper: stepper_mod.Stepper = undefined,
     renderer: mesh_render.Renderer = undefined,
     picker: pick.Picker = undefined,
     orbit: vertex.camera.Orbit = .default,
@@ -47,6 +50,10 @@ const State = struct {
     mouse_position: [2]f32 = .{ 0, 0 },
     left_press_position: [2]f32 = .{ 0, 0 },
     mouse_inside: bool = false,
+    /// Hover picking waits for a real MOUSE_MOVE: on entry the OS may report a
+    /// pointer position (e.g. screen centre) before imgui has one, which would
+    /// show a tooltip at the wrong place.
+    mouse_moved: bool = false,
     left_pressed_in_viewport: bool = false,
     left_dragged: bool = false,
     pending_pin: bool = false,
@@ -61,8 +68,11 @@ const State = struct {
     imgui_ready: bool = false,
     scene_ready: bool = false,
     server_ready: bool = false,
+    stepper_ready: bool = false,
+    inbox_ready: bool = false,
     renderer_ready: bool = false,
     picker_ready: bool = false,
+    report_stepper: bool = false,
 };
 
 // Sokol's C callbacks carry no Zig context. This is the documented single
@@ -109,6 +119,9 @@ pub fn main(init: std.process.Init) !void {
     if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_SHARED_HUGE")) |value| {
         state.huge_pages = !std.mem.eql(u8, value, "0");
     }
+    if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_STEP_LIB")) |value| {
+        state.report_stepper = value.len != 0;
+    }
     if (state.huge_pages and !vertex.platform.shm.hugePagesConfigured()) {
         vertex.platform.shm.warnIfHugeUnavailable("viewer startup");
     }
@@ -137,13 +150,41 @@ fn initCallback() callconv(.c) void {
     state.scene = Scene.init(state.gpa);
     state.scene.retention.budget_bytes = state.initial_memory_budget;
     state.scene_ready = true;
-    state.server = server_mod.Server.init(state.gpa, state.io, state.huge_pages);
+    state.inbox_ready = true;
+    state.server = server_mod.Server.init(state.gpa, state.io, state.huge_pages, &state.inbox);
     state.server_ready = true;
     state.server.start(state.environ) catch |err| {
         std.log.err("could not start vertex viewer socket: {s}", .{@errorName(err)});
         sapp.quit();
         return;
     };
+    state.stepper.init(state.gpa, state.io, &state.inbox, state.environ) catch |err| {
+        std.log.err("could not start vertex stepper worker: {s}", .{@errorName(err)});
+        sapp.quit();
+        return;
+    };
+    state.stepper_ready = true;
+    if (std.process.Environ.getPosix(state.environ, "VERTEX_STEP_LIB")) |path| {
+        if (path.len != 0) {
+            state.stepper.setInputPath(path) catch |err| {
+                std.log.err("could not use VERTEX_STEP_LIB: {s}", .{@errorName(err)});
+                sapp.quit();
+                return;
+            };
+            state.stepper.requestLoad(path) catch |err| {
+                std.log.err("could not queue VERTEX_STEP_LIB: {s}", .{@errorName(err)});
+                sapp.quit();
+                return;
+            };
+            if (std.process.Environ.getPosix(state.environ, "VERTEX_STEP_AUTORUN")) |autorun| {
+                if (std.mem.eql(u8, autorun, "1")) state.stepper.requestRun() catch |err| {
+                    std.log.err("could not queue VERTEX_STEP_AUTORUN: {s}", .{@errorName(err)});
+                    sapp.quit();
+                    return;
+                };
+            }
+        }
+    }
 
     state.renderer = mesh_render.Renderer.init(state.gpa);
     state.renderer_ready = true;
@@ -153,11 +194,12 @@ fn initCallback() callconv(.c) void {
 }
 
 fn frameCallback() callconv(.c) void {
-    if (!state.scene_ready or !state.renderer_ready) {
+    if (!state.scene_ready or !state.renderer_ready or !state.stepper_ready) {
         finishCiFrame(&state);
         return;
     }
 
+    if (state.stepper_ready) state.stepper.pollAutoReload();
     const saw_first_geometry = drainInbox(&state);
     if (state.follow_latest) state.scrub = state.scene.frameCount() -| 1;
     if (!state.fitted_once and saw_first_geometry) {
@@ -196,7 +238,7 @@ fn frameCallback() callconv(.c) void {
                 .{ width_i, height_i },
                 probe.pixel,
             )) |hit| probe.last_hit = hit;
-        } else if (state.mouse_inside and !ig.igGetIO().*.WantCaptureMouse) {
+        } else if (state.mouse_inside and state.mouse_moved and !ig.igGetIO().*.WantCaptureMouse) {
             if (framebufferPixel(state.mouse_position, .{ width_i, height_i })) |pixel| {
                 state.hover = pick.query(
                     &state.picker,
@@ -254,6 +296,7 @@ fn frameCallback() callconv(.c) void {
         fps,
         state.hover,
         &state.selection,
+        &state.stepper,
         vp,
         .{ width, height },
         state.mouse_position,
@@ -266,10 +309,22 @@ fn frameCallback() callconv(.c) void {
 }
 
 fn cleanupCallback() callconv(.c) void {
+    var stepper_snapshot: ?stepper_mod.Snapshot = null;
+    if (state.stepper_ready) {
+        state.stepper.deinit();
+        stepper_snapshot = state.stepper.snapshot();
+        state.stepper_ready = false;
+    }
     if (state.server_ready) {
         state.server.stop();
         state.server_ready = false;
     }
+    if (state.report_stepper) if (stepper_snapshot) |snapshot| {
+        std.debug.print(
+            "vertex-view: stepper steps={d} state={s} reloads={d} leaks={d}\n",
+            .{ snapshot.steps, @tagName(snapshot.status), snapshot.reloads, snapshot.leaks },
+        );
+    };
     if (state.picker_ready) {
         state.picker.deinit();
         state.picker_ready = false;
@@ -332,6 +387,10 @@ fn cleanupCallback() callconv(.c) void {
         sg.shutdown();
         state.sg_ready = false;
     }
+    if (state.inbox_ready) {
+        state.inbox.deinit(state.gpa);
+        state.inbox_ready = false;
+    }
 }
 
 fn eventCallback(event_ptr: [*c]const sapp.Event) callconv(.c) void {
@@ -360,6 +419,7 @@ fn trackMouse(s: *State, event: sapp.Event, wants_mouse: bool) void {
             s.left_pressed_in_viewport = false;
         },
         .MOUSE_MOVE => {
+            s.mouse_moved = true;
             s.mouse_position = .{ event.mouse_x, event.mouse_y };
             if (s.left_pressed_in_viewport) {
                 const dx = event.mouse_x - s.left_press_position[0];
@@ -387,7 +447,7 @@ fn trackMouse(s: *State, event: sapp.Event, wants_mouse: bool) void {
 
 fn drainInbox(s: *State) bool {
     var saw_geometry = false;
-    const items = s.server.inbox.drain(s.io);
+    const items = s.inbox.drain(s.io);
     for (items) |item| {
         s.ingest_messages +|= 1;
         s.ingest_bytes +|= @intCast(item.payload.len);
@@ -438,7 +498,7 @@ fn drainInbox(s: *State) bool {
             }
         }
     }
-    s.server.inbox.consume();
+    s.inbox.consume();
     return saw_geometry;
 }
 
@@ -738,4 +798,5 @@ fn finishCiFrame(s: *State) void {
 
 test {
     _ = server_mod;
+    _ = stepper_mod;
 }

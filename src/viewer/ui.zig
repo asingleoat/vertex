@@ -4,6 +4,7 @@ const vertex = @import("vertex");
 const ig = @import("cimgui");
 
 const pick = @import("pick.zig");
+const stepper_mod = @import("stepper.zig");
 const Mat4 = vertex.camera.Mat4;
 const Positions = vertex.layout.Positions;
 const Scene = vertex.scene.Scene;
@@ -32,6 +33,7 @@ pub fn draw(
     fps: f64,
     hover: ?pick.Hit,
     selection: *?Selection,
+    stepper: *stepper_mod.Stepper,
     view_proj: Mat4,
     viewport: [2]f32,
     cursor: [2]f32,
@@ -51,8 +53,77 @@ pub fn draw(
         fps,
     );
     drawLog(scene);
+    drawStepper(stepper);
     drawHoverTooltip(scene, scrub.*, hover, view_proj, viewport, cursor);
     return fit_requested;
+}
+
+fn drawStepper(stepper: *stepper_mod.Stepper) void {
+    if (ig.igBegin("Stepper", null, ig.ImGuiWindowFlags_None)) {
+        const input = stepper.inputBuffer();
+        _ = ig.igInputText("Library", input.ptr, input.len, ig.ImGuiInputTextFlags_None);
+
+        if (ig.igButton("Load...")) stepper.requestLoad(stepper.inputPath()) catch |err| {
+            std.log.warn("could not queue stepper load: {s}", .{@errorName(err)});
+        };
+        ig.igSameLine();
+        if (ig.igButton("Reload")) stepper.requestReload() catch |err| {
+            std.log.warn("could not queue stepper reload: {s}", .{@errorName(err)});
+        };
+        ig.igSameLine();
+        if (ig.igButton("Unload")) stepper.requestUnload() catch |err| {
+            std.log.warn("could not queue stepper unload: {s}", .{@errorName(err)});
+        };
+
+        if (ig.igButton("Step")) stepper.requestStep(1) catch |err| {
+            std.log.warn("could not queue stepper step: {s}", .{@errorName(err)});
+        };
+        ig.igSameLine();
+        if (ig.igButton("Run")) stepper.requestRun() catch |err| {
+            std.log.warn("could not queue stepper run: {s}", .{@errorName(err)});
+        };
+        ig.igSameLine();
+        if (ig.igButton("Pause")) stepper.requestPause() catch |err| {
+            std.log.warn("could not queue stepper pause: {s}", .{@errorName(err)});
+        };
+        ig.igSameLine();
+        if (ig.igButton("Reset")) stepper.requestReset() catch |err| {
+            std.log.warn("could not queue stepper reset: {s}", .{@errorName(err)});
+        };
+
+        var rate = stepper.maxStepsPerSecond();
+        if (ig.igDragFloatEx(
+            "Max steps/s",
+            &rate,
+            1,
+            0,
+            10000,
+            "%.0f",
+            ig.ImGuiSliderFlags_AlwaysClamp,
+        )) stepper.setMaxStepsPerSecond(rate);
+        _ = ig.igCheckbox("Auto-reload", stepper.autoReloadPtr());
+
+        const snapshot = stepper.snapshot();
+        var buffer: [256]u8 = undefined;
+        const status = std.fmt.bufPrint(
+            &buffer,
+            "state={s}  steps={d}  last={d:.3} ms  generation={d}  ABI={s}",
+            .{
+                @tagName(snapshot.status),
+                snapshot.steps,
+                @as(f64, @floatFromInt(snapshot.last_step_ns)) / 1_000_000.0,
+                snapshot.generation,
+                if (snapshot.abi_ok) "ok" else "not checked",
+            },
+        ) catch "stepper status unavailable";
+        text(status);
+        text("In-process mode (?)");
+        if (ig.igBeginItemTooltip()) {
+            text("Crash isolation is lost: a sketch crash also crashes the viewer.");
+            ig.igEndTooltip();
+        }
+    }
+    ig.igEnd();
 }
 
 fn drawStructures(

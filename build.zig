@@ -85,6 +85,32 @@ pub fn build(b: *Build) !void {
     };
     if (!found_sketch) run_sketch_step.dependOn(&b.addFail(b.fmt("no sketch named '{s}' in sketches/", .{sketch_name})).step);
 
+    // ---- stepping libraries: one dylib per steps/*.zig ----
+    const step_step = b.step("step", "Build and install steps/<name>.zig as a dynamic library");
+    var found_step = false;
+    if (try listZigFiles(b, "steps")) |names| for (names) |name| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(b.fmt("steps/{s}.zig", .{name})),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "vertex", .module = mod_vertex }},
+        });
+        mod.addOptions("build_options", build_options);
+        const library = b.addLibrary(.{
+            .name = b.fmt("step-{s}", .{name}),
+            .linkage = .dynamic,
+            .root_module = mod,
+        });
+        const install = b.addInstallArtifact(library, .{});
+        b.getInstallStep().dependOn(&install.step);
+        if (std.mem.eql(u8, name, sketch_name)) {
+            step_step.dependOn(&install.step);
+            found_step = true;
+        }
+    };
+    if (!found_step) step_step.dependOn(&b.addFail(b.fmt("no stepping sketch named '{s}' in steps/", .{sketch_name})).step);
+
     // ---- benches: one ReleaseFast exe per bench/*.zig ----
     const bench_step = b.step("bench", "Build and run all benchmarks (ReleaseFast)");
     if (try listZigFiles(b, "bench")) |names| for (names) |name| {

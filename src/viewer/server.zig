@@ -69,12 +69,12 @@ pub const StartError = std.Io.net.UnixAddress.InitError ||
     std.Io.Dir.DeleteFileError ||
     std.Thread.SpawnError;
 
-/// Owns the listener thread, socket path, and inbox. The caller must keep the
-/// value at a stable address from `start` through `stop`.
+/// Owns the listener thread and socket path while borrowing a shared inbox.
+/// The caller must keep both values at stable addresses from `start` to `stop`.
 pub const Server = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    inbox: Inbox = .{},
+    inbox: *Inbox,
     connected: std.atomic.Value(bool) = .init(false),
     stopping: std.atomic.Value(bool) = .init(false),
     path_storage: [std.Io.net.UnixAddress.max_len]u8 = undefined,
@@ -89,8 +89,8 @@ pub const Server = struct {
     /// Initializes an unstarted server without allocating. `gpa` must be
     /// thread-safe and remain valid through `stop`; `huge_pages` is retained as
     /// the mapping/reporting preference for every accepted connection.
-    pub fn init(gpa: std.mem.Allocator, io: std.Io, huge_pages: bool) Server {
-        return .{ .gpa = gpa, .io = io, .huge_pages = huge_pages };
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, huge_pages: bool, inbox: *Inbox) Server {
+        return .{ .gpa = gpa, .io = io, .huge_pages = huge_pages, .inbox = inbox };
     }
 
     /// Resolves the environment-selected socket, removes a stale entry, binds,
@@ -132,8 +132,8 @@ pub const Server = struct {
     }
 
     /// Stops and joins the listener, discards queued payloads, removes the
-    /// socket file, and frees inbox storage. It is safe to call once after any
-    /// `start` outcome and performs no long-held inbox lock.
+    /// socket file, and discards queued payloads. The caller retains and later
+    /// deinitializes the shared inbox. It is safe after any `start` outcome.
     pub fn stop(self: *Server) void {
         if (self.stopped) return;
         self.stopped = true;
@@ -157,8 +157,6 @@ pub const Server = struct {
         const pending = self.inbox.drain(self.io);
         for (pending) |item| disposeItem(self.gpa, item);
         self.inbox.consume();
-        self.inbox.deinit(self.gpa);
-
         if (self.path_len != 0) deleteIfPresent(self.io, self.socketPath()) catch |err| {
             std.log.warn("could not unlink viewer socket '{s}': {s}", .{ self.socketPath(), @errorName(err) });
         };

@@ -11,6 +11,7 @@ pub const scene = @import("scene/scene.zig");
 pub const colormap = @import("scene/colormap.zig");
 pub const camera = @import("scene/camera.zig");
 pub const client = @import("client/client.zig");
+pub const dylib = @import("client/dylib.zig");
 
 /// Opens a socket-owning client connection; see `client.connect`.
 pub const connect = client.connect;
