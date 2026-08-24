@@ -13,6 +13,8 @@ pub fn main(init: std.process.Init) !void {
     defer displaced.free(init.gpa);
     const height = try init.gpa.alloc(f32, sphere.positions.len());
     defer init.gpa.free(height);
+    const face_area = try init.gpa.alloc(f32, sphere.faces.len);
+    defer init.gpa.free(face_area);
     const normal_values = try init.gpa.alloc(vertex.layout.Vec3, sphere.positions.len());
     defer init.gpa.free(normal_values);
     const normals = try vertex.layout.Positions.alloc(init.gpa, sphere.positions.len());
@@ -24,8 +26,10 @@ pub fn main(init: std.process.Init) !void {
     }
     vertex.geometry.current.vertexNormals(sphere.positions.toConst(), sphere.faces, normal_values);
     normals.setAll(normal_values);
+    faceAreas(sphere.positions.toConst(), sphere.faces, face_area);
     try conn.mesh("sphere", sphere.positions.toConst(), sphere.faces, .{});
     try conn.scalar("sphere", "height", .vertex, height);
+    try conn.scalar("sphere", "face_area", .face, face_area);
     try conn.vector("sphere", "normal", .vertex, normals.toConst());
 
     const sites = try vertex.fixtures.current.randomPoints(init.gpa, 200, 0x5eed, 1.35);
@@ -80,11 +84,27 @@ pub fn main(init: std.process.Init) !void {
         }
         vertex.geometry.current.vertexNormals(displaced.toConst(), sphere.faces, normal_values);
         normals.setAll(normal_values);
+        faceAreas(displaced.toConst(), sphere.faces, face_area);
         try conn.meshPositions("sphere", displaced.toConst());
+        try conn.scalar("sphere", "face_area", .face, face_area);
         try conn.vector("sphere", "normal", .vertex, normals.toConst());
         try conn.step();
     }
 
     try conn.log(.info, "done");
     try conn.finish();
+}
+
+fn faceAreas(
+    positions: vertex.layout.Positions.Const,
+    faces: []const [3]u32,
+    areas: []f32,
+) void {
+    std.debug.assert(faces.len == areas.len);
+    for (faces, areas) |face, *area| {
+        const a = positions.get(face[0]);
+        const b = positions.get(face[1]);
+        const c = positions.get(face[2]);
+        area.* = 0.5 * b.sub(a).cross(c.sub(a)).length();
+    }
 }

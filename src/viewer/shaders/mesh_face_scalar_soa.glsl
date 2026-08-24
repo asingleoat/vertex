@@ -1,0 +1,46 @@
+// Face-target scalar mesh pass for planar positions. Values are pulled from
+// the quantity blob by primitive index through a readonly storage buffer.
+@vs vs
+layout(binding=0) uniform vs_params {
+    mat4 mvp;
+    mat4 model;
+};
+in float px;
+in float py;
+in float pz;
+out vec3 world_pos;
+void main() {
+    vec3 position = vec3(px, py, pz);
+    vec4 wp = model * vec4(position, 1.0);
+    world_pos = wp.xyz;
+    gl_Position = mvp * vec4(position, 1.0);
+}
+@end
+
+@fs fs
+struct scalar_item {
+    float value;
+};
+layout(binding=1) readonly buffer face_values {
+    scalar_item items[];
+};
+layout(binding=1) uniform fs_params {
+    vec4 color;
+    vec4 light_dir;
+    vec2 value_range;
+};
+layout(binding=0) uniform texture2D cmap_tex;
+layout(binding=0) uniform sampler cmap_smp;
+in vec3 world_pos;
+out vec4 frag_color;
+void main() {
+    vec3 n = normalize(cross(dFdx(world_pos), dFdy(world_pos)));
+    float ndl = abs(dot(n, normalize(light_dir.xyz)));
+    float scalar_value = items[gl_PrimitiveID].value;
+    float t = clamp((scalar_value - value_range.x) / (value_range.y - value_range.x), 0.0, 1.0);
+    vec4 mapped = texture(sampler2D(cmap_tex, cmap_smp), vec2(t, 0.5));
+    frag_color = vec4(color.rgb * mapped.rgb * (0.25 + 0.75 * ndl), color.a * mapped.a);
+}
+@end
+
+@program mesh_face_scalar_soa vs fs

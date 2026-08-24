@@ -10,18 +10,19 @@ const Scene = vertex.scene.Scene;
 const StructureIndex = vertex.scene.StructureIndex;
 
 /// Resource kind used when lazily mirroring a scene blob into a GPU buffer.
-pub const BufferKind = enum { vertex, index };
+pub const BufferKind = enum { vertex, index, storage };
 
 const ColormapGpu = struct {
     image: sg.Image,
     view: sg.View,
 };
 
-/// Owns the single per-BlobIndex GPU array, scalar ranges, colormap images,
-/// and shared sampler. CPU allocation uses the allocator supplied to `init`.
+/// Owns per-BlobIndex buffer/storage-view arrays, scalar ranges, colormap
+/// images, and a shared sampler. CPU allocation uses the allocator supplied to `init`.
 pub const Gpu = struct {
     gpa: std.mem.Allocator,
     blob_gpu: std.ArrayList(?sg.Buffer) = .empty,
+    blob_storage_views: std.ArrayList(?sg.View) = .empty,
     ranges: std.AutoHashMapUnmanaged(BlobIndex, [2]f32) = .empty,
     colormaps: [4]?ColormapGpu = @splat(null),
     sampler: sg.Sampler,
@@ -47,13 +48,21 @@ pub const Gpu = struct {
         if (scene.blobs.len <= self.blob_gpu.items.len) return;
         const additional = scene.blobs.len - self.blob_gpu.items.len;
         try self.blob_gpu.ensureUnusedCapacity(self.gpa, additional);
-        for (0..additional) |_| self.blob_gpu.appendAssumeCapacity(null);
+        try self.blob_storage_views.ensureUnusedCapacity(self.gpa, additional);
+        for (0..additional) |_| {
+            self.blob_gpu.appendAssumeCapacity(null);
+            self.blob_storage_views.appendAssumeCapacity(null);
+        }
     }
 
     /// Releases GPU and cached range state for one freed scene blob. It does
     /// not allocate and leaves the parallel slot ready for scene index reuse.
     pub fn releaseBlob(self: *Gpu, blob_index: BlobIndex) void {
-        const slot = &self.blob_gpu.items[indexOf(blob_index)];
+        const i = indexOf(blob_index);
+        const view_slot = &self.blob_storage_views.items[i];
+        if (view_slot.*) |view| sg.destroyView(view);
+        view_slot.* = null;
+        const slot = &self.blob_gpu.items[i];
         if (slot.*) |buffer| sg.destroyBuffer(buffer);
         slot.* = null;
         _ = self.ranges.remove(blob_index);
@@ -71,12 +80,27 @@ pub const Gpu = struct {
             .usage = switch (kind) {
                 .vertex => .{ .vertex_buffer = true, .immutable = true },
                 .index => .{ .index_buffer = true, .immutable = true },
+                .storage => .{ .storage_buffer = true, .immutable = true },
             },
             .data = .{ .ptr = bytes.ptr, .size = bytes.len },
             .label = switch (kind) {
                 .vertex => "vertex scene blob",
                 .index => "vertex topology blob",
+                .storage => "vertex scalar storage blob",
             },
+        });
+        return slot.*.?;
+    }
+
+    /// Lazily returns the readonly storage-buffer view for a live scene blob.
+    /// The view and its buffer remain owned by this object; no CPU allocation occurs.
+    pub fn storageViewFor(self: *Gpu, scene: *const Scene, blob_index: BlobIndex) sg.View {
+        const slot = &self.blob_storage_views.items[indexOf(blob_index)];
+        if (slot.*) |view| return view;
+        const buffer = self.bufferFor(scene, blob_index, .storage);
+        slot.* = sg.makeView(.{
+            .storage_buffer = .{ .buffer = buffer },
+            .label = "vertex scalar storage view",
         });
         return slot.*.?;
     }
@@ -118,6 +142,9 @@ pub const Gpu = struct {
     /// Destroys all shared GPU handles and frees CPU caches with the allocator
     /// retained by `init`.
     pub fn deinit(self: *Gpu) void {
+        for (self.blob_storage_views.items) |maybe_view| {
+            if (maybe_view) |view| sg.destroyView(view);
+        }
         for (self.blob_gpu.items) |maybe_buffer| {
             if (maybe_buffer) |buffer| sg.destroyBuffer(buffer);
         }
@@ -129,6 +156,7 @@ pub const Gpu = struct {
         }
         sg.destroySampler(self.sampler);
         self.ranges.deinit(self.gpa);
+        self.blob_storage_views.deinit(self.gpa);
         self.blob_gpu.deinit(self.gpa);
         self.* = undefined;
     }

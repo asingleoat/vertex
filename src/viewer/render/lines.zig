@@ -16,10 +16,14 @@ const Key = struct {
     topology: BlobIndex,
 };
 
-const Entry = struct {
+/// Borrowed draw description for a cached expanded-line instance buffer.
+/// The owning line renderer retains the GPU handle and no allocation occurs.
+pub const DrawEntry = struct {
     buffer: sg.Buffer,
     count: u32,
 };
+
+const Entry = DrawEntry;
 
 // This is deliberately not a Positions stream: endpoints are render-edge
 // derived instance data and are always interleaved p0.xyz/p1.xyz.
@@ -86,6 +90,25 @@ pub const Renderer = struct {
         var draw_color = color;
         if (structures.items(.stale)[structure_i]) dim(&draw_color);
         self.drawEntry(entry, vp, viewport, structures.items(.ui)[structure_i].line_width, draw_color, false);
+    }
+
+    /// Returns the same derived endpoint buffer used by the color line pass.
+    /// A cache miss may allocate through the renderer allocator; the result is borrowed.
+    pub fn entryForPick(
+        self: *Renderer,
+        scene: *const Scene,
+        structure_index: StructureIndex,
+        version_index: u32,
+    ) std.mem.Allocator.Error!?DrawEntry {
+        const structure_i = common.indexOf(structure_index);
+        const structures = scene.structures.slice();
+        std.debug.assert(structures.items(.kind)[structure_i] == .lines);
+        const version = structures.items(.versions)[structure_i].items[version_index];
+        return self.lineEntry(
+            scene,
+            .{ .positions = version.positions, .topology = version.topology },
+            version,
+        );
     }
 
     /// Draws a mesh's unique edges after the solid pass with depth bias. A

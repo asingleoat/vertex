@@ -6,6 +6,7 @@ const ig = @import("cimgui");
 
 const server_mod = @import("server.zig");
 const mesh_render = @import("render/mesh.zig");
+const pick = @import("pick.zig");
 const ui = @import("ui.zig");
 
 const sapp = sokol.app;
@@ -16,6 +17,11 @@ const slog = sokol.log;
 const Scene = vertex.scene.Scene;
 const Aabb = vertex.geometry.current.Aabb;
 
+const Probe = struct {
+    pixel: [2]u32,
+    last_hit: ?pick.Hit = null,
+};
+
 const State = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -23,6 +29,7 @@ const State = struct {
     scene: Scene = undefined,
     server: server_mod.Server = undefined,
     renderer: mesh_render.Renderer = undefined,
+    picker: pick.Picker = undefined,
     orbit: vertex.camera.Orbit = .default,
     ortho: vertex.camera.Ortho2D = .{},
     camera_mode: ui.CameraMode = .orbit,
@@ -31,11 +38,21 @@ const State = struct {
     fitted_once: bool = false,
     rendered_frames: u64 = 0,
     exit_after_frames: ?u64 = null,
+    hover: ?pick.Hit = null,
+    selection: ?ui.Selection = null,
+    probe: ?Probe = null,
+    mouse_position: [2]f32 = .{ 0, 0 },
+    left_press_position: [2]f32 = .{ 0, 0 },
+    mouse_inside: bool = false,
+    left_pressed_in_viewport: bool = false,
+    left_dragged: bool = false,
+    pending_pin: bool = false,
     sg_ready: bool = false,
     imgui_ready: bool = false,
     scene_ready: bool = false,
     server_ready: bool = false,
     renderer_ready: bool = false,
+    picker_ready: bool = false,
 };
 
 // Sokol's C callbacks carry no Zig context. This is the documented single
@@ -57,6 +74,12 @@ pub fn main(init: std.process.Init) !void {
                 break :blk null;
             };
         }
+    }
+    if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_PICK_PROBE")) |value| {
+        state.probe = parseProbe(value) orelse blk: {
+            std.log.warn("ignoring invalid VERTEX_PICK_PROBE; expected x,y unsigned framebuffer pixels", .{});
+            break :blk null;
+        };
     }
 
     sapp.run(.{
@@ -92,6 +115,8 @@ fn initCallback() callconv(.c) void {
 
     state.renderer = mesh_render.Renderer.init(state.gpa);
     state.renderer_ready = true;
+    state.picker = pick.Picker.init();
+    state.picker_ready = true;
     state.orbit = .default;
 }
 
@@ -117,13 +142,49 @@ fn frameCallback() callconv(.c) void {
         break :blk true;
     };
 
-    const width = @max(sapp.widthf(), 1);
-    const height = @max(sapp.heightf(), 1);
+    const width_i = @max(sapp.width(), 1);
+    const height_i = @max(sapp.height(), 1);
+    const width: f32 = @floatFromInt(width_i);
+    const height: f32 = @floatFromInt(height_i);
     const aspect = width / height;
     const vp = switch (state.camera_mode) {
         .orbit => state.orbit.viewProj(aspect),
         .ortho_2d => state.ortho.viewProj(aspect),
     };
+
+    state.hover = null;
+    if (renderer_synced and state.picker_ready and hasDisplayedGeometry(&state.scene, state.scrub)) {
+        if (state.probe) |*probe| {
+            if (pick.query(
+                &state.picker,
+                &state.renderer,
+                &state.scene,
+                state.scrub,
+                vp,
+                .{ width_i, height_i },
+                probe.pixel,
+            )) |hit| probe.last_hit = hit;
+        } else if (state.mouse_inside and !ig.igGetIO().*.WantCaptureMouse) {
+            if (framebufferPixel(state.mouse_position, .{ width_i, height_i })) |pixel| {
+                state.hover = pick.query(
+                    &state.picker,
+                    &state.renderer,
+                    &state.scene,
+                    state.scrub,
+                    vp,
+                    .{ width_i, height_i },
+                    pixel,
+                );
+            }
+        }
+    }
+    if (state.pending_pin) {
+        if (state.hover) |hit| {
+            state.selection = .{ .hit = hit, .cursor = state.mouse_position };
+        }
+        state.pending_pin = false;
+    }
+
     const pass_action: sg.PassAction = .{
         .colors = blk: {
             var colors: [sg.max_color_attachments]sg.ColorAttachmentAction = @splat(.{});
@@ -158,6 +219,11 @@ fn frameCallback() callconv(.c) void {
         state.server.socketPath(),
         state.server.connected.load(.acquire),
         fps,
+        state.hover,
+        &state.selection,
+        vp,
+        .{ width, height },
+        state.mouse_position,
     )) fitCamera(&state);
     simgui.render();
 
@@ -171,6 +237,10 @@ fn cleanupCallback() callconv(.c) void {
         state.server.stop();
         state.server_ready = false;
     }
+    if (state.picker_ready) {
+        state.picker.deinit();
+        state.picker_ready = false;
+    }
     if (state.renderer_ready) {
         state.renderer.deinit();
         state.renderer_ready = false;
@@ -180,6 +250,26 @@ fn cleanupCallback() callconv(.c) void {
             "vertex-view: structures={d} frames={d} blobs={d}\n",
             .{ state.scene.structures.len, state.scene.frameCount(), state.scene.live_blobs },
         );
+        if (state.probe) |probe| {
+            if (probe.last_hit) |hit| {
+                const structures = state.scene.structures.slice();
+                const structure_i: usize = @backingInt(hit.structure);
+                if (structure_i < state.scene.structures.len) {
+                    std.debug.print(
+                        "vertex-view: probe structure={s} kind={s} element={d}\n",
+                        .{
+                            state.scene.string(structures.items(.name)[structure_i]),
+                            @tagName(hit.kind),
+                            hit.element,
+                        },
+                    );
+                } else {
+                    std.debug.print("vertex-view: probe miss\n", .{});
+                }
+            } else {
+                std.debug.print("vertex-view: probe miss\n", .{});
+            }
+        }
         state.scene.deinit();
         state.scene_ready = false;
     }
@@ -197,11 +287,49 @@ fn eventCallback(event_ptr: [*c]const sapp.Event) callconv(.c) void {
     const event = event_ptr.*;
     _ = simgui.handleEvent(event);
 
-    if (isMouseEvent(event.type) and ig.igGetIO().*.WantCaptureMouse) return;
+    const wants_mouse = isMouseEvent(event.type) and ig.igGetIO().*.WantCaptureMouse;
+    if (isMouseEvent(event.type)) trackMouse(&state, event, wants_mouse);
+    if (wants_mouse) return;
     switch (event.type) {
         .MOUSE_MOVE => handleMouseMove(&state, event),
         .MOUSE_SCROLL => handleScroll(&state, event),
         .KEY_DOWN => if (!event.key_repeat) handleKey(&state, event.key_code),
+        else => {},
+    }
+}
+
+fn trackMouse(s: *State, event: sapp.Event, wants_mouse: bool) void {
+    switch (event.type) {
+        .MOUSE_ENTER => {
+            s.mouse_inside = true;
+            s.mouse_position = .{ event.mouse_x, event.mouse_y };
+        },
+        .MOUSE_LEAVE => {
+            s.mouse_inside = false;
+            s.left_pressed_in_viewport = false;
+        },
+        .MOUSE_MOVE => {
+            s.mouse_position = .{ event.mouse_x, event.mouse_y };
+            if (s.left_pressed_in_viewport) {
+                const dx = event.mouse_x - s.left_press_position[0];
+                const dy = event.mouse_y - s.left_press_position[1];
+                if (dx * dx + dy * dy > 9) s.left_dragged = true;
+            }
+        },
+        .MOUSE_DOWN => if (event.mouse_button == .LEFT) {
+            s.mouse_position = .{ event.mouse_x, event.mouse_y };
+            s.left_pressed_in_viewport = s.mouse_inside and !wants_mouse;
+            s.left_press_position = s.mouse_position;
+            s.left_dragged = false;
+        },
+        .MOUSE_UP => if (event.mouse_button == .LEFT) {
+            s.mouse_position = .{ event.mouse_x, event.mouse_y };
+            if (s.left_pressed_in_viewport and !s.left_dragged and s.mouse_inside and !wants_mouse) {
+                s.pending_pin = true;
+            }
+            s.left_pressed_in_viewport = false;
+            s.left_dragged = false;
+        },
         else => {},
     }
 }
@@ -391,6 +519,36 @@ fn isMouseEvent(event_type: sapp.EventType) bool {
         .MOUSE_DOWN, .MOUSE_UP, .MOUSE_SCROLL, .MOUSE_MOVE, .MOUSE_ENTER, .MOUSE_LEAVE => true,
         else => false,
     };
+}
+
+fn parseProbe(value: []const u8) ?Probe {
+    var parts = std.mem.splitScalar(u8, value, ',');
+    const x_text = parts.next() orelse return null;
+    const y_text = parts.next() orelse return null;
+    if (x_text.len == 0 or y_text.len == 0 or parts.next() != null) return null;
+    const x = std.fmt.parseInt(u32, x_text, 10) catch return null;
+    const y = std.fmt.parseInt(u32, y_text, 10) catch return null;
+    return .{ .pixel = .{ x, y } };
+}
+
+fn framebufferPixel(position: [2]f32, viewport: [2]i32) ?[2]u32 {
+    if (!std.math.isFinite(position[0]) or !std.math.isFinite(position[1])) return null;
+    if (position[0] < 0 or position[1] < 0 or
+        position[0] >= @as(f32, @floatFromInt(viewport[0])) or
+        position[1] >= @as(f32, @floatFromInt(viewport[1]))) return null;
+    return .{
+        @intFromFloat(@floor(position[0])),
+        @intFromFloat(@floor(position[1])),
+    };
+}
+
+fn hasDisplayedGeometry(scene: *const Scene, scrub: u32) bool {
+    const structures = scene.structures.slice();
+    for (structures.items(.versions), 0..) |_, i| {
+        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        if (scene.versionAt(structure_index, scrub) != null) return true;
+    }
+    return false;
 }
 
 fn finishCiFrame(s: *State) void {

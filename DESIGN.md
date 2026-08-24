@@ -268,7 +268,7 @@ inspector tooltip.
   wireframe overlay from CPU-extracted unique edges with depth bias,
   per-structure UI controls (quantity/colormap selectors, sizes, wireframe),
   2D auto-detection on first fit.
-- **M3 — picking + inspection.** ID-buffer pass, GL readback, inspector
+- **M3 — picking + inspection.** ✅ (2026-08-23) ID-buffer pass, GL readback, inspector
   tooltip with element index and quantity values; face-target scalar
   rendering (needs the same per-primitive plumbing).
 - **M4 — beyond.** Timeline memory eviction policy for topology-evolving runs

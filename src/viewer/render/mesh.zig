@@ -11,6 +11,8 @@ const mesh_shader = @import("../shaders/mesh.zig");
 const mesh_soa_shader = @import("../shaders/mesh_soa.zig");
 const scalar_shader = @import("../shaders/mesh_scalar.zig");
 const scalar_soa_shader = @import("../shaders/mesh_scalar_soa.zig");
+const face_scalar_shader = @import("../shaders/mesh_face_scalar.zig");
+const face_scalar_soa_shader = @import("../shaders/mesh_face_scalar_soa.zig");
 const Mat4 = vertex.camera.Mat4;
 const Positions = vertex.layout.Positions;
 const Scene = vertex.scene.Scene;
@@ -22,8 +24,10 @@ pub const Renderer = struct {
     gpu: common.Gpu,
     mesh_shader: sg.Shader,
     mesh_scalar_shader: sg.Shader,
+    mesh_face_scalar_shader: sg.Shader,
     mesh_pipeline: sg.Pipeline,
     mesh_scalar_pipeline: sg.Pipeline,
+    mesh_face_scalar_pipeline: sg.Pipeline,
     points: point_render.Renderer,
     lines: line_render.Renderer,
     vectors: vector_render.Renderer,
@@ -39,10 +43,16 @@ pub const Renderer = struct {
             .aos3, .aos4 => scalar_shader.meshScalarShaderDesc(sg.queryBackend()),
             .soa => scalar_soa_shader.meshScalarSoaShaderDesc(sg.queryBackend()),
         });
+        const face_scalar = sg.makeShader(switch (vertex.layout.layout) {
+            .aos3, .aos4 => face_scalar_shader.meshFaceScalarShaderDesc(sg.queryBackend()),
+            .soa => face_scalar_soa_shader.meshFaceScalarSoaShaderDesc(sg.queryBackend()),
+        });
         var mesh_desc = baseMeshPipeline(shader, "vertex mesh pipeline");
         var scalar_desc = baseMeshPipeline(scalar, "vertex scalar mesh pipeline");
+        var face_scalar_desc = baseMeshPipeline(face_scalar, "vertex face scalar mesh pipeline");
         configurePositions(&mesh_desc);
         configurePositions(&scalar_desc);
+        configurePositions(&face_scalar_desc);
         const value_buffer = switch (vertex.layout.layout) {
             .aos3, .aos4 => 1,
             .soa => 3,
@@ -58,8 +68,10 @@ pub const Renderer = struct {
             .gpu = common.Gpu.init(gpa),
             .mesh_shader = shader,
             .mesh_scalar_shader = scalar,
+            .mesh_face_scalar_shader = face_scalar,
             .mesh_pipeline = sg.makePipeline(mesh_desc),
             .mesh_scalar_pipeline = sg.makePipeline(scalar_desc),
+            .mesh_face_scalar_pipeline = sg.makePipeline(face_scalar_desc),
             .points = point_render.Renderer.init(),
             .lines = line_render.Renderer.init(gpa),
             .vectors = vector_render.Renderer.init(gpa),
@@ -73,6 +85,8 @@ pub const Renderer = struct {
         for (scene.freed_blobs.items) |blob_index| {
             self.lines.evictBlob(blob_index);
             self.vectors.evictBlob(blob_index);
+        }
+        for (scene.freed_blobs.items) |blob_index| {
             self.gpu.releaseBlob(blob_index);
         }
         for (scene.new_blobs.items) |blob_index| {
@@ -82,8 +96,8 @@ pub const Renderer = struct {
         scene.new_blobs.clearRetainingCapacity();
     }
 
-    /// Draws one solid mesh version. A selected vertex scalar quantity chooses
-    /// the scalar pipeline; face quantities deliberately fall back to plain mesh.
+    /// Draws one solid mesh version. Selected vertex and face scalar quantities
+    /// choose attribute and primitive-indexed storage-buffer pipelines respectively.
     pub fn draw(
         self: *Renderer,
         scene: *const Scene,
@@ -108,12 +122,17 @@ pub const Renderer = struct {
         if (structures.items(.stale)[structure_i]) dim(&draw_color);
 
         const active = common.activeQuantity(scene, structure_index, version);
-        const use_scalar = if (active) |quantity|
+        const use_vertex_scalar = if (active) |quantity|
             quantity.kind == .scalar and quantity.target == .vertex and
                 quantity.count == positions.len()
         else
             false;
-        if (use_scalar) {
+        const use_face_scalar = if (active) |quantity|
+            quantity.kind == .scalar and quantity.target == .face and
+                quantity.count == faces.len
+        else
+            false;
+        if (use_vertex_scalar) {
             const quantity = active.?;
             const value_buffer = switch (vertex.layout.layout) {
                 .aos3, .aos4 => 1,
@@ -125,6 +144,14 @@ pub const Renderer = struct {
             sg.applyPipeline(self.mesh_scalar_pipeline);
             sg.applyBindings(bindings);
             applyScalarUniforms(vp, draw_color, try self.gpu.scalarRange(scene, quantity.blob));
+        } else if (use_face_scalar) {
+            const quantity = active.?;
+            bindings.views[faceScalarStorageSlot()] = self.gpu.storageViewFor(scene, quantity.blob);
+            bindings.views[faceScalarViewSlot()] = self.gpu.colormapView(structures.items(.ui)[structure_i].colormap);
+            bindings.samplers[faceScalarSamplerSlot()] = self.gpu.sampler;
+            sg.applyPipeline(self.mesh_face_scalar_pipeline);
+            sg.applyBindings(bindings);
+            applyFaceScalarUniforms(vp, draw_color, try self.gpu.scalarRange(scene, quantity.blob));
         } else {
             sg.applyPipeline(self.mesh_pipeline);
             sg.applyBindings(bindings);
@@ -195,8 +222,10 @@ pub const Renderer = struct {
         self.vectors.deinit();
         self.lines.deinit();
         self.points.deinit();
+        sg.destroyPipeline(self.mesh_face_scalar_pipeline);
         sg.destroyPipeline(self.mesh_scalar_pipeline);
         sg.destroyPipeline(self.mesh_pipeline);
+        sg.destroyShader(self.mesh_face_scalar_shader);
         sg.destroyShader(self.mesh_scalar_shader);
         sg.destroyShader(self.mesh_shader);
         self.gpu.deinit();
@@ -286,6 +315,31 @@ fn applyScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
     }
 }
 
+fn applyFaceScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
+    switch (vertex.layout.layout) {
+        .aos3, .aos4 => {
+            const vs: face_scalar_shader.VsParams = .{ .mvp = vp.m, .model = Mat4.identity.m };
+            const fs: face_scalar_shader.FsParams = .{
+                .color = color,
+                .light_dir = .{ 0.4, 0.8, 0.6, 0 },
+                .value_range = value_range,
+            };
+            sg.applyUniforms(face_scalar_shader.UB_vs_params, .{ .ptr = &vs, .size = @sizeOf(face_scalar_shader.VsParams) });
+            sg.applyUniforms(face_scalar_shader.UB_fs_params, .{ .ptr = &fs, .size = @sizeOf(face_scalar_shader.FsParams) });
+        },
+        .soa => {
+            const vs: face_scalar_soa_shader.VsParams = .{ .mvp = vp.m, .model = Mat4.identity.m };
+            const fs: face_scalar_soa_shader.FsParams = .{
+                .color = color,
+                .light_dir = .{ 0.4, 0.8, 0.6, 0 },
+                .value_range = value_range,
+            };
+            sg.applyUniforms(face_scalar_soa_shader.UB_vs_params, .{ .ptr = &vs, .size = @sizeOf(face_scalar_soa_shader.VsParams) });
+            sg.applyUniforms(face_scalar_soa_shader.UB_fs_params, .{ .ptr = &fs, .size = @sizeOf(face_scalar_soa_shader.FsParams) });
+        },
+    }
+}
+
 fn scalarViewSlot() usize {
     return switch (vertex.layout.layout) {
         .aos3, .aos4 => scalar_shader.VIEW_cmap_tex,
@@ -300,8 +354,34 @@ fn scalarSamplerSlot() usize {
     };
 }
 
+fn faceScalarStorageSlot() usize {
+    return switch (vertex.layout.layout) {
+        .aos3, .aos4 => face_scalar_shader.VIEW_face_values,
+        .soa => face_scalar_soa_shader.VIEW_face_values,
+    };
+}
+
+fn faceScalarViewSlot() usize {
+    return switch (vertex.layout.layout) {
+        .aos3, .aos4 => face_scalar_shader.VIEW_cmap_tex,
+        .soa => face_scalar_soa_shader.VIEW_cmap_tex,
+    };
+}
+
+fn faceScalarSamplerSlot() usize {
+    return switch (vertex.layout.layout) {
+        .aos3, .aos4 => face_scalar_shader.SMP_cmap_smp,
+        .soa => face_scalar_soa_shader.SMP_cmap_smp,
+    };
+}
+
 fn dim(color: *[4]f32) void {
     color[0] *= 0.45;
     color[1] *= 0.45;
     color[2] *= 0.45;
+}
+
+comptime {
+    std.debug.assert(@sizeOf(face_scalar_shader.ScalarItem) == @sizeOf(f32));
+    std.debug.assert(@sizeOf(face_scalar_soa_shader.ScalarItem) == @sizeOf(f32));
 }
