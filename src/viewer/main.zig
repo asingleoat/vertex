@@ -42,6 +42,13 @@ const State = struct {
     follow_latest: bool = true,
     compare_previous_run: bool = false,
     fitted_once: bool = false,
+    /// Frame 0 of the current run is complete (a begin_frame(>=1) or end_run
+    /// was applied); the camera refits once to the whole initial scene unless
+    /// the user has already moved it. Fit-on-first-data alone depends on how
+    /// many structures happened to arrive before the first draw.
+    frame0_complete: bool = false,
+    frame0_fitted: bool = false,
+    camera_touched: bool = false,
     rendered_frames: u64 = 0,
     exit_after_frames: ?u64 = null,
     hover: ?pick.Hit = null,
@@ -218,6 +225,10 @@ fn frameCallback() callconv(.c) void {
         if (allStructures2d(&state.scene)) state.camera_mode = .ortho_2d;
         fitCamera(&state);
         state.fitted_once = true;
+    }
+    if (state.frame0_complete and !state.frame0_fitted) {
+        if (!state.camera_touched) fitCamera(&state);
+        state.frame0_fitted = true;
     }
 
     state.renderer.beginFrame(state.rendered_frames);
@@ -499,6 +510,17 @@ fn drainInbox(s: *State) bool {
                 break :blk null;
             };
             s.ingest_mapped_bytes +|= decodedMappedBytes(decoded, item);
+            switch (decoded) {
+                .begin_run => {
+                    s.frame0_complete = false;
+                    s.frame0_fitted = false;
+                },
+                .begin_frame => |begin| if (begin.index >= 1) {
+                    s.frame0_complete = true;
+                },
+                .end_run => s.frame0_complete = true,
+                else => {},
+            }
             s.scene.apply(decoded) catch |err| {
                 std.log.warn("discarding inapplicable viewer message: {s}", .{@errorName(err)});
                 break :blk null;
@@ -724,18 +746,26 @@ fn handleMouseMove(s: *State, event: sapp.Event) void {
     switch (s.camera_mode) {
         .orbit => {
             if (pan) {
+                s.camera_touched = true;
                 s.orbit.pan(event.mouse_dx, event.mouse_dy, viewport_height);
             } else if (left) {
+                s.camera_touched = true;
                 s.orbit.rotate(-event.mouse_dx * 0.01, -event.mouse_dy * 0.01);
             }
         },
-        .ortho_2d => if (pan) s.ortho.pan(event.mouse_dx, event.mouse_dy, viewport_height),
+        .ortho_2d => if (pan) {
+            s.camera_touched = true;
+            s.ortho.pan(event.mouse_dx, event.mouse_dy, viewport_height);
+        },
     }
 }
 
 fn handleScroll(s: *State, event: sapp.Event) void {
     switch (s.camera_mode) {
-        .orbit => s.orbit.dolly(event.scroll_y),
+        .orbit => {
+            s.camera_touched = true;
+            s.orbit.dolly(event.scroll_y);
+        },
         .ortho_2d => {
             const width = @max(sapp.widthf(), 1);
             const height = @max(sapp.heightf(), 1);
@@ -743,6 +773,7 @@ fn handleScroll(s: *State, event: sapp.Event) void {
                 2 * event.mouse_x / width - 1,
                 1 - 2 * event.mouse_y / height,
             };
+            s.camera_touched = true;
             s.ortho.zoomAt(@exp(-event.scroll_y * 0.1), cursor_ndc);
         },
     }
