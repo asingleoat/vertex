@@ -70,7 +70,7 @@ Transport: Unix domain socket at `$XDG_RUNTIME_DIR/vertex.sock` (override via
 header; variable sections inside a payload start at 16-byte offsets so a
 decoded payload's slices are directly usable), native endianness
 (the magic doubles as an endianness check). Handshake: magic `VTXP` + `u16`
-protocol version; the viewer only talks to a client with the identical version
+protocol version (currently 2); the viewer only talks to a client with the identical version
 and rejects anything else. Stream payloads are the in-memory blob bytes
 verbatim — the wire format derives from the build-selected `Positions` type,
 so there is no conversion at either end for any layout (`STYLE.md` §3). The
@@ -112,15 +112,28 @@ Semantics:
      (see M5).
 - **Staleness.** At `EndRun`, structures not touched during the run are marked
   stale (dimmed in UI, toggleable auto-remove).
-- **Copies on the path:** client → kernel is zero-copy (`writev` from the
-  caller's slices); the viewer's socket thread reads each payload into one
-  16-byte-aligned allocation, `protocol.decode` returns views into it, and
-  `Scene.apply` copies sections into their 64-byte-aligned blobs. Measured
-  (2026-08-24, `sketches/stress.zig`, 40 × 1M-vertex `MeshPositions`, aos3,
-  llvmpipe viewer): client 2.0 GB/s, viewer decode+apply 2.6 GB/s (517 MB
-  in 199 ms). A 60 Hz stream of 12 MB frames needs 0.7 GB/s, so the
-  read-straight-into-blobs and memfd (`SCM_RIGHTS`) optimizations are
-  **not warranted**; revisit only if a real workload shows ingest time.
+- **Copies on the path.** Two payload modes, protocol version 2:
+  - *Inline*: client → kernel is zero-copy (`writev` from the caller's
+    slices); the viewer's socket thread reads each payload into one
+    16-byte-aligned allocation, `protocol.decode` returns views into it, and
+    `Scene.apply` copies sections into 64-byte-aligned blobs.
+  - *Shared (zero-copy)*: the sketch asks the connection for buffers that ARE
+    memory-mapped memfds (`conn.sharedPositions(n)`, `sharedScalars`,
+    `sharedVectors`), fills them in place, and sends as usual; the section is
+    described by a `SectionRef` (fd index, 64-aligned offset, length) and the
+    fd rides the frame header in one `sendmsg` (`SCM_RIGHTS`). The viewer's
+    socket thread maps the fd read-only (`MAP_POPULATE`), the render thread
+    registers the mapping with the scene, and `Scene.apply` adopts sections
+    inside a registered mapping as blob *views* — no copy anywhere between the
+    sketch's write and the GPU upload. Mappings are refcounted by the blobs
+    that view them; the edge alone `munmap`s/`close`s via `released_mappings`.
+    A shared buffer is consumed by its send (the viewer retains versions, so
+    reuse is impossible by construction): request a fresh one per message.
+  - Measured (2026-08-24, `sketches/stress.zig`, 40 × 1M-vertex
+    `MeshPositions`, llvmpipe viewer): inline — client 241 ms (1.9 GB/s),
+    viewer decode+apply 197 ms, 517 MB through the socket; shared — client
+    16.5 ms, viewer 17.4 ms, 481 MB mapped and 36 MB through the socket.
+    Inline remains the default for ordinary slices.
 
 ## Client library
 
@@ -312,6 +325,6 @@ an explicit choice rather than a background experiment.
   (`VERTEX_MEMORY_BUDGET_MB`, UI drag) enforced by evicting old-run versions
   first, then decimating current-run frames (odd frames, then every 4th,
   …), never a structure's latest or frame 0; memory/eviction readouts;
-  ingest statistics on exit; `sketches/stress.zig`. memfd path closed by
-  measurement (see "Copies on the path"). Dylib mode: design note above,
+  ingest statistics on exit; `sketches/stress.zig`. memfd zero-copy path landed the
+  same day (see "Copies on the path"). Dylib mode: design note above,
   awaiting a decision.

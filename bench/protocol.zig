@@ -40,7 +40,7 @@ fn benchmarkSize(gpa: std.mem.Allocator, io: std.Io, n: u32) !void {
     const frame = encoded.writeTo(frame_storage);
     @memcpy(payload_storage, frame[@sizeOf(protocol.Header)..]);
     const header = try protocol.decodeHeader(frame);
-    _ = try protocol.decode(header, payload_storage);
+    _ = try protocol.decodeInline(header, payload_storage);
 
     const encode_iterations: u32 = switch (n) {
         1_000 => 200,
@@ -128,7 +128,7 @@ fn measureDecode(
 ) !Stats {
     for (0..3) |_| {
         const header = try protocol.decodeHeader(frame);
-        const message = try protocol.decode(header, payload);
+        const message = try protocol.decodeInline(header, payload);
         std.mem.doNotOptimizeAway(message.mesh.positions.bytes().ptr);
     }
 
@@ -137,7 +137,7 @@ fn measureDecode(
         const t0 = std.Io.Clock.awake.now(io);
         for (0..iterations) |_| {
             const header = try protocol.decodeHeader(frame);
-            const message = try protocol.decode(header, payload);
+            const message = try protocol.decodeInline(header, payload);
             std.mem.doNotOptimizeAway(message.mesh.positions.bytes().ptr);
             std.mem.doNotOptimizeAway(message.mesh.faces.ptr);
         }

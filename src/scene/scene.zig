@@ -20,6 +20,9 @@ pub const StructureIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 /// Typed index into `Scene.blobs`; it owns no memory and never allocates.
 pub const BlobIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
+/// Typed index into `Scene.mappings`; `.none` marks allocator-owned blob bytes.
+pub const MappingIndex = enum(u32) { none = std.math.maxInt(u32), _ };
+
 /// Byte offset of a NUL-terminated entry in `Scene.strings`; borrowed string
 /// views are invalidated when the scene interns another string.
 pub const StringIndex = enum(u32) { none = std.math.maxInt(u32), _ };
@@ -42,6 +45,7 @@ pub const Retention = struct {
 /// value owns no memory.
 pub const MemoryStats = struct {
     blob_bytes: usize,
+    mapped_bytes: usize,
     blob_count: u32,
     versions: u32,
     evicted_versions: u32,
@@ -94,10 +98,19 @@ pub const Structure = struct {
     touched: bool = false,
 };
 
-/// Refcounted, scene-owned blob. `bytes` is freed exactly once when its
-/// refcount reaches zero or the owning scene is deinitialized.
+/// Refcounted blob view. Allocator-owned bytes use `mapping = .none`; mapped
+/// bytes borrow their registered mapping until the final blob release.
 pub const Blob = struct {
-    bytes: []align(layout.blob_alignment.toByteUnits()) u8,
+    bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
+    refcount: u32,
+    mapping: MappingIndex,
+};
+
+/// One edge-owned fd mapping registered with the pure scene. The scene borrows
+/// `bytes` and `fd`; the edge unmaps/closes them after their index is released.
+pub const Mapping = struct {
+    bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
+    fd: i32,
     refcount: u32,
 };
 
@@ -121,6 +134,7 @@ pub const ApplyError = std.mem.Allocator.Error || error{
 pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
+const empty_mapping_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
 
 const EvictionCandidate = struct {
     structure: StructureIndex,
@@ -139,6 +153,9 @@ pub const Scene = struct {
     blob_free: std.ArrayList(BlobIndex) = .empty,
     new_blobs: std.ArrayList(BlobIndex) = .empty,
     freed_blobs: std.ArrayList(BlobIndex) = .empty,
+    mappings: std.MultiArrayList(Mapping) = .empty,
+    mapping_free: std.ArrayList(MappingIndex) = .empty,
+    released_mappings: std.ArrayList(MappingIndex) = .empty,
     frame_labels: std.ArrayList(StringIndex) = .empty,
     log: std.ArrayList(LogEntry) = .empty,
     retention: Retention = .{},
@@ -148,6 +165,7 @@ pub const Scene = struct {
     run_active: bool = false,
     source_name: StringIndex = .none,
     live_blobs: u32 = 0,
+    live_mappings: u32 = 0,
     blob_bytes: usize = 0,
     evicted_versions: u32 = 0,
     decimation_level: u8 = 1,
@@ -159,8 +177,10 @@ pub const Scene = struct {
     }
 
     /// Frees every allocation owned by the scene with the allocator retained
-    /// by `init`. Borrowed views and all typed indices become invalid.
+    /// by `init`. The edge must first call `takeAllMappings`, then unmap and
+    /// close every returned mapping. Borrowed views and indices become invalid.
     pub fn deinit(self: *Scene) void {
+        std.debug.assert(self.live_mappings == 0);
         var structures = self.structures.slice();
         const versions = structures.items(.versions);
         const quantity_refs = structures.items(.quantity_refs);
@@ -172,10 +192,14 @@ pub const Scene = struct {
         var blobs = self.blobs.slice();
         const bytes = blobs.items(.bytes);
         const refcounts = blobs.items(.refcount);
-        for (bytes, refcounts) |blob_bytes, refcount| {
-            if (refcount != 0) self.gpa.free(blob_bytes);
+        const blob_mappings = blobs.items(.mapping);
+        for (bytes, refcounts, blob_mappings) |blob_bytes, refcount, mapping| {
+            if (refcount != 0 and mapping == .none) self.gpa.free(blob_bytes);
         }
 
+        self.released_mappings.deinit(self.gpa);
+        self.mapping_free.deinit(self.gpa);
+        self.mappings.deinit(self.gpa);
         self.log.deinit(self.gpa);
         self.frame_labels.deinit(self.gpa);
         self.freed_blobs.deinit(self.gpa);
@@ -189,9 +213,9 @@ pub const Scene = struct {
         self.* = undefined;
     }
 
-    /// Applies one decoded message, copying every retained slice into
-    /// scene-owned storage. Only allocation failure and semantic scene errors
-    /// are returned; no effects outside this scene occur.
+    /// Applies one decoded message. Slices inside registered mappings become
+    /// refcounted views; all other retained slices are copied into scene-owned
+    /// storage. Only allocation and semantic errors are returned.
     pub fn apply(self: *Scene, message: protocol.Message) ApplyError!void {
         switch (message) {
             .hello => |hello| {
@@ -294,8 +318,127 @@ pub const Scene = struct {
         if (created_blob) self.enforceBudget();
     }
 
-    /// Copies bytes into a new 64-byte-aligned, refcount-one blob and queues
-    /// its index in `new_blobs`. The scene owns the copy; a free slot is reused.
+    /// Registers an edge-owned mapping with refcount zero. The scene borrows
+    /// `bytes` and `fd`; registration reserves every future release-queue push.
+    pub fn registerMapping(
+        self: *Scene,
+        bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
+        fd: i32,
+    ) std.mem.Allocator.Error!MappingIndex {
+        const new_slots = @intFromBool(self.mapping_free.items.len == 0);
+        try self.mappings.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
+        try self.mapping_free.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
+        try self.released_mappings.ensureUnusedCapacity(self.gpa, @as(usize, self.live_mappings) + 1);
+
+        const mapping_index = if (self.mapping_free.pop()) |free_index| blk: {
+            var mappings = self.mappings.slice();
+            const i = indexOf(free_index);
+            std.debug.assert(mappings.items(.fd)[i] == -1);
+            mappings.items(.bytes)[i] = bytes;
+            mappings.items(.fd)[i] = fd;
+            mappings.items(.refcount)[i] = 0;
+            break :blk free_index;
+        } else blk: {
+            const new_index: MappingIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.mappings.len))));
+            self.mappings.appendAssumeCapacity(.{ .bytes = bytes, .fd = fd, .refcount = 0 });
+            break :blk new_index;
+        };
+        self.live_mappings += 1;
+        return mapping_index;
+    }
+
+    /// Returns the borrowed bytes of a registered mapping without allocation.
+    /// The view remains valid until the edge forgets the mapping index.
+    pub fn mappingBytes(
+        self: *const Scene,
+        mapping_index: MappingIndex,
+    ) []align(layout.blob_alignment.toByteUnits()) const u8 {
+        std.debug.assert(mapping_index != .none);
+        const mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        return mappings.items(.bytes)[i];
+    }
+
+    /// Returns one registered mapping record by value without allocation. The
+    /// record remains edge-owned and must not be closed before `forgetMapping`.
+    pub fn mappingValue(self: *const Scene, mapping_index: MappingIndex) Mapping {
+        std.debug.assert(mapping_index != .none);
+        const mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        return .{
+            .bytes = mappings.items(.bytes)[i],
+            .fd = mappings.items(.fd)[i],
+            .refcount = mappings.items(.refcount)[i],
+        };
+    }
+
+    /// Queues every registered zero-ref mapping in registration-index order.
+    /// `registerMapping` pre-reserves this operation, so it never allocates.
+    pub fn releaseUnreferencedMappings(self: *Scene) void {
+        const mappings = self.mappings.slice();
+        const fds = mappings.items(.fd);
+        const refcounts = mappings.items(.refcount);
+        for (fds, refcounts, 0..) |fd, refcount, i| {
+            if (fd < 0 or refcount != 0) continue;
+            self.queueMappingRelease(@fromBackingInt(@intCast(i)));
+        }
+    }
+
+    /// Forgets a zero-ref mapping after the edge has unmapped its bytes and
+    /// closed its fd. The slot is returned to the free list without allocation.
+    pub fn forgetMapping(self: *Scene, mapping_index: MappingIndex) void {
+        std.debug.assert(mapping_index != .none);
+        var mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        std.debug.assert(mappings.items(.refcount)[i] == 0);
+
+        var found = false;
+        for (self.released_mappings.items, 0..) |queued, queued_i| {
+            if (queued != mapping_index) continue;
+            std.mem.copyForwards(
+                MappingIndex,
+                self.released_mappings.items[queued_i .. self.released_mappings.items.len - 1],
+                self.released_mappings.items[queued_i + 1 ..],
+            );
+            self.released_mappings.items.len -= 1;
+            found = true;
+            break;
+        }
+        std.debug.assert(found);
+        mappings.items(.bytes)[i] = emptyMappingBytes();
+        mappings.items(.fd)[i] = -1;
+        self.mapping_free.appendAssumeCapacity(mapping_index);
+        self.live_mappings -= 1;
+    }
+
+    /// Moves every still-registered mapping into caller-owned `out`, using the
+    /// scene allocator only to reserve output capacity. The edge then owns all
+    /// returned fds/mappings and must unmap and close them before `deinit`.
+    pub fn takeAllMappings(self: *Scene, out: *std.ArrayList(Mapping)) std.mem.Allocator.Error!void {
+        try out.ensureUnusedCapacity(self.gpa, self.live_mappings);
+        var mappings = self.mappings.slice();
+        const bytes = mappings.items(.bytes);
+        const fds = mappings.items(.fd);
+        const refcounts = mappings.items(.refcount);
+        for (bytes, fds, refcounts) |mapping_bytes, fd, refcount| {
+            if (fd < 0) continue;
+            out.appendAssumeCapacity(.{ .bytes = mapping_bytes, .fd = fd, .refcount = refcount });
+        }
+        for (fds, bytes) |*fd, *mapping_bytes| {
+            if (fd.* < 0) continue;
+            fd.* = -1;
+            mapping_bytes.* = emptyMappingBytes();
+        }
+        self.released_mappings.clearRetainingCapacity();
+        self.live_mappings = 0;
+    }
+
+    /// Creates a 64-byte-aligned, refcount-one blob and queues its index in
+    /// `new_blobs`. Registered mapping slices are adopted without allocation;
+    /// all other bytes are copied into scene-owned storage.
     pub fn createBlob(self: *Scene, bytes: []const u8) std.mem.Allocator.Error!BlobIndex {
         try self.reserveBlobCreates(1);
         return self.createBlobAssumeReserved(bytes);
@@ -310,8 +453,9 @@ pub const Scene = struct {
         refcount.* += 1;
     }
 
-    /// Releases one owning reference without allocating. At zero, bytes are
-    /// freed and the index is queued in both `blob_free` and `freed_blobs`.
+    /// Releases one owning reference without allocating. At zero, owned bytes
+    /// are freed; mapped bytes decrement their mapping and may queue its release.
+    /// The blob index is queued in both `blob_free` and `freed_blobs`.
     pub fn releaseBlob(self: *Scene, blob_index: BlobIndex) void {
         std.debug.assert(blob_index != .none);
         var blobs = self.blobs.slice();
@@ -322,8 +466,18 @@ pub const Scene = struct {
         if (refcount.* != 0) return;
 
         self.blob_bytes -= blobs.items(.bytes)[i].len;
-        self.gpa.free(blobs.items(.bytes)[i]);
+        const mapping_index = blobs.items(.mapping)[i];
+        if (mapping_index == .none) {
+            self.gpa.free(blobs.items(.bytes)[i]);
+        } else {
+            var mappings = self.mappings.slice();
+            const mapping_refcount = &mappings.items(.refcount)[indexOf(mapping_index)];
+            std.debug.assert(mapping_refcount.* > 0);
+            mapping_refcount.* -= 1;
+            if (mapping_refcount.* == 0) self.queueMappingRelease(mapping_index);
+        }
         blobs.items(.bytes)[i] = emptyBlobBytes();
+        blobs.items(.mapping)[i] = .none;
         var pending = self.new_blobs.items.len;
         while (pending > 0) {
             pending -= 1;
@@ -425,9 +579,15 @@ pub const Scene = struct {
         var version_count: usize = 0;
         const structures = self.structures.slice();
         for (structures.items(.versions)) |versions| version_count += versions.items.len;
+        var mapped_bytes: usize = 0;
+        const blobs = self.blobs.slice();
+        for (blobs.items(.bytes), blobs.items(.refcount), blobs.items(.mapping)) |bytes, refcount, mapping| {
+            if (refcount != 0 and mapping != .none) mapped_bytes += bytes.len;
+        }
         std.debug.assert(version_count <= std.math.maxInt(u32));
         return .{
             .blob_bytes = self.blob_bytes,
+            .mapped_bytes = mapped_bytes,
             .blob_count = self.live_blobs,
             .versions = @intCast(version_count),
             .evicted_versions = self.evicted_versions,
@@ -907,24 +1067,38 @@ pub const Scene = struct {
     }
 
     fn createBlobAssumeReserved(self: *Scene, bytes: []const u8) std.mem.Allocator.Error!BlobIndex {
-        const owned = try self.gpa.alignedAlloc(u8, layout.blob_alignment, bytes.len);
-        @memcpy(owned, bytes);
+        const mapping_index = self.mappingContaining(bytes) orelse .none;
+        const stored: []align(layout.blob_alignment.toByteUnits()) const u8 = if (mapping_index == .none) blk: {
+            const owned = try self.gpa.alignedAlloc(u8, layout.blob_alignment, bytes.len);
+            @memcpy(owned, bytes);
+            break :blk owned;
+        } else blk: {
+            std.debug.assert(@intFromPtr(bytes.ptr) % layout.blob_alignment.toByteUnits() == 0);
+            var mappings = self.mappings.slice();
+            mappings.items(.refcount)[indexOf(mapping_index)] += 1;
+            break :blk @alignCast(bytes);
+        };
 
         const blob_index = if (self.blob_free.pop()) |free_index| blk: {
             var blobs = self.blobs.slice();
             const i = indexOf(free_index);
             std.debug.assert(blobs.items(.refcount)[i] == 0);
-            blobs.items(.bytes)[i] = owned;
+            blobs.items(.bytes)[i] = stored;
             blobs.items(.refcount)[i] = 1;
+            blobs.items(.mapping)[i] = mapping_index;
             break :blk free_index;
         } else blk: {
             const new_index: BlobIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.blobs.len))));
-            self.blobs.appendAssumeCapacity(.{ .bytes = owned, .refcount = 1 });
+            self.blobs.appendAssumeCapacity(.{
+                .bytes = stored,
+                .refcount = 1,
+                .mapping = mapping_index,
+            });
             break :blk new_index;
         };
         self.new_blobs.appendAssumeCapacity(blob_index);
         self.live_blobs += 1;
-        self.blob_bytes += owned.len;
+        self.blob_bytes += stored.len;
         return blob_index;
     }
 
@@ -935,11 +1109,43 @@ pub const Scene = struct {
         const i = indexOf(blob_index);
         std.debug.assert(blobs.items(.refcount)[i] == 1);
         self.blob_bytes -= blobs.items(.bytes)[i].len;
-        self.gpa.free(blobs.items(.bytes)[i]);
+        const mapping_index = blobs.items(.mapping)[i];
+        if (mapping_index == .none) {
+            self.gpa.free(blobs.items(.bytes)[i]);
+        } else {
+            var mappings = self.mappings.slice();
+            const refcount = &mappings.items(.refcount)[indexOf(mapping_index)];
+            std.debug.assert(refcount.* > 0);
+            refcount.* -= 1;
+            if (refcount.* == 0) self.queueMappingRelease(mapping_index);
+        }
         blobs.items(.bytes)[i] = emptyBlobBytes();
         blobs.items(.refcount)[i] = 0;
+        blobs.items(.mapping)[i] = .none;
         self.blob_free.appendAssumeCapacity(blob_index);
         self.live_blobs -= 1;
+    }
+
+    fn mappingContaining(self: *const Scene, section: []const u8) ?MappingIndex {
+        const section_start = @intFromPtr(section.ptr);
+        const section_end = std.math.add(usize, section_start, section.len) catch return null;
+        const mappings = self.mappings.slice();
+        for (mappings.items(.bytes), mappings.items(.fd), 0..) |mapping_bytes, fd, i| {
+            if (fd < 0) continue;
+            const mapping_start = @intFromPtr(mapping_bytes.ptr);
+            const mapping_end = std.math.add(usize, mapping_start, mapping_bytes.len) catch continue;
+            if (section_start >= mapping_start and section_end <= mapping_end) {
+                return @fromBackingInt(@intCast(i));
+            }
+        }
+        return null;
+    }
+
+    fn queueMappingRelease(self: *Scene, mapping_index: MappingIndex) void {
+        for (self.released_mappings.items) |queued| {
+            if (queued == mapping_index) return;
+        }
+        self.released_mappings.appendAssumeCapacity(mapping_index);
     }
 };
 
@@ -947,8 +1153,12 @@ fn indexOf(index: anytype) usize {
     return @backingInt(index);
 }
 
-fn emptyBlobBytes() []align(layout.blob_alignment.toByteUnits()) u8 {
-    return @constCast(empty_blob_storage[0..]);
+fn emptyBlobBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
+    return empty_blob_storage[0..];
+}
+
+fn emptyMappingBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
+    return empty_mapping_storage[0..];
 }
 
 const testing = std.testing;
@@ -963,22 +1173,33 @@ fn applyMesh(scene: *Scene, name: []const u8, positions: layout.Positions.Const,
     try scene.apply(.{ .mesh = .{ .name = name, .dim = .d3, .positions = positions, .faces = faces } });
 }
 
+fn deinitTestSceneWithMappings(scene: *Scene) void {
+    var mappings: std.ArrayList(Mapping) = .empty;
+    scene.takeAllMappings(&mappings) catch unreachable;
+    mappings.deinit(scene.gpa);
+    scene.deinit();
+}
+
 fn expectMemoryAccounting(scene: *const Scene) !void {
     const blobs = scene.blobs.slice();
     const bytes = blobs.items(.bytes);
     const refcounts = blobs.items(.refcount);
+    const mappings = blobs.items(.mapping);
     var live_bytes: usize = 0;
+    var mapped_bytes: usize = 0;
     var live_count: u32 = 0;
     var version_count: u32 = 0;
-    for (bytes, refcounts) |blob_bytes, refcount| {
+    for (bytes, refcounts, mappings) |blob_bytes, refcount, mapping| {
         if (refcount == 0) continue;
         live_bytes += blob_bytes.len;
+        if (mapping != .none) mapped_bytes += blob_bytes.len;
         live_count += 1;
     }
     const structures = scene.structures.slice();
     for (structures.items(.versions)) |versions| version_count += @intCast(versions.items.len);
     const stats = scene.memoryStats();
     try testing.expectEqual(live_bytes, stats.blob_bytes);
+    try testing.expectEqual(mapped_bytes, stats.mapped_bytes);
     try testing.expectEqual(live_count, stats.blob_count);
     try testing.expectEqual(version_count, stats.versions);
 }
@@ -992,7 +1213,7 @@ fn applyEncoded(
     const header = try protocol.decodeHeader(frame);
     const payload_bytes = frame[@sizeOf(protocol.Header)..];
     const payload: []align(protocol.payload_alignment) const u8 = @alignCast(payload_bytes);
-    try scene.apply(try protocol.decode(header, payload));
+    try scene.apply(try protocol.decodeInline(header, payload));
 }
 
 test "hot scene records have fixed documented sizes" {
@@ -1186,6 +1407,146 @@ test "blob free list reuses indices and records both notifications" {
     try testing.expectEqual(first, scene.freed_blobs.items[0]);
     try testing.expectEqual(second, scene.new_blobs.items[scene.new_blobs.items.len - 1]);
     try testing.expectEqualStrings("second", scene.blobBytes(second));
+}
+
+test "mapped mesh positions are adopted without blob storage allocation" {
+    const CountingAllocator = @import("../testutil.zig").CountingAllocator;
+    var counting: CountingAllocator = .{ .child = testing.allocator };
+    const gpa = counting.allocator();
+    var scene = Scene.init(gpa);
+    defer deinitTestSceneWithMappings(&scene);
+
+    const owned = try layout.Positions.alloc(gpa, 3);
+    defer owned.free(gpa);
+    owned.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", owned.toConst(), &.{.{ 0, 1, 2 }});
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = owned.toConst() } });
+
+    var mapping: [layout.Positions.byteSize(3)]u8 align(64) = @splat(0);
+    const mapped = layout.Positions.fromBytes(&mapping);
+    mapped.setAll(&.{ .init(2, 0, 0), .init(0, 2, 0), .init(0, 0, 2) });
+    const mapping_index = try scene.registerMapping(&mapping, 10);
+    counting.alloc_calls = 0;
+    counting.resize_calls = 0;
+    counting.remap_calls = 0;
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = mapped.toConst() } });
+    try testing.expectEqual(0, counting.alloc_calls + counting.resize_calls + counting.remap_calls);
+
+    const surface = scene.find("surface").?;
+    const version = latestVersionValue(&scene, surface);
+    try testing.expectEqual(@intFromPtr(mapping[0..].ptr), @intFromPtr(scene.blobBytes(version.positions).ptr));
+    try testing.expectEqual(mapping_index, scene.blobs.slice().items(.mapping)[indexOf(version.positions)]);
+    try testing.expectEqual(@as(u32, 1), scene.mappingValue(mapping_index).refcount);
+    try testing.expectEqual(mapping.len, scene.memoryStats().mapped_bytes);
+}
+
+test "one mapping refcounts multiple versions while mesh topology remains shared" {
+    var scene = Scene.init(testing.allocator);
+    defer deinitTestSceneWithMappings(&scene);
+    const position_len = layout.Positions.byteSize(3);
+    var mapping: [128]u8 align(64) = @splat(0);
+    const first_positions = layout.Positions.fromBytes(mapping[0..position_len]);
+    const second_positions = layout.Positions.fromBytes(mapping[64 .. 64 + position_len]);
+    const mapping_index = try scene.registerMapping(&mapping, 11);
+
+    try scene.apply(.{ .begin_run = {} });
+    try applyMesh(&scene, "surface", first_positions.toConst(), &.{.{ 0, 1, 2 }});
+    const surface = scene.find("surface").?;
+    const first = latestVersionValue(&scene, surface);
+    try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "one" } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = second_positions.toConst() } });
+    const second = latestVersionValue(&scene, surface);
+
+    try testing.expectEqual(first.topology, second.topology);
+    try testing.expectEqual(@as(u32, 2), scene.blobs.slice().items(.refcount)[indexOf(first.topology)]);
+    try testing.expectEqual(@as(u32, 2), scene.mappingValue(mapping_index).refcount);
+    try testing.expectEqual(2 * position_len, scene.memoryStats().mapped_bytes);
+}
+
+test "mapping releases preserve last-reference order and slots are reusable" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    var first_mapping: [64]u8 align(64) = @splat(0);
+    var second_mapping: [64]u8 align(64) = @splat(0);
+    const first_index = try scene.registerMapping(&first_mapping, 12);
+    const second_index = try scene.registerMapping(&second_mapping, 13);
+    const first_blob = try scene.createBlob(first_mapping[0..16]);
+    const second_blob = try scene.createBlob(second_mapping[0..16]);
+
+    scene.releaseBlob(second_blob);
+    scene.releaseBlob(first_blob);
+    try testing.expectEqualSlices(MappingIndex, &.{ second_index, first_index }, scene.released_mappings.items);
+    scene.forgetMapping(second_index);
+    scene.forgetMapping(first_index);
+    try testing.expectEqual(@as(u32, 0), scene.live_mappings);
+    try testing.expectEqual(@as(usize, 2), scene.mapping_free.items.len);
+}
+
+test "failed apply releases an unadopted mapping" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    var mapping: [layout.Positions.byteSize(3)]u8 align(64) = @splat(0);
+    const mapped = layout.Positions.fromBytes(&mapping).toConst();
+    const mapping_index = try scene.registerMapping(&mapping, 14);
+    try scene.apply(.{ .begin_run = {} });
+    try testing.expectError(error.UnknownStructure, scene.apply(.{ .mesh_positions = .{
+        .name = "missing",
+        .positions = mapped,
+    } }));
+    scene.releaseUnreferencedMappings();
+    try testing.expectEqualSlices(MappingIndex, &.{mapping_index}, scene.released_mappings.items);
+    scene.forgetMapping(mapping_index);
+}
+
+test "takeAllMappings returns retained and unreferenced mappings for final edge cleanup" {
+    var scene = Scene.init(testing.allocator);
+    defer scene.deinit();
+    var first_mapping: [64]u8 align(64) = @splat(0);
+    var second_mapping: [64]u8 align(64) = @splat(0);
+    _ = try scene.registerMapping(&first_mapping, 30);
+    _ = try scene.registerMapping(&second_mapping, 31);
+    _ = try scene.createBlob(first_mapping[0..16]);
+    var taken: std.ArrayList(Mapping) = .empty;
+    defer taken.deinit(testing.allocator);
+    try scene.takeAllMappings(&taken);
+    try testing.expectEqual(@as(usize, 2), taken.items.len);
+    try testing.expectEqual(@as(i32, 30), taken.items[0].fd);
+    try testing.expectEqual(@as(u32, 1), taken.items[0].refcount);
+    try testing.expectEqual(@as(i32, 31), taken.items[1].fd);
+    try testing.expectEqual(@as(u32, 0), scene.live_mappings);
+}
+
+test "mapped bytes participate in budget eviction accounting" {
+    var scene = Scene.init(testing.allocator);
+    defer deinitTestSceneWithMappings(&scene);
+    const position_len = layout.Positions.byteSize(3);
+    var mapping: [256]u8 align(64) = @splat(0);
+    _ = try scene.registerMapping(&mapping, 15);
+    scene.retention.budget_bytes = 2 * position_len;
+    try scene.apply(.{ .begin_run = {} });
+    try scene.apply(.{ .points = .{
+        .name = "sites",
+        .dim = .d3,
+        .positions = layout.Positions.fromBytes(mapping[0..position_len]).toConst(),
+    } });
+    try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "one" } });
+    try scene.apply(.{ .points = .{
+        .name = "sites",
+        .dim = .d3,
+        .positions = layout.Positions.fromBytes(mapping[64 .. 64 + position_len]).toConst(),
+    } });
+    try scene.apply(.{ .begin_frame = .{ .index = 2, .label = "two" } });
+    try scene.apply(.{ .points = .{
+        .name = "sites",
+        .dim = .d3,
+        .positions = layout.Positions.fromBytes(mapping[128 .. 128 + position_len]).toConst(),
+    } });
+    const stats = scene.memoryStats();
+    try testing.expectEqual(2 * position_len, stats.blob_bytes);
+    try testing.expectEqual(stats.blob_bytes, stats.mapped_bytes);
+    try testing.expectEqual(@as(u32, 1), stats.evicted_versions);
+    try expectMemoryAccounting(&scene);
 }
 
 test "budget decimates odd frames first and versionAt uses the nearest kept frame" {
@@ -1416,8 +1777,33 @@ fn allocationFailureCase(gpa: std.mem.Allocator) !void {
     try scene.apply(.{ .end_run = {} });
 }
 
+fn mappingAllocationFailureCase(gpa: std.mem.Allocator) !void {
+    var remaining: std.ArrayList(Mapping) = .empty;
+    try remaining.ensureTotalCapacity(gpa, 1);
+    defer remaining.deinit(gpa);
+    var scene = Scene.init(gpa);
+    defer {
+        scene.takeAllMappings(&remaining) catch unreachable;
+        scene.deinit();
+    }
+    var mapping: [layout.Positions.byteSize(3)]u8 align(64) = @splat(0);
+    const positions = layout.Positions.fromBytes(&mapping).toConst();
+
+    try scene.apply(.{ .begin_run = {} });
+    _ = try scene.registerMapping(&mapping, 20);
+    try scene.apply(.{ .mesh = .{
+        .name = "mapped",
+        .dim = .d3,
+        .positions = positions,
+        .faces = &.{.{ 0, 1, 2 }},
+    } });
+    try scene.apply(.{ .mesh_positions = .{ .name = "mapped", .positions = positions } });
+    scene.releaseUnreferencedMappings();
+}
+
 test "all allocating scene paths handle every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, allocationFailureCase, .{});
+    try testing.checkAllAllocationFailures(testing.allocator, mappingAllocationFailureCase, .{});
 }
 
 test "steady-state updates allocate only their payload blob" {

@@ -9,7 +9,23 @@ const protocol = @import("../protocol/protocol.zig");
 
 /// Errors a sink may return while synchronously delivering one borrowed
 /// message. No error owns memory and delivery allocates nothing in `SocketSink`.
-pub const SendError = std.Io.net.Stream.Writer.Error;
+pub const SendError = std.Io.net.Stream.Writer.Error || error{
+    AncillarySendFailed,
+    ShortWrite,
+    MisalignedShared,
+    SharedConsumed,
+};
+
+/// Errors while creating a connection-owned shared buffer. On success the
+/// connection owns both fd and mapping until a send consumes them or close.
+pub const SharedError = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||
+    std.posix.MMapError || error{
+    Finished,
+    NotConnected,
+    TooManyShared,
+    InvalidSharedLength,
+    SharedTooLarge,
+};
 
 /// Errors from client state validation or synchronous message delivery. No
 /// error owns memory, and client operations allocate nothing.
@@ -20,6 +36,114 @@ pub const Error = SendError || error{
     NameTooLong,
     TooManyElements,
     TextTooLong,
+};
+
+/// One writable memfd mapping owned by its connection until sent. `len` is the
+/// requested logical byte count; `map` includes page-rounded trailing bytes.
+pub const Shared = struct {
+    fd: i32,
+    map: []align(std.heap.page_size_min) u8,
+    len: usize,
+};
+
+const max_outstanding_shared = 8;
+const max_consumed_ranges = 8;
+
+const ConsumedRange = struct {
+    start: usize,
+    len: usize,
+};
+
+const SharedTracker = struct {
+    outstanding: [max_outstanding_shared]Shared = undefined,
+    outstanding_len: u8 = 0,
+    consumed: [max_consumed_ranges]ConsumedRange = undefined,
+    consumed_len: u8 = 0,
+    consumed_next: u8 = 0,
+
+    fn create(self: *SharedTracker, io: std.Io, len: usize) SharedError!Shared {
+        if (len == 0) return error.InvalidSharedLength;
+        if (self.outstanding_len == max_outstanding_shared) return error.TooManyShared;
+        const with_slack = std.math.add(usize, len, std.heap.page_size_min - 1) catch
+            return error.SharedTooLarge;
+        const map_len = with_slack & ~@as(usize, std.heap.page_size_min - 1);
+        const fd = try std.posix.memfd_create("vertex", std.posix.MFD.CLOEXEC);
+        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+        errdefer file.close(io);
+        try file.setLength(io, map_len);
+        const map = try std.posix.mmap(
+            null,
+            map_len,
+            .{ .READ = true, .WRITE = true },
+            .{ .TYPE = .SHARED, .POPULATE = true },
+            fd,
+            0,
+        );
+        const shared: Shared = .{ .fd = fd, .map = map, .len = len };
+        self.outstanding[self.outstanding_len] = shared;
+        self.outstanding_len += 1;
+        return shared;
+    }
+
+    fn releaseAll(self: *SharedTracker, io: std.Io) void {
+        for (self.outstanding[0..self.outstanding_len]) |shared| {
+            std.posix.munmap(shared.map);
+            const file: std.Io.File = .{ .handle = shared.fd, .flags = .{ .nonblocking = false } };
+            file.close(io);
+        }
+        self.outstanding_len = 0;
+    }
+
+    fn findOutstanding(self: *const SharedTracker, bytes: []const u8) ?u8 {
+        if (bytes.len == 0) return null;
+        const start = @intFromPtr(bytes.ptr);
+        const end = std.math.add(usize, start, bytes.len) catch return null;
+        for (self.outstanding[0..self.outstanding_len], 0..) |shared, i| {
+            const shared_start = @intFromPtr(shared.map.ptr);
+            const shared_end = shared_start + shared.len;
+            if (start >= shared_start and end <= shared_end) return @intCast(i);
+        }
+        return null;
+    }
+
+    fn wasConsumed(self: *const SharedTracker, bytes: []const u8) bool {
+        if (bytes.len == 0) return false;
+        const start = @intFromPtr(bytes.ptr);
+        const end = std.math.add(usize, start, bytes.len) catch return false;
+        for (self.consumed[0..self.consumed_len]) |range| {
+            if (start >= range.start and end <= range.start + range.len) return true;
+        }
+        return false;
+    }
+
+    fn consume(self: *SharedTracker, io: std.Io, indices: []const u8) void {
+        var selected: [max_outstanding_shared]bool = @splat(false);
+        for (indices) |index| selected[index] = true;
+        var write: usize = 0;
+        for (self.outstanding[0..self.outstanding_len], 0..) |shared, i| {
+            if (selected[i]) {
+                self.rememberConsumed(shared);
+                std.posix.munmap(shared.map);
+                const file: std.Io.File = .{ .handle = shared.fd, .flags = .{ .nonblocking = false } };
+                file.close(io);
+            } else {
+                self.outstanding[write] = shared;
+                write += 1;
+            }
+        }
+        self.outstanding_len = @intCast(write);
+    }
+
+    fn rememberConsumed(self: *SharedTracker, shared: Shared) void {
+        const range: ConsumedRange = .{ .start = @intFromPtr(shared.map.ptr), .len = shared.len };
+        if (self.consumed_len < max_consumed_ranges) {
+            self.consumed[self.consumed_len] = range;
+            self.consumed_len += 1;
+            return;
+        }
+        self.consumed[self.consumed_next] = range;
+        self.consumed_next = (self.consumed_next + 1) % max_consumed_ranges;
+    }
 };
 
 /// Errors from resolving and opening the Unix-domain socket plus starting a
@@ -64,6 +188,7 @@ pub const Sink = struct {
 pub const SocketSink = struct {
     io: std.Io,
     stream: std.Io.net.Stream,
+    shared_tracker: ?*SharedTracker = null,
     closed: bool = false,
 
     /// Opens `path` as a Unix-domain stream. The returned sink owns the socket;
@@ -100,16 +225,141 @@ pub const SocketSink = struct {
     fn send(self: *SocketSink, message: protocol.Message) SendError!void {
         std.debug.assert(!self.closed);
         var encoded: protocol.Encoded = undefined;
-        encodeMessage(&encoded, message);
+        var fds: [7]i32 = undefined;
+        var fd_count: u8 = 0;
+        var consumed: [protocol.max_sections]u8 = undefined;
+        var consumed_count: u8 = 0;
+        try self.encodeTracked(
+            &encoded,
+            message,
+            &fds,
+            &fd_count,
+            &consumed,
+            &consumed_count,
+        );
 
         const source_parts = encoded.slices();
         var parts: [protocol.max_parts][]const u8 = undefined;
         @memcpy(parts[0..source_parts.len], source_parts);
 
+        if (fd_count != 0) {
+            try sendMsgWithFds(
+                self.stream.socket.handle,
+                parts[0..source_parts.len],
+                fds[0..fd_count],
+                encoded.totalLen(),
+            );
+            self.shared_tracker.?.consume(self.io, consumed[0..consumed_count]);
+            return;
+        }
+
         var stream_writer = self.stream.writer(self.io, &.{});
         stream_writer.interface.writeVecAll(parts[0..source_parts.len]) catch {
             return stream_writer.err orelse error.Unexpected;
         };
+    }
+
+    fn encodeTracked(
+        self: *SocketSink,
+        out: *protocol.Encoded,
+        message: protocol.Message,
+        fds: *[7]i32,
+        fd_count: *u8,
+        consumed: *[protocol.max_sections]u8,
+        consumed_count: *u8,
+    ) SendError!void {
+        switch (message) {
+            .mesh => |value| {
+                const positions = try self.classifySection(value.positions.bytes(), fds, fd_count, consumed, consumed_count);
+                const faces = try self.classifySection(std.mem.sliceAsBytes(value.faces), fds, fd_count, consumed, consumed_count);
+                protocol.encodeMeshSections(
+                    out,
+                    value.name,
+                    value.dim,
+                    value.positions.len(),
+                    positions,
+                    @intCast(value.faces.len),
+                    faces,
+                );
+            },
+            .mesh_positions => |value| {
+                const positions = try self.classifySection(value.positions.bytes(), fds, fd_count, consumed, consumed_count);
+                protocol.encodeMeshPositionsSection(out, value.name, value.positions.len(), positions);
+            },
+            .points => |value| {
+                const positions = try self.classifySection(value.positions.bytes(), fds, fd_count, consumed, consumed_count);
+                protocol.encodePointsSection(out, value.name, value.dim, value.positions.len(), positions);
+            },
+            .lines => |value| {
+                const positions = try self.classifySection(value.positions.bytes(), fds, fd_count, consumed, consumed_count);
+                const segments = try self.classifySection(std.mem.sliceAsBytes(value.segments), fds, fd_count, consumed, consumed_count);
+                protocol.encodeLinesSections(
+                    out,
+                    value.name,
+                    value.dim,
+                    value.positions.len(),
+                    positions,
+                    @intCast(value.segments.len),
+                    segments,
+                );
+            },
+            .scalar_quantity => |value| {
+                const values = try self.classifySection(std.mem.sliceAsBytes(value.values), fds, fd_count, consumed, consumed_count);
+                protocol.encodeScalarQuantitySection(
+                    out,
+                    value.structure,
+                    value.name,
+                    value.target,
+                    @intCast(value.values.len),
+                    values,
+                );
+            },
+            .vector_quantity => |value| {
+                const vectors = try self.classifySection(value.vectors.bytes(), fds, fd_count, consumed, consumed_count);
+                protocol.encodeVectorQuantitySection(
+                    out,
+                    value.structure,
+                    value.name,
+                    value.target,
+                    value.vectors.len(),
+                    vectors,
+                );
+            },
+            else => encodeMessage(out, message),
+        }
+    }
+
+    fn classifySection(
+        self: *SocketSink,
+        bytes: []const u8,
+        fds: *[7]i32,
+        fd_count: *u8,
+        consumed: *[protocol.max_sections]u8,
+        consumed_count: *u8,
+    ) SendError!protocol.Section {
+        const tracker = self.shared_tracker orelse return .{ .@"inline" = bytes };
+        const outstanding_index = tracker.findOutstanding(bytes) orelse {
+            if (tracker.wasConsumed(bytes)) return error.SharedConsumed;
+            return .{ .@"inline" = bytes };
+        };
+        const shared = tracker.outstanding[outstanding_index];
+        const offset = @intFromPtr(bytes.ptr) - @intFromPtr(shared.map.ptr);
+        if (offset % layout.blob_alignment.toByteUnits() != 0) return error.MisalignedShared;
+        std.debug.assert(fd_count.* < fds.len);
+        const section_fd_index = fd_count.*;
+        fds[section_fd_index] = shared.fd;
+        fd_count.* += 1;
+        for (consumed[0..consumed_count.*]) |existing| {
+            if (existing == outstanding_index) break;
+        } else {
+            consumed[consumed_count.*] = outstanding_index;
+            consumed_count.* += 1;
+        }
+        return .{ .external = .{
+            .fd_index = section_fd_index,
+            .offset = offset,
+            .len = bytes.len,
+        } };
     }
 };
 
@@ -119,6 +369,55 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
         return socket.send(message);
     }
 }.send };
+
+fn cmsgAlign(len: usize) usize {
+    return std.mem.alignForward(usize, len, @sizeOf(usize));
+}
+
+fn cmsgLen(data_len: usize) usize {
+    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + data_len;
+}
+
+fn cmsgSpace(data_len: usize) usize {
+    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + cmsgAlign(data_len);
+}
+
+fn sendMsgWithFds(
+    fd: std.posix.fd_t,
+    parts: []const []const u8,
+    fds: []const i32,
+    expected_len: usize,
+) SendError!void {
+    std.debug.assert(fds.len > 0 and fds.len <= 7);
+    var iovecs: [protocol.max_parts]std.posix.iovec_const = undefined;
+    for (parts, 0..) |part, i| iovecs[i] = .{ .base = part.ptr, .len = part.len };
+
+    const max_control_len = comptime cmsgSpace(7 * @sizeOf(i32));
+    var control: [max_control_len]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
+    const header: *std.os.linux.cmsghdr = @ptrCast(&control);
+    const data_len = fds.len * @sizeOf(i32);
+    header.* = .{
+        .len = cmsgLen(data_len),
+        .level = std.os.linux.SOL.SOCKET,
+        .type = std.os.linux.SCM.RIGHTS,
+    };
+    const data_start = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
+    const fd_data: [*]i32 = @ptrCast(@alignCast(control[data_start..].ptr));
+    @memcpy(fd_data[0..fds.len], fds);
+
+    const msg: std.os.linux.msghdr_const = .{
+        .name = null,
+        .namelen = 0,
+        .iov = &iovecs,
+        .iovlen = parts.len,
+        .control = &control,
+        .controllen = cmsgSpace(data_len),
+        .flags = 0,
+    };
+    const rc = std.os.linux.sendmsg(fd, &msg, std.os.linux.MSG.NOSIGNAL);
+    if (std.os.linux.errno(rc) != .SUCCESS) return error.AncillarySendFailed;
+    if (rc != expected_len) return error.ShortWrite;
+}
 
 /// A protocol session over a caller-owned sink. The session borrows the sink
 /// for its lifetime, owns no heap memory, and allocates nothing.
@@ -225,16 +524,51 @@ pub const Session = struct {
     }
 };
 
-/// A socket-owning client session returned by `connect`. It owns no heap memory;
-/// `finish` or `close` releases the socket, while message calls allocate nothing.
+/// A socket-owning client session returned by `connect`. It owns the socket and
+/// up to eight outstanding memfd mappings; `finish` or `close` releases both.
+/// Message calls allocate no general-purpose memory.
 pub const Connection = struct {
     socket: ?SocketSink,
     state: State,
+    shared_tracker: SharedTracker = .{},
 
     /// Reports whether optional connection setup produced a live socket. This
     /// inspection borrows `self` and allocates nothing.
     pub fn isConnected(self: *const Connection) bool {
         return self.socket != null;
+    }
+
+    /// Creates a fresh writable shared mapping. The connection owns it until
+    /// one successful message consumes it; unsent mappings are released by
+    /// `finish`/`close`. Request a fresh buffer for every message because the
+    /// viewer retains versions, so reuse is impossible by construction.
+    pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
+        if (self.state.finished) return error.Finished;
+        const socket = self.socket orelse return error.NotConnected;
+        return self.shared_tracker.create(socket.io, len);
+    }
+
+    /// Creates shared storage for `n` positions without allocator use. The
+    /// returned view is invalid after the message that sends it succeeds.
+    pub fn sharedPositions(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
+        const shared = try self.sharedBytes(layout.Positions.byteSize(n));
+        return layout.Positions.fromBytes(shared.map[0..shared.len]);
+    }
+
+    /// Creates shared storage for `n` scalars without allocator use. The
+    /// returned slice is invalid after the message that sends it succeeds.
+    pub fn sharedScalars(self: *Connection, n: u32) SharedError![]f32 {
+        const shared = try self.sharedBytes(@as(usize, n) * @sizeOf(f32));
+        return std.mem.bytesAsSlice(
+            f32,
+            @as([]align(@alignOf(f32)) u8, @alignCast(shared.map[0..shared.len])),
+        );
+    }
+
+    /// Creates shared storage for `n` vectors without allocator use. The
+    /// returned view is invalid after the message that sends it succeeds.
+    pub fn sharedVectors(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
+        return self.sharedPositions(n);
     }
 
     /// Synchronously sends a mesh when connected. Inputs remain caller-owned
@@ -320,24 +654,30 @@ pub const Connection = struct {
         return self.state.step(self.currentSink(), label);
     }
 
-    /// Ends the active frame and run, then closes the owned socket. Repeated
-    /// calls are harmless and no allocation occurs.
+    /// Ends the active frame and run, then releases unsent shared mappings and
+    /// closes the owned socket. Repeated calls are harmless; no gpa is used.
     pub fn finish(self: *Connection) Error!void {
         defer self.close();
         return self.state.finish(self.currentSink());
     }
 
-    /// Closes the owned socket without sending frame/run terminators. It is safe
-    /// to call repeatedly and allocates nothing.
+    /// Releases every unsent shared mapping and closes the socket without
+    /// sending terminators. It is safe to call repeatedly and uses no gpa.
     pub fn close(self: *Connection) void {
-        if (self.socket) |*socket| socket.close();
+        if (self.socket) |*socket| {
+            self.shared_tracker.releaseAll(socket.io);
+            socket.close();
+        } else std.debug.assert(self.shared_tracker.outstanding_len == 0);
         self.socket = null;
         self.state.finished = true;
         self.state.frame_open = false;
     }
 
     fn currentSink(self: *Connection) Sink {
-        if (self.socket) |*socket| return socket.sink();
+        if (self.socket) |*socket| {
+            socket.shared_tracker = &self.shared_tracker;
+            return socket.sink();
+        }
         return noopSink();
     }
 };
@@ -758,6 +1098,8 @@ const LiveServer = struct {
     kinds: [16]protocol.Kind = undefined,
     len: u32 = 0,
     mesh_vertex_count: u32 = 0,
+    saw_external_positions: bool = false,
+    external_positions_match: bool = false,
     failed: bool = false,
 
     /// Accepts one connection and decodes frames until EOF, recording kinds.
@@ -771,25 +1113,150 @@ const LiveServer = struct {
         const io = testing.io;
         var stream = try self.server.accept(io);
         defer stream.close(io);
-        var read_buffer: [4096]u8 = undefined;
-        var reader = stream.reader(io, &read_buffer);
-        var payload: [4096]u8 align(protocol.section_alignment) = undefined;
+        var pending: [8192]u8 align(protocol.section_alignment) = undefined;
+        var pending_len: usize = 0;
+        var fd_fifo: [16]i32 = undefined;
+        var fd_len: usize = 0;
+        defer closeFdSlice(io, fd_fifo[0..fd_len]);
+
         while (true) {
-            var header_bytes: [@sizeOf(protocol.Header)]u8 = undefined;
-            reader.interface.readSliceAll(&header_bytes) catch |err| switch (err) {
-                error.EndOfStream => return,
-                else => return err,
+            var control: [cmsgSpace(16 * @sizeOf(i32))]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
+            var iovec: std.posix.iovec = .{ .base = pending[pending_len..].ptr, .len = pending.len - pending_len };
+            var msg: std.os.linux.msghdr = .{
+                .name = null,
+                .namelen = 0,
+                .iov = @ptrCast(&iovec),
+                .iovlen = 1,
+                .control = &control,
+                .controllen = control.len,
+                .flags = 0,
             };
-            const header = try protocol.decodeHeader(&header_bytes);
-            if (header.len > payload.len) return error.PayloadTooLarge;
-            try reader.interface.readSliceAll(payload[0..header.len]);
-            const message = try protocol.decode(header, payload[0..header.len]);
-            self.kinds[self.len] = std.meta.activeTag(message);
-            self.len += 1;
-            if (message == .mesh) self.mesh_vertex_count = message.mesh.positions.len();
+            const received = try recvMsg(stream.socket.handle, &msg);
+            if (received == 0) {
+                if (pending_len != 0 or fd_len != 0) return error.Truncated;
+                return;
+            }
+            pending_len += received;
+            try appendReceivedFds(io, control[0..msg.controllen], &fd_fifo, &fd_len);
+            if (msg.flags & std.os.linux.MSG.CTRUNC != 0) return error.ControlTruncated;
+
+            var consumed_bytes: usize = 0;
+            while (pending_len - consumed_bytes >= @sizeOf(protocol.Header)) {
+                const frame = pending[consumed_bytes..pending_len];
+                const header = try protocol.decodeHeader(frame);
+                const frame_len = @sizeOf(protocol.Header) + @as(usize, header.len);
+                if (frame_len > pending.len) return error.PayloadTooLarge;
+                if (frame.len < frame_len) break;
+                const flags = protocol.Flags.fromInt(header.flags);
+                if (flags.fd_count > fd_len) break;
+                var payload_storage: [8192]u8 align(protocol.section_alignment) = undefined;
+                @memcpy(payload_storage[0..header.len], frame[@sizeOf(protocol.Header)..frame_len]);
+                const payload: []align(protocol.payload_alignment) const u8 = payload_storage[0..header.len];
+                const used_fds: usize = flags.fd_count;
+                var frame_fds: [7]i32 = undefined;
+                @memcpy(frame_fds[0..used_fds], fd_fifo[0..used_fds]);
+                std.mem.copyForwards(i32, fd_fifo[0 .. fd_len - used_fds], fd_fifo[used_fds..fd_len]);
+                fd_len -= used_fds;
+                try self.processFrame(io, header, payload, frame_fds[0..used_fds]);
+                consumed_bytes += frame_len;
+            }
+            if (consumed_bytes != 0) {
+                std.mem.copyForwards(u8, pending[0 .. pending_len - consumed_bytes], pending[consumed_bytes..pending_len]);
+                pending_len -= consumed_bytes;
+            }
+        }
+    }
+
+    fn processFrame(
+        self: *LiveServer,
+        io: std.Io,
+        header: protocol.Header,
+        payload: []align(protocol.payload_alignment) const u8,
+        fds: []const i32,
+    ) !void {
+        var mapped: [7]?[]align(std.heap.page_size_min) u8 = @splat(null);
+        var mappings: [7][]align(64) const u8 = undefined;
+        defer {
+            for (mapped[0..fds.len], fds) |mapping, fd| {
+                if (mapping) |bytes| std.posix.munmap(bytes);
+                const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+                file.close(io);
+            }
+        }
+        for (fds, 0..) |fd, i| {
+            const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+            const size = try file.length(io);
+            if (size == 0 or size > std.math.maxInt(usize)) return error.BadMappingSize;
+            const bytes = try std.posix.mmap(
+                null,
+                @intCast(size),
+                .{ .READ = true },
+                .{ .TYPE = .SHARED, .POPULATE = true },
+                fd,
+                0,
+            );
+            mapped[i] = bytes;
+            mappings[i] = @alignCast(bytes);
+        }
+
+        const message = try protocol.decode(header, payload, mappings[0..fds.len]);
+        self.kinds[self.len] = std.meta.activeTag(message);
+        self.len += 1;
+        if (message == .mesh) self.mesh_vertex_count = message.mesh.positions.len();
+        if (message == .mesh_positions and protocol.Flags.fromInt(header.flags).external) {
+            self.saw_external_positions = true;
+            var expected_storage: [layout.Positions.byteSize(3)]u8 align(64) = undefined;
+            const expected = layout.Positions.fromBytes(&expected_storage);
+            expected.setAll(&.{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) });
+            self.external_positions_match = std.mem.eql(
+                u8,
+                expected.toConst().bytes(),
+                message.mesh_positions.positions.bytes(),
+            );
         }
     }
 };
+
+fn recvMsg(fd: std.posix.fd_t, msg: *std.os.linux.msghdr) error{RecvFailed}!usize {
+    while (true) {
+        const rc = std.os.linux.recvmsg(fd, msg, std.os.linux.MSG.CMSG_CLOEXEC);
+        switch (std.os.linux.errno(rc)) {
+            .SUCCESS => return rc,
+            .INTR => continue,
+            else => return error.RecvFailed,
+        }
+    }
+}
+
+fn appendReceivedFds(io: std.Io, control: []const u8, fifo: *[16]i32, fifo_len: *usize) !void {
+    var offset: usize = 0;
+    while (offset + @sizeOf(std.os.linux.cmsghdr) <= control.len) {
+        const header = @as(*align(1) const std.os.linux.cmsghdr, @ptrCast(control[offset..].ptr)).*;
+        const header_len = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
+        if (header.len < header_len or header.len > control.len - offset) return error.BadControl;
+        if (header.level == std.os.linux.SOL.SOCKET and header.type == std.os.linux.SCM.RIGHTS) {
+            const data_len = header.len - header_len;
+            if (data_len % @sizeOf(i32) != 0) return error.BadControl;
+            const count = data_len / @sizeOf(i32);
+            const data = control[offset + header_len ..][0..data_len];
+            const received = std.mem.bytesAsSlice(i32, @as([]align(@alignOf(i32)) const u8, @alignCast(data)));
+            if (fifo_len.* + count > fifo.len) {
+                closeFdSlice(io, received);
+                return error.TooManyFds;
+            }
+            @memcpy(fifo[fifo_len.*..][0..count], received);
+            fifo_len.* += count;
+        }
+        offset += cmsgAlign(header.len);
+    }
+}
+
+fn closeFdSlice(io: std.Io, fds: []const i32) void {
+    for (fds) |fd| {
+        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+        file.close(io);
+    }
+}
 
 test "live unix socket round-trip delivers the frame sequence" {
     // Linux abstract socket: no filesystem path to create or clean up.
@@ -807,13 +1274,28 @@ test "live unix socket round-trip delivers the frame sequence" {
     const positions = layout.Positions.fromSlice(&position_data);
     positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
     try connection.mesh("tri", positions.toConst(), &.{.{ 0, 1, 2 }}, .{});
+    const shared = try connection.sharedPositions(3);
+    shared.setAll(&.{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) });
+    try connection.meshPositions("tri", shared.toConst());
+    try testing.expectError(error.SharedConsumed, connection.meshPositions("tri", shared.toConst()));
+    const scalars = try connection.sharedScalars(4);
+    try testing.expectError(error.MisalignedShared, connection.scalar("tri", "bad", .vertex, scalars[1..]));
     try connection.step();
     try connection.log(.info, "hi");
     try connection.finish();
     thread.join();
 
     try testing.expect(!live.failed);
-    const expected = [_]protocol.Kind{ .hello, .begin_run, .mesh, .end_frame, .begin_frame, .log, .end_frame, .end_run };
+    const expected = [_]protocol.Kind{ .hello, .begin_run, .mesh, .mesh_positions, .end_frame, .begin_frame, .log, .end_frame, .end_run };
     try testing.expectEqualSlices(protocol.Kind, &expected, live.kinds[0..live.len]);
     try testing.expectEqual(@as(u32, 3), live.mesh_vertex_count);
+    try testing.expect(live.saw_external_positions);
+    try testing.expect(live.external_positions_match);
+}
+
+test "connection shared buffer tracker rejects more than eight outstanding" {
+    var tracker: SharedTracker = .{};
+    defer tracker.releaseAll(testing.io);
+    for (0..max_outstanding_shared) |_| _ = try tracker.create(testing.io, 64);
+    try testing.expectError(error.TooManyShared, tracker.create(testing.io, 64));
 }

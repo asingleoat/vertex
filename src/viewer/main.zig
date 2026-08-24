@@ -53,7 +53,9 @@ const State = struct {
     initial_memory_budget: usize = default_retention.budget_bytes,
     ingest_messages: u64 = 0,
     ingest_bytes: u64 = 0,
+    ingest_mapped_bytes: u64 = 0,
     ingest_ns: u128 = 0,
+    mapping_cleanup: std.ArrayList(vertex.scene.Mapping) = .empty,
     sg_ready: bool = false,
     imgui_ready: bool = false,
     scene_ready: bool = false,
@@ -275,10 +277,11 @@ fn cleanupCallback() callconv(.c) void {
             .{ state.scene.structures.len, state.scene.frameCount(), state.scene.live_blobs },
         );
         std.debug.print(
-            "vertex-view: ingest messages={d} bytes={d} apply_ms={d:.1}\n",
+            "vertex-view: ingest messages={d} bytes={d} mapped_bytes={d} apply_ms={d:.1}\n",
             .{
                 state.ingest_messages,
                 state.ingest_bytes,
+                state.ingest_mapped_bytes,
                 @as(f64, @floatFromInt(state.ingest_ns)) / 1_000_000.0,
             },
         );
@@ -302,6 +305,9 @@ fn cleanupCallback() callconv(.c) void {
                 std.debug.print("vertex-view: probe miss\n", .{});
             }
         }
+        state.scene.takeAllMappings(&state.mapping_cleanup) catch unreachable;
+        for (state.mapping_cleanup.items) |mapping| disposeMapping(state.io, mapping);
+        state.mapping_cleanup.deinit(state.gpa);
         state.scene.deinit();
         state.scene_ready = false;
     }
@@ -372,16 +378,40 @@ fn drainInbox(s: *State) bool {
     for (items) |item| {
         s.ingest_messages +|= 1;
         s.ingest_bytes +|= @intCast(item.payload.len);
+        var registered: usize = 0;
+        defer {
+            s.scene.releaseUnreferencedMappings();
+            drainReleasedMappings(s);
+            disposeItemMappingsFrom(s.io, item, registered);
+            s.gpa.free(item.payload);
+        }
         const message: ?vertex.protocol.Message = blk: {
             const started = std.Io.Clock.awake.now(s.io);
             defer {
                 const elapsed: i96 = started.durationTo(std.Io.Clock.awake.now(s.io)).toNanoseconds();
                 if (elapsed > 0) s.ingest_ns +|= @intCast(elapsed);
             }
-            const decoded = vertex.protocol.decode(item.header, item.payload) catch |err| {
+            s.mapping_cleanup.ensureTotalCapacity(s.gpa, s.scene.mappings.len + item.fd_count) catch |err| {
+                std.log.warn("discarding viewer message after mapping cleanup reserve failed: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+            var mappings: [7][]align(64) const u8 = undefined;
+            while (registered < item.fd_count) : (registered += 1) {
+                const mapping = item.mappings[registered] orelse {
+                    std.log.warn("discarding viewer message with a missing fd mapping", .{});
+                    break :blk null;
+                };
+                const mapping_index = s.scene.registerMapping(@alignCast(mapping), item.fds[registered]) catch |err| {
+                    std.log.warn("discarding viewer message after mapping registration failed: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+                mappings[registered] = s.scene.mappingBytes(mapping_index);
+            }
+            const decoded = vertex.protocol.decode(item.header, item.payload, mappings[0..registered]) catch |err| {
                 std.log.warn("discarding invalid viewer message: {s}", .{@errorName(err)});
                 break :blk null;
             };
+            s.ingest_mapped_bytes +|= decodedMappedBytes(decoded, item);
             s.scene.apply(decoded) catch |err| {
                 std.log.warn("discarding inapplicable viewer message: {s}", .{@errorName(err)});
                 break :blk null;
@@ -394,10 +424,67 @@ fn drainInbox(s: *State) bool {
                 else => {},
             }
         }
-        s.gpa.free(item.payload);
     }
     s.server.inbox.consume();
     return saw_geometry;
+}
+
+fn decodedMappedBytes(message: vertex.protocol.Message, item: server_mod.Inbox.Item) u64 {
+    var total: u64 = 0;
+    switch (message) {
+        .mesh => |value| {
+            total +|= mappedSectionBytes(value.positions.bytes(), item);
+            total +|= mappedSectionBytes(std.mem.sliceAsBytes(value.faces), item);
+        },
+        .mesh_positions => |value| total +|= mappedSectionBytes(value.positions.bytes(), item),
+        .points => |value| total +|= mappedSectionBytes(value.positions.bytes(), item),
+        .lines => |value| {
+            total +|= mappedSectionBytes(value.positions.bytes(), item);
+            total +|= mappedSectionBytes(std.mem.sliceAsBytes(value.segments), item);
+        },
+        .scalar_quantity => |value| total +|= mappedSectionBytes(std.mem.sliceAsBytes(value.values), item),
+        .vector_quantity => |value| total +|= mappedSectionBytes(value.vectors.bytes(), item),
+        else => {},
+    }
+    return total;
+}
+
+fn mappedSectionBytes(section: []const u8, item: server_mod.Inbox.Item) u64 {
+    const section_start = @intFromPtr(section.ptr);
+    const section_end = std.math.add(usize, section_start, section.len) catch return 0;
+    for (item.mappings[0..item.fd_count]) |optional_mapping| {
+        const mapping = optional_mapping orelse continue;
+        const mapping_start = @intFromPtr(mapping.ptr);
+        const mapping_end = mapping_start + mapping.len;
+        if (section_start >= mapping_start and section_end <= mapping_end) return @intCast(section.len);
+    }
+    return 0;
+}
+
+fn drainReleasedMappings(s: *State) void {
+    while (s.scene.released_mappings.items.len != 0) {
+        const mapping_index = s.scene.released_mappings.items[0];
+        const mapping = s.scene.mappingValue(mapping_index);
+        disposeMapping(s.io, mapping);
+        s.scene.forgetMapping(mapping_index);
+    }
+}
+
+fn disposeItemMappingsFrom(io: std.Io, item: server_mod.Inbox.Item, start: usize) void {
+    for (item.mappings[start..item.fd_count], item.fds[start..item.fd_count]) |mapping, fd| {
+        if (mapping) |bytes| std.posix.munmap(bytes);
+        closeFd(io, fd);
+    }
+}
+
+fn disposeMapping(io: std.Io, mapping: vertex.scene.Mapping) void {
+    std.posix.munmap(@alignCast(mapping.bytes));
+    closeFd(io, mapping.fd);
+}
+
+fn closeFd(io: std.Io, fd: i32) void {
+    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    file.close(io);
 }
 
 fn drawScene(s: *State, vp: vertex.camera.Mat4, viewport: [2]f32) std.mem.Allocator.Error!void {

@@ -7,14 +7,17 @@ const protocol = vertex.protocol;
 const InboxItem = struct {
     header: protocol.Header,
     payload: []align(protocol.section_alignment) u8,
+    fds: [7]i32 = @splat(-1),
+    mappings: [7]?[]align(std.heap.page_size_min) u8 = @splat(null),
+    fd_count: u8 = 0,
 };
 
 /// Mutex-protected double buffer shared only by the socket producer and render
 /// consumer. List storage is owned by the inbox; drained payloads are owned by
 /// the caller until `consume` is called.
 pub const Inbox = struct {
-    /// One complete wire frame. `payload` is owned by the inbox consumer and
-    /// was allocated with the allocator passed to `Server.init`.
+    /// One complete wire frame. The consumer owns `payload` plus every fd and
+    /// mapping prefix entry, and must unmap/close them after scene adoption.
     pub const Item = InboxItem;
 
     mutex: std.Io.Mutex = .init,
@@ -22,7 +25,8 @@ pub const Inbox = struct {
     back: std.ArrayList(Item) = .empty,
 
     /// Appends one owned item to the producer buffer. On success ownership of
-    /// `item.payload` transfers to the inbox; only list growth allocates.
+    /// its payload, fds, and mappings transfers to the inbox; list growth is
+    /// the only allocation.
     pub fn push(self: *Inbox, gpa: std.mem.Allocator, io: std.Io, item: Item) std.mem.Allocator.Error!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -40,8 +44,8 @@ pub const Inbox = struct {
         return self.front.items;
     }
 
-    /// Marks the current drained list consumed without freeing its payloads.
-    /// The caller must free every payload first; this operation never allocates.
+    /// Marks the current drained list consumed without releasing item storage.
+    /// The caller must free each payload and dispose every mapping/fd first.
     pub fn consume(self: *Inbox) void {
         self.front.clearRetainingCapacity();
     }
@@ -131,7 +135,7 @@ pub const Server = struct {
         self.connected.store(false, .release);
 
         const pending = self.inbox.drain(self.io);
-        for (pending) |item| self.gpa.free(item.payload);
+        for (pending) |item| disposeItem(self.gpa, self.io, item);
         self.inbox.consume();
         self.inbox.deinit(self.gpa);
 
@@ -166,22 +170,184 @@ pub const Server = struct {
     fn serve(self: *Server, stream: std.Io.net.Stream) !void {
         defer stream.close(self.io);
         var read_buffer: [64 * 1024]u8 = undefined;
-        var reader = stream.reader(self.io, &read_buffer);
+        var header_bytes: [@sizeOf(protocol.Header)]u8 = undefined;
+        var header_len: usize = 0;
+        var header: ?protocol.Header = null;
+        var payload: ?[]align(protocol.section_alignment) u8 = null;
+        var payload_len: usize = 0;
+        var fd_fifo: [28]i32 = undefined;
+        var fd_len: usize = 0;
+        defer {
+            if (payload) |bytes| self.gpa.free(bytes);
+            closeFds(self.io, fd_fifo[0..fd_len]);
+        }
 
         while (!self.stopping.load(.acquire)) {
-            var header_bytes: [@sizeOf(protocol.Header)]u8 = undefined;
-            try reader.interface.readSliceAll(&header_bytes);
-            const header = @as(*align(1) const protocol.Header, @ptrCast(&header_bytes)).*;
-            // A corrupt header must not drive allocation size; 256 MiB is far
-            // beyond any real payload (a 1M-vertex mesh is ~12 MB).
-            if (header.len > 256 * 1024 * 1024) return error.PayloadTooLarge;
-            const payload = try self.gpa.alignedAlloc(u8, .@"16", header.len);
-            errdefer self.gpa.free(payload);
-            try reader.interface.readSliceAll(payload);
-            try self.inbox.push(self.gpa, self.io, .{ .header = header, .payload = payload });
+            var control: [cmsgSpace(7 * @sizeOf(i32))]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
+            var iovec: std.posix.iovec = .{ .base = &read_buffer, .len = read_buffer.len };
+            var msg: std.os.linux.msghdr = .{
+                .name = null,
+                .namelen = 0,
+                .iov = @ptrCast(&iovec),
+                .iovlen = 1,
+                .control = &control,
+                .controllen = control.len,
+                .flags = 0,
+            };
+            const received = try recvMsg(stream.socket.handle, &msg);
+            if (received == 0) return error.EndOfStream;
+            try appendReceivedFds(self.io, control[0..msg.controllen], &fd_fifo, &fd_len);
+            if (msg.flags & std.os.linux.MSG.CTRUNC != 0) return error.ControlTruncated;
+
+            var cursor: usize = 0;
+            while (cursor < received) {
+                if (header == null) {
+                    const copied = @min(header_bytes.len - header_len, received - cursor);
+                    @memcpy(header_bytes[header_len..][0..copied], read_buffer[cursor..][0..copied]);
+                    header_len += copied;
+                    cursor += copied;
+                    if (header_len != header_bytes.len) continue;
+
+                    const decoded_header = try protocol.decodeHeader(&header_bytes);
+                    // A corrupt header must not drive allocation size; 256 MiB
+                    // is far beyond any real payload (1M vertices is ~12 MB).
+                    if (decoded_header.len > 256 * 1024 * 1024) return error.PayloadTooLarge;
+                    payload = try self.gpa.alignedAlloc(u8, .@"16", decoded_header.len);
+                    header = decoded_header;
+                    payload_len = 0;
+                }
+
+                const active_header = header.?;
+                const active_payload = payload.?;
+                const copied = @min(active_payload.len - payload_len, received - cursor);
+                @memcpy(active_payload[payload_len..][0..copied], read_buffer[cursor..][0..copied]);
+                payload_len += copied;
+                cursor += copied;
+                if (payload_len != active_payload.len) continue;
+
+                const flags = protocol.Flags.fromInt(active_header.flags);
+                if (flags.fd_count > fd_len) return error.MissingFds;
+                const frame_fd_count: usize = flags.fd_count;
+                var frame_fds: [7]i32 = undefined;
+                @memcpy(frame_fds[0..frame_fd_count], fd_fifo[0..frame_fd_count]);
+                std.mem.copyForwards(
+                    i32,
+                    fd_fifo[0 .. fd_len - frame_fd_count],
+                    fd_fifo[frame_fd_count..fd_len],
+                );
+                fd_len -= frame_fd_count;
+
+                const item = mapItem(self.io, active_header, active_payload, frame_fds[0..frame_fd_count]) catch |err| {
+                    self.gpa.free(active_payload);
+                    std.log.warn("dropping viewer frame after fd mapping error: {s}", .{@errorName(err)});
+                    header = null;
+                    payload = null;
+                    header_len = 0;
+                    payload_len = 0;
+                    continue;
+                };
+                payload = null;
+                self.inbox.push(self.gpa, self.io, item) catch |err| {
+                    disposeItem(self.gpa, self.io, item);
+                    return err;
+                };
+                header = null;
+                header_len = 0;
+                payload_len = 0;
+            }
         }
     }
 };
+
+fn cmsgAlign(len: usize) usize {
+    return std.mem.alignForward(usize, len, @sizeOf(usize));
+}
+
+fn cmsgSpace(data_len: usize) usize {
+    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + cmsgAlign(data_len);
+}
+
+fn recvMsg(fd: std.posix.fd_t, msg: *std.os.linux.msghdr) error{RecvFailed}!usize {
+    while (true) {
+        const rc = std.os.linux.recvmsg(fd, msg, std.os.linux.MSG.CMSG_CLOEXEC);
+        switch (std.os.linux.errno(rc)) {
+            .SUCCESS => return rc,
+            .INTR => continue,
+            else => return error.RecvFailed,
+        }
+    }
+}
+
+fn appendReceivedFds(io: std.Io, control: []const u8, fifo: *[28]i32, fifo_len: *usize) !void {
+    var offset: usize = 0;
+    while (offset + @sizeOf(std.os.linux.cmsghdr) <= control.len) {
+        const header = @as(*align(1) const std.os.linux.cmsghdr, @ptrCast(control[offset..].ptr)).*;
+        const header_len = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
+        if (header.len < header_len or header.len > control.len - offset) return error.BadControl;
+        if (header.level == std.os.linux.SOL.SOCKET and header.type == std.os.linux.SCM.RIGHTS) {
+            const data_len = header.len - header_len;
+            if (data_len % @sizeOf(i32) != 0) return error.BadControl;
+            const count = data_len / @sizeOf(i32);
+            const data = control[offset + header_len ..][0..data_len];
+            const received = std.mem.bytesAsSlice(i32, @as([]align(@alignOf(i32)) const u8, @alignCast(data)));
+            if (fifo_len.* + count > fifo.len) {
+                closeFds(io, received);
+                return error.TooManyFds;
+            }
+            @memcpy(fifo[fifo_len.*..][0..count], received);
+            fifo_len.* += count;
+        }
+        offset += cmsgAlign(header.len);
+    }
+}
+
+fn mapItem(
+    io: std.Io,
+    header: protocol.Header,
+    payload: []align(protocol.section_alignment) u8,
+    fds: []const i32,
+) !Inbox.Item {
+    var item: Inbox.Item = .{ .header = header, .payload = payload };
+    item.fd_count = @intCast(fds.len);
+    @memcpy(item.fds[0..fds.len], fds);
+    errdefer {
+        for (item.mappings[0..fds.len], fds) |mapping, fd| {
+            if (mapping) |bytes| std.posix.munmap(bytes);
+            closeFd(io, fd);
+        }
+    }
+    for (fds, 0..) |fd, i| {
+        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+        const size = try file.length(io);
+        if (size == 0 or size > std.math.maxInt(usize)) return error.BadMappingSize;
+        item.mappings[i] = try std.posix.mmap(
+            null,
+            @intCast(size),
+            .{ .READ = true },
+            .{ .TYPE = .SHARED, .POPULATE = true },
+            fd,
+            0,
+        );
+    }
+    return item;
+}
+
+fn disposeItem(gpa: std.mem.Allocator, io: std.Io, item: Inbox.Item) void {
+    for (item.mappings[0..item.fd_count], item.fds[0..item.fd_count]) |mapping, fd| {
+        if (mapping) |bytes| std.posix.munmap(bytes);
+        closeFd(io, fd);
+    }
+    gpa.free(item.payload);
+}
+
+fn closeFds(io: std.Io, fds: []const i32) void {
+    for (fds) |fd| closeFd(io, fd);
+}
+
+fn closeFd(io: std.Io, fd: i32) void {
+    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
+    file.close(io);
+}
 
 fn threadMain(server: *Server) void {
     server.run();
@@ -279,5 +445,28 @@ test "Inbox drain allocates nothing after both lists are warm" {
     counting.remap_calls = 0;
     try testing.expectEqual(n, inbox.drain(testing.io).len);
     try testing.expectEqual(0, counting.alloc_calls + counting.resize_calls + counting.remap_calls);
+    inbox.consume();
+}
+
+test "Inbox preserves fd and mapping metadata unchanged" {
+    var inbox: Inbox = .{};
+    defer inbox.deinit(testing.allocator);
+    var fake_mapping: [std.heap.page_size_min]u8 align(std.heap.page_size_min) = @splat(0);
+    var item: Inbox.Item = .{
+        .header = .{
+            .len = 0,
+            .kind = @backingInt(protocol.Kind.mesh_positions),
+            .flags = (protocol.Flags{ .external = true, .fd_count = 1 }).toInt(),
+        },
+        .payload = @constCast(empty_payload[0..]),
+        .fd_count = 1,
+    };
+    item.fds[0] = 42;
+    item.mappings[0] = &fake_mapping;
+    try inbox.push(testing.allocator, testing.io, item);
+    const drained = inbox.drain(testing.io);
+    try testing.expectEqual(@as(usize, 1), drained.len);
+    try testing.expectEqual(@as(i32, 42), drained[0].fds[0]);
+    try testing.expectEqual(@intFromPtr(fake_mapping[0..].ptr), @intFromPtr(drained[0].mappings[0].?.ptr));
     inbox.consume();
 }
