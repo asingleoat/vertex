@@ -151,7 +151,7 @@ fn sharedRegion(shared: Shared) platform.shm.Region {
 
 /// Errors from resolving and opening the Unix-domain socket plus starting a
 /// run. Connection setup allocates nothing and owns no error payload.
-pub const ConnectError = Error || std.Io.net.UnixAddress.InitError ||
+pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddress.InitError ||
     std.Io.net.UnixAddress.ConnectError || error{MissingRuntimeDir};
 
 /// Options for a new client run. All slices are borrowed only during
@@ -197,8 +197,16 @@ pub const SocketSink = struct {
 
     /// Opens `path` as a Unix-domain stream. The returned sink owns the socket;
     /// `path` is borrowed for this call and no allocation occurs.
-    pub fn connect(io: std.Io, path: []const u8) (std.Io.net.UnixAddress.InitError || std.Io.net.UnixAddress.ConnectError)!SocketSink {
-        const address = try std.Io.net.UnixAddress.init(path);
+    pub fn connect(io: std.Io, path: []const u8) (platform.sockpath.Error || std.Io.net.UnixAddress.InitError || std.Io.net.UnixAddress.ConnectError)!SocketSink {
+        // Paths longer than sockaddr_un allows are rebased on a directory
+        // handle where the platform supports it (see platform.sockpath).
+        var shortened: platform.sockpath.Shortened = .{};
+        platform.sockpath.shorten(io, path, &shortened) catch |err| {
+            std.log.err("vertex: socket path is {d} bytes; {s}: {s}", .{ path.len, platform.sockpath.limit_note, @errorName(err) });
+            return err;
+        };
+        defer platform.sockpath.release(io, &shortened);
+        const address = try std.Io.net.UnixAddress.init(shortened.path());
         return .{
             .io = io,
             .stream = try address.connect(io),
@@ -656,7 +664,7 @@ pub fn connectWith(io: std.Io, environ: std.process.Environ, options: ConnectOpt
     try validateName(options.name);
     const huge_pages = resolveHugePages(environ, options.huge_pages);
 
-    var path_storage: [std.Io.net.UnixAddress.max_len]u8 = undefined;
+    var path_storage: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = resolveSocketPath(environ, options.socket_path, &path_storage) catch |err| {
         if (options.optional) return disconnectedConnection(huge_pages);
         return err;
@@ -881,15 +889,18 @@ fn validateCount(count: usize) Error!void {
 fn resolveSocketPath(
     environ: std.process.Environ,
     explicit_path: ?[]const u8,
-    storage: *[std.Io.net.UnixAddress.max_len]u8,
+    storage: *[std.Io.Dir.max_path_bytes]u8,
 ) (std.Io.net.UnixAddress.InitError || error{MissingRuntimeDir})![]const u8 {
+    // Length against sockaddr_un is enforced at connect time by
+    // platform.sockpath, which can rebase long paths; only the storage
+    // buffer bounds the path here.
     if (explicit_path) |path| {
-        _ = try std.Io.net.UnixAddress.init(path);
+        if (path.len > storage.len) return error.NameTooLong;
         return path;
     }
     if (std.process.Environ.getPosix(environ, "VERTEX_SOCK")) |path| {
         if (path.len != 0) {
-            _ = try std.Io.net.UnixAddress.init(path);
+            if (path.len > storage.len) return error.NameTooLong;
             return path;
         }
     }
@@ -1045,7 +1056,7 @@ test "socket path precedence and optional disconnected sessions" {
     const second = "XDG_RUNTIME_DIR=/run/user/1000";
     const entries = [_:null]?[*:0]const u8{ first, second };
     const environ: std.process.Environ = .{ .block = .{ .slice = &entries } };
-    var storage: [std.Io.net.UnixAddress.max_len]u8 = undefined;
+    var storage: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
     try testing.expectEqualStrings(
         "/tmp/explicit.sock",

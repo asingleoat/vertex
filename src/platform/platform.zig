@@ -23,6 +23,13 @@ pub const stats = switch (builtin.os.tag) {
     else => @import("stats_unsupported.zig"),
 };
 
+/// Unix socket path handling: `sockaddr_un` limits the path string; Linux
+/// rebases longer paths on a directory handle, other targets reject them.
+pub const sockpath = switch (builtin.os.tag) {
+    .linux => @import("sockpath_linux.zig"),
+    else => @import("sockpath_unsupported.zig"),
+};
+
 /// Native operating-system handle carried by shared-memory and fd-passing
 /// APIs. It owns nothing by itself; ownership is documented by each operation.
 pub const Handle = i32;
@@ -45,7 +52,12 @@ test "supported and unsupported platform declarations stay in sync" {
         assertSameDecls(@import("shm_linux.zig"), @import("shm_unsupported.zig"));
         assertSameDecls(@import("fdpass_linux.zig"), @import("fdpass_unsupported.zig"));
         assertSameDecls(@import("stats_linux.zig"), @import("stats_unsupported.zig"));
+        assertSameDecls(@import("sockpath_linux.zig"), @import("sockpath_unsupported.zig"));
     }
+}
+
+test {
+    _ = sockpath;
 }
 
 test "shared regions round trip with ordinary and requested huge pages" {

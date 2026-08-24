@@ -64,7 +64,7 @@ pub const Inbox = struct {
 
 /// Errors which can occur while resolving, cleaning, binding, or spawning the
 /// listener. No error owns memory.
-pub const StartError = std.Io.net.UnixAddress.InitError ||
+pub const StartError = vertex.platform.sockpath.Error || std.Io.net.UnixAddress.InitError ||
     std.Io.net.UnixAddress.ListenError ||
     std.Io.Dir.DeleteFileError ||
     std.Thread.SpawnError;
@@ -77,7 +77,7 @@ pub const Server = struct {
     inbox: *Inbox,
     connected: std.atomic.Value(bool) = .init(false),
     stopping: std.atomic.Value(bool) = .init(false),
-    path_storage: [std.Io.net.UnixAddress.max_len]u8 = undefined,
+    path_storage: [std.Io.Dir.max_path_bytes]u8 = undefined,
     path_len: usize = 0,
     listener: ?std.Io.net.Server = null,
     thread: ?std.Thread = null,
@@ -99,7 +99,13 @@ pub const Server = struct {
         std.debug.assert(self.thread == null and self.listener == null);
         self.path_len = try resolvePath(environ, &self.path_storage);
         const path = self.socketPath();
-        const address = try std.Io.net.UnixAddress.init(path);
+        var shortened: vertex.platform.sockpath.Shortened = .{};
+        vertex.platform.sockpath.shorten(self.io, path, &shortened) catch |err| {
+            std.log.err("viewer socket path is {d} bytes; {s}: {s}", .{ path.len, vertex.platform.sockpath.limit_note, @errorName(err) });
+            return err;
+        };
+        defer vertex.platform.sockpath.release(self.io, &shortened);
+        const address = try std.Io.net.UnixAddress.init(shortened.path());
         if (!address.isAbstract()) try deleteIfPresent(self.io, path);
 
         self.listener = try address.listen(self.io, .{});
@@ -142,8 +148,12 @@ pub const Server = struct {
         if (self.thread) |thread| {
             // Wake a thread blocked in accept. A short-lived local connection is
             // more reliable than closing a descriptor from another thread.
-            if (std.Io.net.UnixAddress.init(self.socketPath())) |address| {
-                if (address.connect(self.io)) |stream| stream.close(self.io) else |_| {}
+            var shortened: vertex.platform.sockpath.Shortened = .{};
+            if (vertex.platform.sockpath.shorten(self.io, self.socketPath(), &shortened)) {
+                defer vertex.platform.sockpath.release(self.io, &shortened);
+                if (std.Io.net.UnixAddress.init(shortened.path())) |address| {
+                    if (address.connect(self.io)) |stream| stream.close(self.io) else |_| {}
+                } else |_| {}
             } else |_| {}
             thread.join();
             self.thread = null;
@@ -317,7 +327,7 @@ fn threadMain(server: *Server) void {
     server.run();
 }
 
-fn resolvePath(environ: std.process.Environ, storage: *[std.Io.net.UnixAddress.max_len]u8) error{NameTooLong}!usize {
+fn resolvePath(environ: std.process.Environ, storage: *[std.Io.Dir.max_path_bytes]u8) error{NameTooLong}!usize {
     if (std.process.Environ.getPosix(environ, "VERTEX_SOCK")) |path| {
         if (path.len != 0) {
             if (path.len > storage.len) return error.NameTooLong;

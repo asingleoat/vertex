@@ -66,7 +66,11 @@ sokol-gfx passes: solid → edges/lines → points → vectors → [pick pass] �
 ## Wire protocol
 
 Transport: Unix domain socket at `$XDG_RUNTIME_DIR/vertex.sock` (override via
-`VERTEX_SOCK`). Framing: `[u32 len][u16 kind][u16 flags][payload]` (8-byte
+`VERTEX_SOCK`). `sockaddr_un` caps the address string at 108 bytes (104 on
+Darwin/BSD) before any path resolution; `platform.sockpath` rebases longer
+paths on an open directory handle (`/proc/self/fd/<fd>/<basename>`) on
+Linux, and rejects them with a message naming the limit elsewhere. Both the
+viewer's bind and the client's connect go through it. Framing: `[u32 len][u16 kind][u16 flags][payload]` (8-byte
 header; variable sections inside a payload start at 16-byte offsets so a
 decoded payload's slices are directly usable), native endianness
 (the magic doubles as an endianness check). Handshake: magic `VTXP` + `u16`
