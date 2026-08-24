@@ -4,13 +4,14 @@
 //! `Connection` is the convenient socket-owning variant returned by `connect`.
 //! Calls borrow all slices only for their duration and allocate nothing.
 const std = @import("std");
+const builtin = @import("builtin");
 const layout = @import("../geometry/layout.zig");
+const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
 
 /// Errors a sink may return while synchronously delivering one borrowed
 /// message. No error owns memory and delivery allocates nothing in `SocketSink`.
-pub const SendError = std.Io.net.Stream.Writer.Error || error{
-    AncillarySendFailed,
+pub const SendError = std.Io.net.Stream.Writer.Error || platform.fdpass.Error || error{
     ShortWrite,
     MisalignedShared,
     SharedConsumed,
@@ -18,8 +19,7 @@ pub const SendError = std.Io.net.Stream.Writer.Error || error{
 
 /// Errors while creating a connection-owned shared buffer. On success the
 /// connection owns both fd and mapping until a send consumes them or close.
-pub const SharedError = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||
-    std.posix.MMapError || error{
+pub const SharedError = platform.shm.Error || error{
     Finished,
     NotConnected,
     TooManyShared,
@@ -38,12 +38,14 @@ pub const Error = SendError || error{
     TextTooLong,
 };
 
-/// One writable memfd mapping owned by its connection until sent. `len` is the
-/// requested logical byte count; `map` includes page-rounded trailing bytes.
+/// One writable shared mapping owned by its connection until sent. `len` is
+/// the requested logical byte count; `map` includes rounded trailing bytes and
+/// `huge` records whether hugetlb pages were actually obtained.
 pub const Shared = struct {
-    fd: i32,
+    fd: platform.Handle,
     map: []align(std.heap.page_size_min) u8,
     len: usize,
+    huge: bool,
 };
 
 const max_outstanding_shared = 8;
@@ -60,36 +62,34 @@ const SharedTracker = struct {
     consumed: [max_consumed_ranges]ConsumedRange = undefined,
     consumed_len: u8 = 0,
     consumed_next: u8 = 0,
+    huge_pages: bool = false,
+    huge_regions: u64 = 0,
 
-    fn create(self: *SharedTracker, io: std.Io, len: usize) SharedError!Shared {
+    fn create(self: *SharedTracker, len: usize) SharedError!Shared {
         if (len == 0) return error.InvalidSharedLength;
         if (self.outstanding_len == max_outstanding_shared) return error.TooManyShared;
-        const with_slack = std.math.add(usize, len, std.heap.page_size_min - 1) catch
-            return error.SharedTooLarge;
-        const map_len = with_slack & ~@as(usize, std.heap.page_size_min - 1);
-        const fd = try std.posix.memfd_create("vertex", std.posix.MFD.CLOEXEC);
-        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-        errdefer file.close(io);
-        try file.setLength(io, map_len);
-        const map = try std.posix.mmap(
-            null,
-            map_len,
-            .{ .READ = true, .WRITE = true },
-            .{ .TYPE = .SHARED, .POPULATE = true },
-            fd,
-            0,
-        );
-        const shared: Shared = .{ .fd = fd, .map = map, .len = len };
+        const region = try platform.shm.create(len, .{ .huge_pages = self.huge_pages });
+        if (self.huge_pages and len >= platform.shm.huge_page_size and !region.huge and
+            !platform.shm.hugePagesConfigured())
+        {
+            platform.shm.warnIfHugeUnavailable("shared buffer");
+        }
+        const shared: Shared = .{
+            .fd = region.handle,
+            .map = region.map,
+            .len = len,
+            .huge = region.huge,
+        };
         self.outstanding[self.outstanding_len] = shared;
         self.outstanding_len += 1;
+        self.huge_regions +|= @intFromBool(region.huge);
         return shared;
     }
 
-    fn releaseAll(self: *SharedTracker, io: std.Io) void {
+    fn releaseAll(self: *SharedTracker) void {
         for (self.outstanding[0..self.outstanding_len]) |shared| {
-            std.posix.munmap(shared.map);
-            const file: std.Io.File = .{ .handle = shared.fd, .flags = .{ .nonblocking = false } };
-            file.close(io);
+            platform.shm.unmap(sharedRegion(shared));
+            platform.shm.close(shared.fd);
         }
         self.outstanding_len = 0;
     }
@@ -116,16 +116,15 @@ const SharedTracker = struct {
         return false;
     }
 
-    fn consume(self: *SharedTracker, io: std.Io, indices: []const u8) void {
+    fn consume(self: *SharedTracker, indices: []const u8) void {
         var selected: [max_outstanding_shared]bool = @splat(false);
         for (indices) |index| selected[index] = true;
         var write: usize = 0;
         for (self.outstanding[0..self.outstanding_len], 0..) |shared, i| {
             if (selected[i]) {
                 self.rememberConsumed(shared);
-                std.posix.munmap(shared.map);
-                const file: std.Io.File = .{ .handle = shared.fd, .flags = .{ .nonblocking = false } };
-                file.close(io);
+                platform.shm.unmap(sharedRegion(shared));
+                platform.shm.close(shared.fd);
             } else {
                 self.outstanding[write] = shared;
                 write += 1;
@@ -146,6 +145,10 @@ const SharedTracker = struct {
     }
 };
 
+fn sharedRegion(shared: Shared) platform.shm.Region {
+    return .{ .handle = shared.fd, .map = shared.map, .huge = shared.huge };
+}
+
 /// Errors from resolving and opening the Unix-domain socket plus starting a
 /// run. Connection setup allocates nothing and owns no error payload.
 pub const ConnectError = Error || std.Io.net.UnixAddress.InitError ||
@@ -157,6 +160,7 @@ pub const ConnectOptions = struct {
     name: []const u8,
     optional: bool = false,
     socket_path: ?[]const u8 = null,
+    huge_pages: ?bool = null,
 };
 
 /// Dimension option shared by meshes, points, and lines. It owns no memory
@@ -243,13 +247,13 @@ pub const SocketSink = struct {
         @memcpy(parts[0..source_parts.len], source_parts);
 
         if (fd_count != 0) {
-            try sendMsgWithFds(
+            const sent = try platform.fdpass.sendWithHandles(
                 self.stream.socket.handle,
                 parts[0..source_parts.len],
                 fds[0..fd_count],
-                encoded.totalLen(),
             );
-            self.shared_tracker.?.consume(self.io, consumed[0..consumed_count]);
+            if (sent != encoded.totalLen()) return error.ShortWrite;
+            self.shared_tracker.?.consume(consumed[0..consumed_count]);
             return;
         }
 
@@ -369,55 +373,6 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
         return socket.send(message);
     }
 }.send };
-
-fn cmsgAlign(len: usize) usize {
-    return std.mem.alignForward(usize, len, @sizeOf(usize));
-}
-
-fn cmsgLen(data_len: usize) usize {
-    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + data_len;
-}
-
-fn cmsgSpace(data_len: usize) usize {
-    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + cmsgAlign(data_len);
-}
-
-fn sendMsgWithFds(
-    fd: std.posix.fd_t,
-    parts: []const []const u8,
-    fds: []const i32,
-    expected_len: usize,
-) SendError!void {
-    std.debug.assert(fds.len > 0 and fds.len <= 7);
-    var iovecs: [protocol.max_parts]std.posix.iovec_const = undefined;
-    for (parts, 0..) |part, i| iovecs[i] = .{ .base = part.ptr, .len = part.len };
-
-    const max_control_len = comptime cmsgSpace(7 * @sizeOf(i32));
-    var control: [max_control_len]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
-    const header: *std.os.linux.cmsghdr = @ptrCast(&control);
-    const data_len = fds.len * @sizeOf(i32);
-    header.* = .{
-        .len = cmsgLen(data_len),
-        .level = std.os.linux.SOL.SOCKET,
-        .type = std.os.linux.SCM.RIGHTS,
-    };
-    const data_start = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
-    const fd_data: [*]i32 = @ptrCast(@alignCast(control[data_start..].ptr));
-    @memcpy(fd_data[0..fds.len], fds);
-
-    const msg: std.os.linux.msghdr_const = .{
-        .name = null,
-        .namelen = 0,
-        .iov = &iovecs,
-        .iovlen = parts.len,
-        .control = &control,
-        .controllen = cmsgSpace(data_len),
-        .flags = 0,
-    };
-    const rc = std.os.linux.sendmsg(fd, &msg, std.os.linux.MSG.NOSIGNAL);
-    if (std.os.linux.errno(rc) != .SUCCESS) return error.AncillarySendFailed;
-    if (rc != expected_len) return error.ShortWrite;
-}
 
 /// A protocol session over a caller-owned sink. The session borrows the sink
 /// for its lifetime, owns no heap memory, and allocates nothing.
@@ -543,9 +498,10 @@ pub const Connection = struct {
     /// `finish`/`close`. Request a fresh buffer for every message because the
     /// viewer retains versions, so reuse is impossible by construction.
     pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
+        if (builtin.os.tag != .linux) return error.Unsupported;
         if (self.state.finished) return error.Finished;
-        const socket = self.socket orelse return error.NotConnected;
-        return self.shared_tracker.create(socket.io, len);
+        if (self.socket == null) return error.NotConnected;
+        return self.shared_tracker.create(len);
     }
 
     /// Creates shared storage for `n` positions without allocator use. The
@@ -569,6 +525,12 @@ pub const Connection = struct {
     /// returned view is invalid after the message that sends it succeeds.
     pub fn sharedVectors(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         return self.sharedPositions(n);
+    }
+
+    /// Returns how many connection-owned shared regions actually used hugetlb
+    /// pages. Sampling the tracker allocates nothing and does not alter ownership.
+    pub fn sharedHugeRegions(self: *const Connection) u64 {
+        return self.shared_tracker.huge_regions;
     }
 
     /// Synchronously sends a mesh when connected. Inputs remain caller-owned
@@ -665,7 +627,7 @@ pub const Connection = struct {
     /// sending terminators. It is safe to call repeatedly and uses no gpa.
     pub fn close(self: *Connection) void {
         if (self.socket) |*socket| {
-            self.shared_tracker.releaseAll(socket.io);
+            self.shared_tracker.releaseAll();
             socket.close();
         } else std.debug.assert(self.shared_tracker.outstanding_len == 0);
         self.socket = null;
@@ -692,14 +654,15 @@ pub fn connect(init: std.process.Init, options: ConnectOptions) ConnectError!Con
 /// connection owns its socket, borrows no options, and allocates nothing.
 pub fn connectWith(io: std.Io, environ: std.process.Environ, options: ConnectOptions) ConnectError!Connection {
     try validateName(options.name);
+    const huge_pages = resolveHugePages(environ, options.huge_pages);
 
     var path_storage: [std.Io.net.UnixAddress.max_len]u8 = undefined;
     const path = resolveSocketPath(environ, options.socket_path, &path_storage) catch |err| {
-        if (options.optional) return disconnectedConnection();
+        if (options.optional) return disconnectedConnection(huge_pages);
         return err;
     };
     var socket = SocketSink.connect(io, path) catch |err| {
-        if (options.optional) return disconnectedConnection();
+        if (options.optional) return disconnectedConnection(huge_pages);
         return err;
     };
     errdefer socket.close();
@@ -708,18 +671,22 @@ pub fn connectWith(io: std.Io, environ: std.process.Environ, options: ConnectOpt
     destination.send(.{ .hello = .{ .name = options.name } }) catch |err| {
         if (options.optional) {
             socket.close();
-            return disconnectedConnection();
+            return disconnectedConnection(huge_pages);
         }
         return err;
     };
     destination.send(.{ .begin_run = {} }) catch |err| {
         if (options.optional) {
             socket.close();
-            return disconnectedConnection();
+            return disconnectedConnection(huge_pages);
         }
         return err;
     };
-    return .{ .socket = socket, .state = .{} };
+    return .{
+        .socket = socket,
+        .state = .{},
+        .shared_tracker = .{ .huge_pages = huge_pages },
+    };
 }
 
 const State = struct {
@@ -934,8 +901,20 @@ fn resolveSocketPath(
     return storage[0 .. runtime_dir.len + suffix.len];
 }
 
-fn disconnectedConnection() Connection {
-    return .{ .socket = null, .state = .{} };
+fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
+    if (explicit) |enabled| return enabled;
+    // Default on: hugetlbfs is tried and silently falls back (with a one-time
+    // notice) when the kernel has no huge pages configured.
+    const value = std.process.Environ.getPosix(environ, "VERTEX_SHARED_HUGE") orelse return true;
+    return !std.mem.eql(u8, value, "0");
+}
+
+fn disconnectedConnection(huge_pages: bool) Connection {
+    return .{
+        .socket = null,
+        .state = .{},
+        .shared_tracker = .{ .huge_pages = huge_pages },
+    };
 }
 
 fn noopSink() Sink {
@@ -1117,28 +1096,27 @@ const LiveServer = struct {
         var pending_len: usize = 0;
         var fd_fifo: [16]i32 = undefined;
         var fd_len: usize = 0;
-        defer closeFdSlice(io, fd_fifo[0..fd_len]);
+        defer closeHandleSlice(fd_fifo[0..fd_len]);
 
         while (true) {
-            var control: [cmsgSpace(16 * @sizeOf(i32))]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
-            var iovec: std.posix.iovec = .{ .base = pending[pending_len..].ptr, .len = pending.len - pending_len };
-            var msg: std.os.linux.msghdr = .{
-                .name = null,
-                .namelen = 0,
-                .iov = @ptrCast(&iovec),
-                .iovlen = 1,
-                .control = &control,
-                .controllen = control.len,
-                .flags = 0,
-            };
-            const received = try recvMsg(stream.socket.handle, &msg);
-            if (received == 0) {
+            var received_handles: [16]platform.Handle = undefined;
+            const received = try platform.fdpass.recvWithHandles(
+                stream.socket.handle,
+                pending[pending_len..],
+                &received_handles,
+            );
+            if (received.bytes == 0) {
                 if (pending_len != 0 or fd_len != 0) return error.Truncated;
                 return;
             }
-            pending_len += received;
-            try appendReceivedFds(io, control[0..msg.controllen], &fd_fifo, &fd_len);
-            if (msg.flags & std.os.linux.MSG.CTRUNC != 0) return error.ControlTruncated;
+            if (fd_len + received.handle_count > fd_fifo.len) {
+                closeHandleSlice(received_handles[0..received.handle_count]);
+                return error.TooManyFds;
+            }
+            @memcpy(fd_fifo[fd_len..][0..received.handle_count], received_handles[0..received.handle_count]);
+            fd_len += received.handle_count;
+            if (received.control_truncated) return error.ControlTruncated;
+            pending_len += received.bytes;
 
             var consumed_bytes: usize = 0;
             while (pending_len - consumed_bytes >= @sizeOf(protocol.Header)) {
@@ -1157,7 +1135,7 @@ const LiveServer = struct {
                 @memcpy(frame_fds[0..used_fds], fd_fifo[0..used_fds]);
                 std.mem.copyForwards(i32, fd_fifo[0 .. fd_len - used_fds], fd_fifo[used_fds..fd_len]);
                 fd_len -= used_fds;
-                try self.processFrame(io, header, payload, frame_fds[0..used_fds]);
+                try self.processFrame(header, payload, frame_fds[0..used_fds]);
                 consumed_bytes += frame_len;
             }
             if (consumed_bytes != 0) {
@@ -1169,34 +1147,22 @@ const LiveServer = struct {
 
     fn processFrame(
         self: *LiveServer,
-        io: std.Io,
         header: protocol.Header,
         payload: []align(protocol.payload_alignment) const u8,
         fds: []const i32,
     ) !void {
-        var mapped: [7]?[]align(std.heap.page_size_min) u8 = @splat(null);
+        var mapped: [7]?platform.shm.Region = @splat(null);
         var mappings: [7][]align(64) const u8 = undefined;
         defer {
             for (mapped[0..fds.len], fds) |mapping, fd| {
-                if (mapping) |bytes| std.posix.munmap(bytes);
-                const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-                file.close(io);
+                if (mapping) |region| platform.shm.unmap(region);
+                platform.shm.close(fd);
             }
         }
         for (fds, 0..) |fd, i| {
-            const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-            const size = try file.length(io);
-            if (size == 0 or size > std.math.maxInt(usize)) return error.BadMappingSize;
-            const bytes = try std.posix.mmap(
-                null,
-                @intCast(size),
-                .{ .READ = true },
-                .{ .TYPE = .SHARED, .POPULATE = true },
-                fd,
-                0,
-            );
-            mapped[i] = bytes;
-            mappings[i] = @alignCast(bytes);
+            const region = try platform.shm.mapReadOnly(fd, .{ .huge_pages = true });
+            mapped[i] = region;
+            mappings[i] = @alignCast(region.map);
         }
 
         const message = try protocol.decode(header, payload, mappings[0..fds.len]);
@@ -1217,45 +1183,8 @@ const LiveServer = struct {
     }
 };
 
-fn recvMsg(fd: std.posix.fd_t, msg: *std.os.linux.msghdr) error{RecvFailed}!usize {
-    while (true) {
-        const rc = std.os.linux.recvmsg(fd, msg, std.os.linux.MSG.CMSG_CLOEXEC);
-        switch (std.os.linux.errno(rc)) {
-            .SUCCESS => return rc,
-            .INTR => continue,
-            else => return error.RecvFailed,
-        }
-    }
-}
-
-fn appendReceivedFds(io: std.Io, control: []const u8, fifo: *[16]i32, fifo_len: *usize) !void {
-    var offset: usize = 0;
-    while (offset + @sizeOf(std.os.linux.cmsghdr) <= control.len) {
-        const header = @as(*align(1) const std.os.linux.cmsghdr, @ptrCast(control[offset..].ptr)).*;
-        const header_len = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
-        if (header.len < header_len or header.len > control.len - offset) return error.BadControl;
-        if (header.level == std.os.linux.SOL.SOCKET and header.type == std.os.linux.SCM.RIGHTS) {
-            const data_len = header.len - header_len;
-            if (data_len % @sizeOf(i32) != 0) return error.BadControl;
-            const count = data_len / @sizeOf(i32);
-            const data = control[offset + header_len ..][0..data_len];
-            const received = std.mem.bytesAsSlice(i32, @as([]align(@alignOf(i32)) const u8, @alignCast(data)));
-            if (fifo_len.* + count > fifo.len) {
-                closeFdSlice(io, received);
-                return error.TooManyFds;
-            }
-            @memcpy(fifo[fifo_len.*..][0..count], received);
-            fifo_len.* += count;
-        }
-        offset += cmsgAlign(header.len);
-    }
-}
-
-fn closeFdSlice(io: std.Io, fds: []const i32) void {
-    for (fds) |fd| {
-        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-        file.close(io);
-    }
+fn closeHandleSlice(handles: []const platform.Handle) void {
+    for (handles) |handle| platform.shm.close(handle);
 }
 
 test "live unix socket round-trip delivers the frame sequence" {
@@ -1295,7 +1224,7 @@ test "live unix socket round-trip delivers the frame sequence" {
 
 test "connection shared buffer tracker rejects more than eight outstanding" {
     var tracker: SharedTracker = .{};
-    defer tracker.releaseAll(testing.io);
-    for (0..max_outstanding_shared) |_| _ = try tracker.create(testing.io, 64);
-    try testing.expectError(error.TooManyShared, tracker.create(testing.io, 64));
+    defer tracker.releaseAll();
+    for (0..max_outstanding_shared) |_| _ = try tracker.create(64);
+    try testing.expectError(error.TooManyShared, tracker.create(64));
 }

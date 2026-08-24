@@ -1,6 +1,7 @@
 //! vertex — pure core (geometry, protocol, scene) plus the client library.
 //! Viewer edges (sokol, imgui, sockets server) live in src/viewer/ and import this module.
 pub const build_options = @import("build_options");
+pub const platform = @import("platform/platform.zig");
 pub const layout = @import("geometry/layout.zig");
 pub const geometry = @import("geometry/geometry.zig");
 pub const fixtures = @import("geometry/fixtures.zig");

@@ -51,6 +51,7 @@ const State = struct {
     left_dragged: bool = false,
     pending_pin: bool = false,
     initial_memory_budget: usize = default_retention.budget_bytes,
+    huge_pages: bool = true,
     ingest_messages: u64 = 0,
     ingest_bytes: u64 = 0,
     ingest_mapped_bytes: u64 = 0,
@@ -105,6 +106,12 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
+    if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_SHARED_HUGE")) |value| {
+        state.huge_pages = !std.mem.eql(u8, value, "0");
+    }
+    if (state.huge_pages and !vertex.platform.shm.hugePagesConfigured()) {
+        vertex.platform.shm.warnIfHugeUnavailable("viewer startup");
+    }
 
     sapp.run(.{
         .init_cb = initCallback,
@@ -130,7 +137,7 @@ fn initCallback() callconv(.c) void {
     state.scene = Scene.init(state.gpa);
     state.scene.retention.budget_bytes = state.initial_memory_budget;
     state.scene_ready = true;
-    state.server = server_mod.Server.init(state.gpa, state.io);
+    state.server = server_mod.Server.init(state.gpa, state.io, state.huge_pages);
     state.server_ready = true;
     state.server.start(state.environ) catch |err| {
         std.log.err("could not start vertex viewer socket: {s}", .{@errorName(err)});
@@ -272,17 +279,23 @@ fn cleanupCallback() callconv(.c) void {
         state.renderer_ready = false;
     }
     if (state.scene_ready) {
+        const exit_minflt = vertex.platform.stats.minorFaults();
         std.debug.print(
             "vertex-view: structures={d} frames={d} blobs={d}\n",
             .{ state.scene.structures.len, state.scene.frameCount(), state.scene.live_blobs },
         );
         std.debug.print(
-            "vertex-view: ingest messages={d} bytes={d} mapped_bytes={d} apply_ms={d:.1}\n",
+            "vertex-view: ingest messages={d} bytes={d} mapped_bytes={d} apply_ms={d:.1} minflt={d} hugetlb_kb={d} huge={s} huge_available={} huge_mappings={d}\n",
             .{
                 state.ingest_messages,
                 state.ingest_bytes,
                 state.ingest_mapped_bytes,
                 @as(f64, @floatFromInt(state.ingest_ns)) / 1_000_000.0,
+                exit_minflt -| (state.server.firstIngestMinorFaults() orelse exit_minflt),
+                vertex.platform.stats.hugetlbKb(),
+                if (state.huge_pages) "on" else "off",
+                vertex.platform.shm.hugePagesAvailable(),
+                state.server.hugeMappingsReceived(),
             },
         );
         if (state.probe) |probe| {
@@ -306,7 +319,7 @@ fn cleanupCallback() callconv(.c) void {
             }
         }
         state.scene.takeAllMappings(&state.mapping_cleanup) catch unreachable;
-        for (state.mapping_cleanup.items) |mapping| disposeMapping(state.io, mapping);
+        for (state.mapping_cleanup.items) |mapping| disposeMapping(mapping);
         state.mapping_cleanup.deinit(state.gpa);
         state.scene.deinit();
         state.scene_ready = false;
@@ -382,7 +395,7 @@ fn drainInbox(s: *State) bool {
         defer {
             s.scene.releaseUnreferencedMappings();
             drainReleasedMappings(s);
-            disposeItemMappingsFrom(s.io, item, registered);
+            disposeItemMappingsFrom(item, registered);
             s.gpa.free(item.payload);
         }
         const message: ?vertex.protocol.Message = blk: {
@@ -465,26 +478,25 @@ fn drainReleasedMappings(s: *State) void {
     while (s.scene.released_mappings.items.len != 0) {
         const mapping_index = s.scene.released_mappings.items[0];
         const mapping = s.scene.mappingValue(mapping_index);
-        disposeMapping(s.io, mapping);
+        disposeMapping(mapping);
         s.scene.forgetMapping(mapping_index);
     }
 }
 
-fn disposeItemMappingsFrom(io: std.Io, item: server_mod.Inbox.Item, start: usize) void {
+fn disposeItemMappingsFrom(item: server_mod.Inbox.Item, start: usize) void {
     for (item.mappings[start..item.fd_count], item.fds[start..item.fd_count]) |mapping, fd| {
-        if (mapping) |bytes| std.posix.munmap(bytes);
-        closeFd(io, fd);
+        if (mapping) |bytes| vertex.platform.shm.unmap(.{ .handle = fd, .map = bytes, .huge = false });
+        vertex.platform.shm.close(fd);
     }
 }
 
-fn disposeMapping(io: std.Io, mapping: vertex.scene.Mapping) void {
-    std.posix.munmap(@alignCast(mapping.bytes));
-    closeFd(io, mapping.fd);
-}
-
-fn closeFd(io: std.Io, fd: i32) void {
-    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    file.close(io);
+fn disposeMapping(mapping: vertex.scene.Mapping) void {
+    vertex.platform.shm.unmap(.{
+        .handle = mapping.fd,
+        .map = @alignCast(@constCast(mapping.bytes)),
+        .huge = false,
+    });
+    vertex.platform.shm.close(mapping.fd);
 }
 
 fn drawScene(s: *State, vp: vertex.camera.Mat4, viewport: [2]f32) std.mem.Allocator.Error!void {

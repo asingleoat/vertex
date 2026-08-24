@@ -129,11 +129,24 @@ Semantics:
     that view them; the edge alone `munmap`s/`close`s via `released_mappings`.
     A shared buffer is consumed by its send (the viewer retains versions, so
     reuse is impossible by construction): request a fresh one per message.
-  - Measured (2026-08-24, `sketches/stress.zig`, 40 × 1M-vertex
-    `MeshPositions`, llvmpipe viewer): inline — client 241 ms (1.9 GB/s),
-    viewer decode+apply 197 ms, 517 MB through the socket; shared — client
-    16.5 ms, viewer 17.4 ms, 481 MB mapped and 36 MB through the socket.
-    Inline remains the default for ordinary slices.
+  - *Huge pages*: shared buffers ≥ 2 MiB are created with
+    `MFD_HUGETLB | MFD_HUGE_2MB` (hugetlbfs, reserve-or-fail at `mmap`, so
+    the fallback to an ordinary memfd is clean; a failed attempt starts an
+    8-buffer cooldown). On by default (`VERTEX_SHARED_HUGE=0` disables); the
+    kernel must allow huge pages — `vm.nr_overcommit_hugepages` (on demand,
+    nothing reserved while idle) or `vm.nr_hugepages` — and both sketch and
+    viewer print a one-time notice with the exact sysctl when neither is set.
+    THP for shmem was considered and rejected: it needs the equally
+    non-default `shmem_enabled=advise` and is best-effort rather than
+    reserve-or-fail.
+  - Measured (2026-08-24, `sketches/stress.zig`, 40 × 1M-vertex (12 MB)
+    `MeshPositions`, llvmpipe viewer), per step, excluding the sketch's own
+    fill: inline — send 6.8 ms, viewer decode+apply 5.4 ms, 517 MB through
+    the socket; shared 4 KiB pages — create+populate ~5 ms, send 0.45 ms,
+    viewer 0.43 ms, 117k minor faults over the run; shared hugetlb — create
+    +populate ~2 ms (kernel zero-fill is the residual), send 0.03 ms, viewer
+    0.43 ms, 244 minor faults. Inline remains the default for ordinary
+    slices; all platform-specific code lives in `src/platform/`.
 
 ## Client library
 
@@ -278,7 +291,7 @@ touchpoints and their counterparts:
 
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
-| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, THP via `madvise` | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
+| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, hugetlbfs via `MFD_HUGETLB` with fallback | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
 | Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | `SCM_RIGHTS` (same API) | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
 | Transport | Unix domain socket via `std.Io.net` | same | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
 | Windowing / GPU | sokol_app X11 + GL 4.3 | sokol_app Cocoa + Metal | sokol_app Win32 + D3D11 |
@@ -286,7 +299,7 @@ touchpoints and their counterparts:
 | Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
 | Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | Metal storage buffer + `primitive_id` | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
 | Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | `$TMPDIR/vertex.sock` | `\\.\pipe` or a temp-dir `AF_UNIX` path |
-| Measurement (`platform.stats`) | `getrusage`, `/proc/self/smaps_rollup` | `getrusage`, `task_info` | `GetProcessMemoryInfo` |
+| Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | `getrusage`, `task_info` | `GetProcessMemoryInfo` |
 
 Rules that keep this cheap: no `std.os.linux` or raw GL call outside
 `src/platform/*` and `pick.zig`; the scene and protocol never see handles as

@@ -3,6 +3,7 @@ const std = @import("std");
 const vertex = @import("vertex");
 
 const protocol = vertex.protocol;
+const platform = vertex.platform;
 
 const InboxItem = struct {
     header: protocol.Header,
@@ -10,6 +11,7 @@ const InboxItem = struct {
     fds: [7]i32 = @splat(-1),
     mappings: [7]?[]align(std.heap.page_size_min) u8 = @splat(null),
     fd_count: u8 = 0,
+    huge_mapping_count: u8 = 0,
 };
 
 /// Mutex-protected double buffer shared only by the socket producer and render
@@ -80,11 +82,15 @@ pub const Server = struct {
     listener: ?std.Io.net.Server = null,
     thread: ?std.Thread = null,
     stopped: bool = false,
+    huge_pages: bool,
+    first_ingest_minflt: ?u64 = null,
+    received_huge_mappings: u64 = 0,
 
     /// Initializes an unstarted server without allocating. `gpa` must be
-    /// thread-safe and remain valid through `stop`.
-    pub fn init(gpa: std.mem.Allocator, io: std.Io) Server {
-        return .{ .gpa = gpa, .io = io };
+    /// thread-safe and remain valid through `stop`; `huge_pages` is retained as
+    /// the mapping/reporting preference for every accepted connection.
+    pub fn init(gpa: std.mem.Allocator, io: std.Io, huge_pages: bool) Server {
+        return .{ .gpa = gpa, .io = io, .huge_pages = huge_pages };
     }
 
     /// Resolves the environment-selected socket, removes a stale entry, binds,
@@ -111,6 +117,20 @@ pub const Server = struct {
         return self.path_storage[0..self.path_len];
     }
 
+    /// Returns the minor-fault sample taken at the first successful recvmsg.
+    /// Call after `stop` joins the server thread; sampling and access allocate
+    /// nothing and the returned value owns no state.
+    pub fn firstIngestMinorFaults(self: *const Server) ?u64 {
+        return self.first_ingest_minflt;
+    }
+
+    /// Returns how many successfully mapped received handles were hugetlbfs
+    /// regions. Call after `stop` joins the server thread; access allocates
+    /// nothing and the returned counter owns no state.
+    pub fn hugeMappingsReceived(self: *const Server) u64 {
+        return self.received_huge_mappings;
+    }
+
     /// Stops and joins the listener, discards queued payloads, removes the
     /// socket file, and frees inbox storage. It is safe to call once after any
     /// `start` outcome and performs no long-held inbox lock.
@@ -135,7 +155,7 @@ pub const Server = struct {
         self.connected.store(false, .release);
 
         const pending = self.inbox.drain(self.io);
-        for (pending) |item| disposeItem(self.gpa, self.io, item);
+        for (pending) |item| disposeItem(self.gpa, item);
         self.inbox.consume();
         self.inbox.deinit(self.gpa);
 
@@ -179,30 +199,30 @@ pub const Server = struct {
         var fd_len: usize = 0;
         defer {
             if (payload) |bytes| self.gpa.free(bytes);
-            closeFds(self.io, fd_fifo[0..fd_len]);
+            closeFds(fd_fifo[0..fd_len]);
         }
 
         while (!self.stopping.load(.acquire)) {
-            var control: [cmsgSpace(7 * @sizeOf(i32))]u8 align(@alignOf(std.os.linux.cmsghdr)) = @splat(0);
-            var iovec: std.posix.iovec = .{ .base = &read_buffer, .len = read_buffer.len };
-            var msg: std.os.linux.msghdr = .{
-                .name = null,
-                .namelen = 0,
-                .iov = @ptrCast(&iovec),
-                .iovlen = 1,
-                .control = &control,
-                .controllen = control.len,
-                .flags = 0,
-            };
-            const received = try recvMsg(stream.socket.handle, &msg);
-            if (received == 0) return error.EndOfStream;
-            try appendReceivedFds(self.io, control[0..msg.controllen], &fd_fifo, &fd_len);
-            if (msg.flags & std.os.linux.MSG.CTRUNC != 0) return error.ControlTruncated;
+            var received_handles: [28]platform.Handle = undefined;
+            const received = try platform.fdpass.recvWithHandles(
+                stream.socket.handle,
+                &read_buffer,
+                &received_handles,
+            );
+            if (received.bytes == 0) return error.EndOfStream;
+            if (self.first_ingest_minflt == null) self.first_ingest_minflt = platform.stats.minorFaults();
+            if (fd_len + received.handle_count > fd_fifo.len) {
+                closeFds(received_handles[0..received.handle_count]);
+                return error.TooManyFds;
+            }
+            @memcpy(fd_fifo[fd_len..][0..received.handle_count], received_handles[0..received.handle_count]);
+            fd_len += received.handle_count;
+            if (received.control_truncated) return error.ControlTruncated;
 
             var cursor: usize = 0;
-            while (cursor < received) {
+            while (cursor < received.bytes) {
                 if (header == null) {
-                    const copied = @min(header_bytes.len - header_len, received - cursor);
+                    const copied = @min(header_bytes.len - header_len, received.bytes - cursor);
                     @memcpy(header_bytes[header_len..][0..copied], read_buffer[cursor..][0..copied]);
                     header_len += copied;
                     cursor += copied;
@@ -219,7 +239,7 @@ pub const Server = struct {
 
                 const active_header = header.?;
                 const active_payload = payload.?;
-                const copied = @min(active_payload.len - payload_len, received - cursor);
+                const copied = @min(active_payload.len - payload_len, received.bytes - cursor);
                 @memcpy(active_payload[payload_len..][0..copied], read_buffer[cursor..][0..copied]);
                 payload_len += copied;
                 cursor += copied;
@@ -237,7 +257,7 @@ pub const Server = struct {
                 );
                 fd_len -= frame_fd_count;
 
-                const item = mapItem(self.io, active_header, active_payload, frame_fds[0..frame_fd_count]) catch |err| {
+                const item = mapItem(self.huge_pages, active_header, active_payload, frame_fds[0..frame_fd_count]) catch |err| {
                     self.gpa.free(active_payload);
                     std.log.warn("dropping viewer frame after fd mapping error: {s}", .{@errorName(err)});
                     header = null;
@@ -247,8 +267,9 @@ pub const Server = struct {
                     continue;
                 };
                 payload = null;
+                self.received_huge_mappings +|= item.huge_mapping_count;
                 self.inbox.push(self.gpa, self.io, item) catch |err| {
-                    disposeItem(self.gpa, self.io, item);
+                    disposeItem(self.gpa, item);
                     return err;
                 };
                 header = null;
@@ -259,50 +280,8 @@ pub const Server = struct {
     }
 };
 
-fn cmsgAlign(len: usize) usize {
-    return std.mem.alignForward(usize, len, @sizeOf(usize));
-}
-
-fn cmsgSpace(data_len: usize) usize {
-    return cmsgAlign(@sizeOf(std.os.linux.cmsghdr)) + cmsgAlign(data_len);
-}
-
-fn recvMsg(fd: std.posix.fd_t, msg: *std.os.linux.msghdr) error{RecvFailed}!usize {
-    while (true) {
-        const rc = std.os.linux.recvmsg(fd, msg, std.os.linux.MSG.CMSG_CLOEXEC);
-        switch (std.os.linux.errno(rc)) {
-            .SUCCESS => return rc,
-            .INTR => continue,
-            else => return error.RecvFailed,
-        }
-    }
-}
-
-fn appendReceivedFds(io: std.Io, control: []const u8, fifo: *[28]i32, fifo_len: *usize) !void {
-    var offset: usize = 0;
-    while (offset + @sizeOf(std.os.linux.cmsghdr) <= control.len) {
-        const header = @as(*align(1) const std.os.linux.cmsghdr, @ptrCast(control[offset..].ptr)).*;
-        const header_len = cmsgAlign(@sizeOf(std.os.linux.cmsghdr));
-        if (header.len < header_len or header.len > control.len - offset) return error.BadControl;
-        if (header.level == std.os.linux.SOL.SOCKET and header.type == std.os.linux.SCM.RIGHTS) {
-            const data_len = header.len - header_len;
-            if (data_len % @sizeOf(i32) != 0) return error.BadControl;
-            const count = data_len / @sizeOf(i32);
-            const data = control[offset + header_len ..][0..data_len];
-            const received = std.mem.bytesAsSlice(i32, @as([]align(@alignOf(i32)) const u8, @alignCast(data)));
-            if (fifo_len.* + count > fifo.len) {
-                closeFds(io, received);
-                return error.TooManyFds;
-            }
-            @memcpy(fifo[fifo_len.*..][0..count], received);
-            fifo_len.* += count;
-        }
-        offset += cmsgAlign(header.len);
-    }
-}
-
 fn mapItem(
-    io: std.Io,
+    huge_pages: bool,
     header: protocol.Header,
     payload: []align(protocol.section_alignment) u8,
     fds: []const i32,
@@ -312,41 +291,28 @@ fn mapItem(
     @memcpy(item.fds[0..fds.len], fds);
     errdefer {
         for (item.mappings[0..fds.len], fds) |mapping, fd| {
-            if (mapping) |bytes| std.posix.munmap(bytes);
-            closeFd(io, fd);
+            if (mapping) |bytes| platform.shm.unmap(.{ .handle = fd, .map = bytes, .huge = false });
+            platform.shm.close(fd);
         }
     }
     for (fds, 0..) |fd, i| {
-        const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-        const size = try file.length(io);
-        if (size == 0 or size > std.math.maxInt(usize)) return error.BadMappingSize;
-        item.mappings[i] = try std.posix.mmap(
-            null,
-            @intCast(size),
-            .{ .READ = true },
-            .{ .TYPE = .SHARED, .POPULATE = true },
-            fd,
-            0,
-        );
+        const region = try platform.shm.mapReadOnly(fd, .{ .huge_pages = huge_pages });
+        item.mappings[i] = region.map;
+        item.huge_mapping_count +|= @intFromBool(region.huge);
     }
     return item;
 }
 
-fn disposeItem(gpa: std.mem.Allocator, io: std.Io, item: Inbox.Item) void {
+fn disposeItem(gpa: std.mem.Allocator, item: Inbox.Item) void {
     for (item.mappings[0..item.fd_count], item.fds[0..item.fd_count]) |mapping, fd| {
-        if (mapping) |bytes| std.posix.munmap(bytes);
-        closeFd(io, fd);
+        if (mapping) |bytes| platform.shm.unmap(.{ .handle = fd, .map = bytes, .huge = false });
+        platform.shm.close(fd);
     }
     gpa.free(item.payload);
 }
 
-fn closeFds(io: std.Io, fds: []const i32) void {
-    for (fds) |fd| closeFd(io, fd);
-}
-
-fn closeFd(io: std.Io, fd: i32) void {
-    const file: std.Io.File = .{ .handle = fd, .flags = .{ .nonblocking = false } };
-    file.close(io);
+fn closeFds(fds: []const platform.Handle) void {
+    for (fds) |fd| platform.shm.close(fd);
 }
 
 fn threadMain(server: *Server) void {
