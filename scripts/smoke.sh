@@ -5,13 +5,34 @@
 # -Drelease, zig master's standardOptimizeOption builds Debug — the only mode
 # in which the viewer's process allocator is a leak-checking DebugAllocator,
 # which is what makes the leak assertions below meaningful. Drives each
-# scenario under Xvfb (llvmpipe) and asserts:
+# scenario under Xvfb (llvmpipe) on Linux and on the real display on macOS,
+# which has no Xvfb — expect four windows to appear and close. Asserts:
 #   * the deterministic stat lines the scenarios must print,
 #   * no sokol panics/errors, no allocator leak reports, no dropped frames.
 # Exit status is non-zero on any mismatch. Timing/throughput fields are not
 # compared (they vary); huge-page counters are environmental and not asserted.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Platform differences, all of them, in one place.
+#   * No Xvfb on macOS: the viewer runs on the real display.
+#   * The frame cap only has to outlive each scenario's sketch. Under llvmpipe
+#     frames are free-running; on a real display they are vsync-paced, so the
+#     same wall-clock budget is far fewer frames.
+#   * Picking is comptime-disabled off the GL backend until the CPU ray cast
+#     lands (DESIGN.md, "Picking, decided 2026-08-24"), so the probe is
+#     asserted to miss rather than to find a face.
+if [ "$(uname -s)" = "Darwin" ]; then
+  viewer_wrapper=(env)
+  lib_suffix=.dylib
+  picking=0
+  frames_current=600 frames_churn=900 frames_stepper=600 frames_stress=400
+else
+  viewer_wrapper=(xvfb-run -a -s '-screen 0 1400x900x24')
+  lib_suffix=.so
+  picking=1
+  frames_current=3000 frames_churn=6000 frames_stepper=1500 frames_stress=400
+fi
 
 PREFIX=zig-out-debug
 LOGS="${SMOKE_LOGS:-/tmp/vertex-smoke-$$}"
@@ -37,7 +58,7 @@ run() {
   rm -f "$sock"
   echo "== $name"
   env VERTEX_SOCK="$sock" VERTEX_EXIT_AFTER_FRAMES="$frames" $venv \
-    xvfb-run -a -s '-screen 0 1400x900x24' "./$PREFIX/bin/vertex-view" >"$log" 2>&1 &
+    "${viewer_wrapper[@]}" "./$PREFIX/bin/vertex-view" >"$log" 2>&1 &
   local vpid=$!
   for _ in $(seq 1 100); do [ -S "$sock" ] && break; sleep 0.1; done
   if [ -n "$sketch" ]; then
@@ -54,18 +75,23 @@ run() {
   return 0
 }
 
-run current 3000 "VERTEX_PICK_PROBE=700,450" sketch-current
+run current "$frames_current" "VERTEX_PICK_PROBE=700,450" sketch-current
 expect "$LOGS/current.log" 'vertex-view: structures=4 frames=25 blobs=83'
-expect "$LOGS/current.log" 'vertex-view: probe structure=sphere kind=face element=693'
+if [ "$picking" = 1 ]; then
+  # The expected face is display-dependent: this is the 1400x900 Xvfb value.
+  expect "$LOGS/current.log" 'vertex-view: probe structure=sphere kind=face element=693'
+else
+  expect "$LOGS/current.log" 'vertex-view: probe miss'
+fi
 
-run churn 6000 "" sketch-churn
+run churn "$frames_churn" "" sketch-churn
 expect "$LOGS/churn.log" 'vertex-view: structures=1 frames=401 blobs=802'
 
-run stepper 1500 "VERTEX_STEP_LIB=$PREFIX/lib/libstep-smooth.so VERTEX_STEP_AUTORUN=1"
+run stepper "$frames_stepper" "VERTEX_STEP_LIB=$PREFIX/lib/libstep-smooth$lib_suffix VERTEX_STEP_AUTORUN=1"
 expect "$LOGS/stepper.log" 'vertex-view: stepper steps=60 state=finished reloads=0 leaks=0'
 expect "$LOGS/stepper.log" 'vertex-view: structures=1 frames=61 blobs=123'
 
-run stress 400 "" sketch-stress "VERTEX_STRESS_SHARED=1"
+run stress "$frames_stress" "" sketch-stress "VERTEX_STRESS_SHARED=1"
 expect "$LOGS/stress.log" 'vertex-view: structures=1 frames=41 blobs=42'
 expect "$LOGS/stress.log" 'mapped_bytes=480960480'
 
