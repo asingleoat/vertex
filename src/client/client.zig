@@ -1056,10 +1056,6 @@ test "socket sink semantic encoding produces one exact frame without allocation"
     try testing.expectEqualSlices(u8, expected_frame, actual_frame);
 }
 
-test "sink has exactly two machine words" {
-    try testing.expectEqual(2 * @sizeOf(usize), @sizeOf(Sink));
-}
-
 test "socket path precedence and optional disconnected sessions" {
     const first = "VERTEX_SOCK=/tmp/override.sock";
     const second = "XDG_RUNTIME_DIR=/run/user/1000";

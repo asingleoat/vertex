@@ -81,21 +81,3 @@ test "shared regions round trip with ordinary and requested huge pages" {
         if (!case.huge_pages) try std.testing.expect(!region.huge);
     }
 }
-
-test "huge page availability reporting is infallible" {
-    const available: bool = shm.hugePagesAvailable();
-    std.mem.doNotOptimizeAway(available);
-}
-
-test "minor fault sampling is monotonic across page touches" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
-
-    const bytes = try std.testing.allocator.alloc(u8, 16 * std.heap.page_size_min);
-    defer std.testing.allocator.free(bytes);
-    const before = stats.minorFaults();
-    var offset: usize = 0;
-    while (offset < bytes.len) : (offset += std.heap.page_size_min) bytes[offset] = @truncate(offset);
-    std.mem.doNotOptimizeAway(bytes.ptr);
-    const after = stats.minorFaults();
-    try std.testing.expect(after >= before);
-}

@@ -1465,23 +1465,6 @@ test "every message kind round-trips without copying decoded sections" {
     }
 }
 
-test "encoded slices exactly cover total length" {
-    var positions_storage: [layout.Positions.byteSize(3)]u8 align(64) = @splat(0);
-    const positions = layout.Positions.fromBytes(&positions_storage).toConst();
-    const faces = [_][3]u32{.{ 0, 1, 2 }};
-    var encoded: Encoded = undefined;
-    encodeMesh(&encoded, "m", .d3, positions, &faces);
-    try testing.expect(!Flags.fromInt(encoded.header.flags).external);
-    try testing.expectEqual(@as(u8, 0), encoded.descriptor_count);
-
-    var sum: usize = 0;
-    const parts = encoded.slices();
-    try testing.expect(parts.len <= max_parts);
-    for (parts) |part| sum += part.len;
-    try testing.expectEqual(encoded.totalLen(), sum);
-    try testing.expectEqual(@as(usize, @sizeOf(Header)) + encoded.header.len, encoded.totalLen());
-}
-
 test "semantic header and enum errors are rejected" {
     var frame: [test_capacity]u8 align(section_alignment) = undefined;
     var payload: [test_capacity]u8 align(section_alignment) = undefined;

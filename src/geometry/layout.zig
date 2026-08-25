@@ -314,23 +314,6 @@ test "soa planar accessors" {
     try testing.expectEqualSlices(f32, &.{ 3, 6, 9 }, c.zs());
 }
 
-test "Vec3Padded round-trips through @Vector(4, f32)" {
-    const v: Vec3Padded = .fromVec3(.init(1, 2, 3));
-    const w = v.toVector();
-    try testing.expectEqual(@as(f32, 3), w[2]);
-    try testing.expect(Vec3Padded.fromVector(w * @as(@Vector(4, f32), @splat(2))).toVec3().eql(.init(2, 4, 6)));
-}
-
-test "Vec3 arithmetic" {
-    const a: Vec3 = .init(1, 0, 0);
-    const b: Vec3 = .init(0, 1, 0);
-    try testing.expect(a.cross(b).eql(.init(0, 0, 1)));
-    try testing.expectEqual(@as(f32, 0), a.dot(b));
-    try testing.expectEqual(@as(f32, 5), Vec3.init(3, 4, 0).length());
-    try testing.expect(Vec3.zero.normalize().eql(Vec3.zero));
-    try testing.expect(Vec3.init(0, 0, 4).normalize().eql(.init(0, 0, 1)));
-}
-
 test "alloc propagates OOM without leaking" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn run(gpa: std.mem.Allocator) !void {

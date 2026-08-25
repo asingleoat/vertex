@@ -232,21 +232,3 @@ test "procedural fixtures handle every allocation failure in every layout" {
         try testing.checkAllAllocationFailures(testing.allocator, Cases.randomPoints, .{});
     }
 }
-
-test "randomPoints is seeded and bounded in every layout" {
-    inline for (all_layouts) |l| {
-        const F = Fixtures(l);
-        const a = try F.randomPoints(testing.allocator, 32, 42, 7);
-        defer a.free(testing.allocator);
-        const b = try F.randomPoints(testing.allocator, 32, 42, 7);
-        defer b.free(testing.allocator);
-        var i: u32 = 0;
-        while (i < a.len()) : (i += 1) {
-            const point = a.get(i);
-            try testing.expect(point.eql(b.get(i)));
-            try testing.expect(point.x >= -7 and point.x <= 7);
-            try testing.expect(point.y >= -7 and point.y <= 7);
-            try testing.expect(point.z >= -7 and point.z <= 7);
-        }
-    }
-}

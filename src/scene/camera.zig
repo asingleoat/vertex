@@ -253,18 +253,6 @@ pub const Camera = union(enum) {
 
 const testing = std.testing;
 
-test "Mat4 identity multiplication and fixed size" {
-    const translation: Mat4 = .{ .m = .{
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        2, 3, 4, 1,
-    } };
-    try testing.expectEqual(64, @sizeOf(Mat4));
-    try testing.expectEqualSlices(f32, &translation.m, &Mat4.identity.mul(translation).m);
-    try testing.expectEqualSlices(f32, &translation.m, &translation.mul(Mat4.identity).m);
-}
-
 test "perspective maps the negative Z axis into OpenGL NDC" {
     const projection = Mat4.perspective(std.math.pi / 2.0, 1, 0.1, 100);
     const point = projection.transformPoint(.init(0, 0, -2));

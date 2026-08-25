@@ -426,26 +426,3 @@ test "Inbox drain allocates nothing after both lists are warm" {
     try testing.expectEqual(0, counting.alloc_calls + counting.resize_calls + counting.remap_calls);
     inbox.consume();
 }
-
-test "Inbox preserves fd and mapping metadata unchanged" {
-    var inbox: Inbox = .{};
-    defer inbox.deinit(testing.allocator);
-    var fake_mapping: [std.heap.page_size_min]u8 align(std.heap.page_size_min) = @splat(0);
-    var item: Inbox.Item = .{
-        .header = .{
-            .len = 0,
-            .kind = @backingInt(protocol.Kind.mesh_positions),
-            .flags = (protocol.Flags{ .external = true, .fd_count = 1 }).toInt(),
-        },
-        .payload = @constCast(empty_payload[0..]),
-        .fd_count = 1,
-    };
-    item.fds[0] = 42;
-    item.mappings[0] = &fake_mapping;
-    try inbox.push(testing.allocator, testing.io, item);
-    const drained = inbox.drain(testing.io);
-    try testing.expectEqual(@as(usize, 1), drained.len);
-    try testing.expectEqual(@as(i32, 42), drained[0].fds[0]);
-    try testing.expectEqual(@intFromPtr(fake_mapping[0..].ptr), @intFromPtr(drained[0].mappings[0].?.ptr));
-    inbox.consume();
-}

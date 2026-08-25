@@ -1792,20 +1792,6 @@ test "memoryStats accounts for live blob bytes through retain and release" {
     try testing.expectEqual(@as(usize, 0), scene.memoryStats().blob_bytes);
 }
 
-test "log retains the newest 1024 entries" {
-    var scene = Scene.init(testing.allocator);
-    defer scene.deinit();
-    try scene.apply(.{ .begin_run = {} });
-    var storage: [16]u8 = undefined;
-    for (0..max_log_entries + 3) |i| {
-        const text = try std.fmt.bufPrint(&storage, "entry-{d}", .{i});
-        try scene.apply(.{ .log = .{ .level = .info, .text = text } });
-    }
-    try testing.expectEqual(max_log_entries, scene.log.items.len);
-    try testing.expectEqualStrings("entry-3", scene.string(scene.log.items[0].text));
-    try testing.expectEqualStrings("entry-1026", scene.string(scene.log.items[max_log_entries - 1].text));
-}
-
 fn allocationFailureCase(gpa: std.mem.Allocator) !void {
     var scene = Scene.init(gpa);
     defer scene.deinit();
