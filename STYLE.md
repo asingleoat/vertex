@@ -199,8 +199,12 @@ Following Andrew Kelley's "Programming Without Pointers" / "Practical DOD".
 - **Procedural fixtures** (grid meshes, icospheres, random point sets from a
   seeded `std.Random.DefaultPrng`) over checked-in files.
 - **Asserts are free.** `std.debug.assert` every invariant: indices in range,
-  capacities ensured, refcounts nonzero. They vanish in `ReleaseFast`; run the
-  viewer in `ReleaseSafe` by default during development.
+  capacities ensured, refcounts nonzero. They vanish in `ReleaseFast`, which
+  is what a *user* gets from `-Drelease` — so they are a development
+  instrument, not a runtime guarantee. Develop and verify in Debug or
+  `ReleaseSafe`, where they and the bounds/overflow checks are live; that is
+  where a bad index has to be caught, because in the shipped mode it is
+  undefined behaviour instead of a panic.
 
 ## 6. Benchmarkability
 
@@ -242,5 +246,6 @@ Following Andrew Kelley's "Programming Without Pointers" / "Practical DOD".
 - Doc comments on every `pub` declaration in core modules state ownership and
   allocation behaviour: who owns the output, whether the function allocates,
   which allocator it uses.
-- Prefer `ReleaseSafe` for the daily-driver viewer build; `ReleaseFast` for
-  benchmarks and when a sketch is bottlenecked.
+- `-Drelease` is `ReleaseFast`: the mode a user writing sketches gets, and
+  what benches always use. Build the viewer in Debug or `ReleaseSafe` while
+  working on vertex itself.

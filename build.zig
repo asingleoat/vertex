@@ -10,7 +10,12 @@ pub const Layout = enum { aos3, aos4, soa };
 
 pub fn build(b: *Build) !void {
     const target = resolveTarget(b);
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
+    // `-Drelease` is the user-facing build: sketches are compute and the viewer
+    // is left running for days, so it is ReleaseFast. Development and every
+    // verification path deliberately stay in Debug (`zig build`, `zig build
+    // test`, `scripts/smoke.sh`) or ReleaseSafe, where the safety checks this
+    // index-heavy core relies on are still live (STYLE.md §5).
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .fast });
 
     const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
     const sketch_name = b.option([]const u8, "sketch", "Sketch to run with `zig build run-sketch` (default: current)") orelse "current";

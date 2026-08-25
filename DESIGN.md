@@ -308,9 +308,14 @@ inspector tooltip.
 
 ## Hot-recompile loop
 
-- Build modes: on zig master `zig build` is a Debug build (the viewer then
-  runs on a leak-checking `DebugAllocator`); `zig build -Drelease` is the
-  ReleaseSafe daily driver; benches are always ReleaseFast.
+- Build modes, split by who is building. **Using** vertex — writing sketches,
+  leaving the viewer up — is `zig build -Drelease`, which is **ReleaseFast**:
+  sketch geometry is real compute and nobody wants their own algorithm slowed
+  by the tool around it. **Working on** vertex is Debug or ReleaseSafe: on zig
+  master a plain `zig build` is Debug (the viewer then runs on a leak-checking
+  `DebugAllocator`), and `-Doptimize=ReleaseSafe` keeps the bounds, overflow
+  and `std.debug.assert` checks that a core built out of `u32` indices into
+  flat arrays depends on. Benches are always ReleaseFast.
 - Verification: `zig build test` (all layouts via `-Dvertex_layout`) plus
   `nix develop -c scripts/smoke.sh`, which drives the viewer through the
   socket sketches, the churn regression, the stepper autorun and the
