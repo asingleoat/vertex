@@ -1,23 +1,58 @@
-//! Vertex stream layout — STYLE.md §3 "layout is a type".
+//! Vertex streams: how the coordinates of many vertices are represented and
+//! addressed throughout the program.
 //!
-//! `Positions` is the build-selected stream type. Every consumer goes through
-//! its named accessors (`get`/`set`/`x`/`y`/`z`), never through stride
-//! arithmetic, so switching `-Dvertex_layout` recompiles all kernels to the
-//! new offsets. The wire format, blob storage and GPU strides all derive from
-//! this type (`bytes()` / `fromBytes()`), so no layout ever pays a conversion.
+//! A vertex stream is a run of `n` positions in three dimensions. It is what a
+//! mesh's vertices are, what a point cloud is, and what the values of a vector
+//! quantity are; it carries no connectivity and no other attributes, which
+//! travel alongside it as plain slices. `Positions` is the type every part of
+//! the program uses for one, and this module defines it.
+//!
+//! The point of having a type rather than a convention is that the memory
+//! layout is chosen once, at build time, by `-Dvertex_layout`. Callers address
+//! vertices through the named accessors `get`, `set`, `x`, `y` and `z` and never
+//! compute an offset themselves, so selecting a different layout recompiles
+//! every kernel against new offsets and strides and changes nothing else. The
+//! wire format, the viewer's blob storage and the GPU vertex layout are all
+//! derived from this type, through `bytes` and `fromBytes`, so no layout ever
+//! pays for a conversion. This is `STYLE.md` §3.
 const std = @import("std");
 const build_options = @import("build_options");
 
+/// The memory layouts a vertex stream can have.
+///
+/// `.aos3` stores each vertex as three consecutive `f32`, twelve bytes, and is
+/// the default: it is the most compact, so the most vertices fit in a cache
+/// line, which suits straight-line scalar code. `.aos4` pads each vertex to
+/// sixteen bytes so that it casts to `@Vector(4, f32)` at no cost, trading
+/// memory and wire bandwidth for vector loads. `.soa` stores the stream as
+/// three planar runs, all x, then all y, then all z, which suits component-wise
+/// arithmetic and lets `xs`, `ys` and `zs` hand a kernel whole `[]f32` runs.
+///
+/// The choice is made by `-Dvertex_layout` and applies to the entire build.
+/// `.aos3` is the default; the other two exist to be measured against it with
+/// `zig build bench` rather than assumed to be faster.
 pub const Layout = enum { aos3, aos4, soa };
 
-/// Layout selected by `-Dvertex_layout` (default `.aos3`).
+/// The layout this build selected, from `-Dvertex_layout`, defaulting to
+/// `.aos3`. A kernel that wants a layout-specific path switches on this at
+/// compile time; everything else is written against the accessors and ignores
+/// it.
 pub const layout: Layout = @field(Layout, @tagName(build_options.vertex_layout));
 
-/// Alignment of every positions blob. Large enough for any `@Vector` load
-/// and for future GPU staging (STYLE.md §2).
+/// The alignment of every positions blob, in bytes. Large enough for any
+/// `@Vector` load over the stream and for GPU staging later. `alloc` applies it,
+/// and the viewer's blob store maintains it, so a stream that arrives over the
+/// wire is aligned without being copied again. See `STYLE.md` §2.
 pub const blob_alignment: std.mem.Alignment = .@"64";
 
-/// Compact 3-vector. Also the value type every accessor speaks, regardless of layout.
+/// A position or direction in three dimensions: three `f32`, twelve bytes,
+/// owning nothing and copied freely.
+///
+/// This is the value type the accessors speak in every layout, so kernel code
+/// deals in `Vec3` whether the underlying stream is packed, padded or planar.
+/// It also serves as the arithmetic type for geometry code, with `add`, `sub`,
+/// `scale`, `dot`, `cross`, `length`, `normalize`, `min`, `max` and `eql`.
+/// Two-dimensional work uses the same type with `z` left at zero.
 pub const Vec3 = extern struct {
     x: f32,
     y: f32,
@@ -66,7 +101,13 @@ pub const Vec3 = extern struct {
     }
 };
 
-/// 16-byte element for the `.aos4` layout; converts to/from `@Vector(4, f32)` at zero cost.
+/// The storage element of the `.aos4` layout: a `Vec3` padded to sixteen bytes.
+///
+/// The padding buys alignment, so `toVector` and `fromVector` convert to and
+/// from `@Vector(4, f32)` as a bitcast rather than a shuffle. It is storage
+/// only: callers still read and write `Vec3` through the accessors. The padding
+/// byte for byte also travels the wire in this layout, which is part of what a
+/// benchmark comparing layouts is measuring.
 pub const Vec3Padded = extern struct {
     x: f32,
     y: f32,
@@ -87,55 +128,94 @@ pub const Vec3Padded = extern struct {
     }
 };
 
-/// A non-owning view over a vertex stream in layout `l`. Mirrors slice
-/// semantics: `Const` is the read-only view, `Mut` (this type) the mutable one.
-/// Both are the same bytes; `fromBytes`/`bytes` are casts, not copies.
+/// Constructs the vertex stream type for layout `l`.
+///
+/// Ordinary code uses `Positions`, the instantiation for this build. This
+/// function exists so that `bench/` can instantiate all three layouts side by
+/// side on the same inputs, and so that a test can pin the properties of a
+/// layout the build did not select.
+///
+/// The returned type is a view over memory rather than a container, mirroring
+/// slice semantics: `Mut` is the writable view and `Const` the read-only one,
+/// both over the same bytes, and `fromBytes` and `bytes` are casts rather than
+/// copies.
 pub fn PositionsOf(comptime l: Layout) type {
     return struct {
         pub const Layout_ = l;
         pub const Mut = @This();
         pub const Const = ConstView;
 
-        /// Storage element. For `.soa` the stream is three planar `f32` runs
-        /// (all x, then all y, then all z) in one slice.
+        /// The element the stream is stored as: `Vec3` for `.aos3`,
+        /// `Vec3Padded` for `.aos4`, and `f32` for `.soa`, where the stream is
+        /// three planar runs — all x, then all y, then all z — within one
+        /// slice. Callers rarely name this type; the accessors take and return
+        /// `Vec3` in every layout.
         pub const Elem = switch (l) {
             .aos3 => Vec3,
             .aos4 => Vec3Padded,
             .soa => f32,
         };
+        /// The bytes one vertex occupies, which is twelve for `.aos3` and
+        /// `.soa` and sixteen for `.aos4`. This is the figure that relates a
+        /// vertex count to a byte count in memory, on the wire and in a blob.
         pub const bytes_per_vertex: u32 = switch (l) {
             .aos3 => 12,
             .aos4 => 16,
             .soa => 12,
         };
-        /// GPU vertex stride for AoS layouts. `.soa` binds three buffers of stride 4.
+        /// The vertex stride to give the GPU for the array-of-structures
+        /// layouts. `.soa` instead binds one buffer per component, each of
+        /// stride four, which is the only place the renderer switches on the
+        /// layout.
         pub const stride: u32 = @sizeOf(Elem);
 
         data: []Elem,
 
+        /// A stream of no vertices. Useful as an initializer and as the
+        /// argument for a structure that currently has no data.
         pub const empty: Mut = .{ .data = &.{} };
 
         // ---- construction ----
 
-        /// Allocates a blob-aligned stream of `n` vertices (uninitialized).
+        /// Allocates an uninitialized stream of `n` vertices from `gpa`,
+        /// aligned to `blob_alignment`.
+        ///
+        /// The caller owns the result and releases it with `free` and the same
+        /// allocator. The contents are undefined until written, normally with
+        /// `setAll` or a loop over `set`.
         pub fn alloc(gpa: std.mem.Allocator, n: u32) std.mem.Allocator.Error!Mut {
             const elems = try gpa.alignedAlloc(Elem, blob_alignment, elemCount(n));
             return .{ .data = elems };
         }
+        /// Releases a stream obtained from `alloc`, using the same allocator.
+        /// Do not call it on a view produced by `fromBytes` or `fromSlice`,
+        /// which do not own their memory.
         pub fn free(self: Mut, gpa: std.mem.Allocator) void {
             gpa.free(@as([]align(blob_alignment.toByteUnits()) Elem, @alignCast(self.data)));
         }
-        /// Views existing blob bytes. `bytes.len` must be a multiple of `bytes_per_vertex`.
+        /// Views existing bytes as a vertex stream, without copying.
+        ///
+        /// The length must be a multiple of `bytes_per_vertex`, and the bytes
+        /// must be aligned for `Elem`. The view is valid for as long as that
+        /// memory is, and does not own it. This is how the viewer reads a
+        /// stream out of a blob and how a sketch writes into a shared buffer.
         pub fn fromBytes(b: []u8) Mut {
             std.debug.assert(b.len % bytes_per_vertex == 0);
             return .{ .data = std.mem.bytesAsSlice(Elem, @as([]align(@alignOf(Elem)) u8, @alignCast(b))) };
         }
-        /// Views a caller's element slice (AoS layouts: a `[]Vec3` / `[]Vec3Padded`).
+        /// Views a slice the caller already holds as a vertex stream, without
+        /// copying. In the array-of-structures layouts that slice is a
+        /// `[]Vec3` or `[]Vec3Padded`; in `.soa` it is a `[]f32` whose length
+        /// is a multiple of three. The view does not own the slice and is valid
+        /// only as long as it is, which makes this the way to send a stack
+        /// array or an existing buffer without allocating.
         pub fn fromSlice(elems: []Elem) Mut {
             if (l == .soa) std.debug.assert(elems.len % 3 == 0);
             return .{ .data = elems };
         }
-        /// Number of bytes a stream of `n` vertices occupies in memory, on the wire, and in a blob.
+        /// The number of bytes `n` vertices occupy, which is the same figure
+        /// in memory, on the wire and in a blob. Use it to size a shared buffer
+        /// or to check a payload length.
         pub inline fn byteSize(n: u32) usize {
             return @as(usize, n) * bytes_per_vertex;
         }
@@ -145,19 +225,28 @@ pub fn PositionsOf(comptime l: Layout) type {
 
         // ---- views ----
 
+        /// Returns the read-only view of the same bytes. Nothing is copied,
+        /// and the result is what every function that only reads a stream
+        /// takes, including the client's message calls and the kernels.
         pub inline fn toConst(self: Mut) Const {
             return .{ .data = self.data };
         }
-        /// The stream's bytes — identical in memory, on the wire, and in the blob store.
+        /// The stream as raw bytes. This is the same representation in memory,
+        /// on the wire and in the viewer's blob store, which is why sending a
+        /// stream requires no serialization step.
         pub inline fn bytes(self: Mut) []u8 {
             return std.mem.sliceAsBytes(self.data);
         }
+        /// The number of vertices in the stream, not the number of elements or
+        /// bytes; the three differ in `.soa` and `.aos4`.
         pub inline fn len(self: Mut) u32 {
             return @intCast(if (l == .soa) self.data.len / 3 else self.data.len);
         }
 
         // ---- accessors (the only way kernels touch vertex data) ----
 
+        /// The vertex at `i` as a `Vec3`, whatever the layout stores. Indices
+        /// are vertex indices and are `u32`.
         pub inline fn get(self: Mut, i: u32) Vec3 {
             return self.toConst().get(i);
         }
@@ -170,6 +259,7 @@ pub fn PositionsOf(comptime l: Layout) type {
         pub inline fn z(self: Mut, i: u32) f32 {
             return self.toConst().z(i);
         }
+        /// Writes the vertex at `i`, converting to the stored layout.
         pub inline fn set(self: Mut, i: u32, v: Vec3) void {
             switch (l) {
                 .aos3 => self.data[i] = v,
@@ -182,12 +272,18 @@ pub fn PositionsOf(comptime l: Layout) type {
                 },
             }
         }
-        /// Copies `n` vertices from a `Vec3` slice (the natural input from geometry code).
+        /// Writes the whole stream from a `Vec3` slice, which must have
+        /// exactly `len()` elements. This is the usual way to fill a freshly
+        /// allocated stream, and the natural handoff from geometry code that
+        /// computes into a `[]Vec3`.
         pub fn setAll(self: Mut, src: []const Vec3) void {
             std.debug.assert(src.len == self.len());
             for (src, 0..) |v, i| self.set(@intCast(i), v);
         }
 
+        /// The read-only view over a vertex stream. It offers the same
+        /// accessors as the mutable view, minus the ones that write, and is what
+        /// functions that only read a stream should take.
         const ConstView = struct {
             data: []const Elem,
 
@@ -232,8 +328,13 @@ pub fn PositionsOf(comptime l: Layout) type {
                     .soa => self.data[2 * (self.data.len / 3) + i],
                 };
             }
-            /// Planar component slices — only meaningful for `.soa`; kernels
-            /// reach for these inside a `comptime` layout switch.
+            /// The x components of every vertex as one contiguous run.
+            ///
+            /// Only the `.soa` layout stores the stream this way, so this and
+            /// its `ys` and `zs` counterparts are available only there and are
+            /// reached from inside a compile-time switch on the layout. They
+            /// exist so that a kernel written for planar data can take whole
+            /// `[]f32` runs rather than reading component by component.
             pub inline fn xs(self: Const) []const f32 {
                 comptime std.debug.assert(l == .soa);
                 return self.data[0 .. self.data.len / 3];
@@ -252,7 +353,29 @@ pub fn PositionsOf(comptime l: Layout) type {
     };
 }
 
-/// The canonical stream type for this build.
+/// The vertex stream type this build uses, being `PositionsOf(layout)`.
+///
+/// A `Positions` carries the coordinates of `n` vertices and nothing else: the
+/// vertices of a mesh, the locations of a point cloud, or the values of a
+/// vector quantity, which are stored the same way. Connectivity and attributes
+/// travel beside it as plain slices — triangles as `[]const [3]u32`, segments
+/// as `[]const [2]u32`, scalar quantities as `[]const f32`.
+///
+/// This is the type to use whenever vertex coordinates are passed anywhere. The
+/// geometry kernels take it, the client library sends it, the scene stores it
+/// and the renderer uploads it, and because every part of the program agrees on
+/// it the wire format and the GPU vertex layout are derived from it rather than
+/// converted to.
+///
+/// It is a view rather than a container. `Mut` and `Const` mirror `[]T` and
+/// `[]const T`: copying one copies the view and not the data, and the memory
+/// belongs to whoever allocated it. `alloc` and `free` cover the common case of
+/// owning that memory; `fromBytes` and `fromSlice` wrap memory that already
+/// exists, such as a blob, a shared buffer or a stack array.
+///
+/// The layout in memory is selected at build time and is invisible to callers,
+/// who address vertices through `get`, `set`, `x`, `y` and `z`. See `Layout`
+/// for the available choices and the reasons they exist.
 pub const Positions = PositionsOf(layout);
 
 // ---------------------------------------------------------------------------
