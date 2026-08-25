@@ -1900,11 +1900,12 @@ test "frame 0 is implicit: frameCount is 1 after begin_run and grows with begin_
     try testing.expectEqual(@as(u32, 1), scene.frameCount());
 }
 
-test "per-version scene overhead beyond blob bytes stays within a fixed envelope" {
+test "per-version scene overhead beyond blob bytes is pinned exactly" {
     // The retention model assumes a version costs its blob bytes plus a
     // small fixed record. A hidden per-version container (list, map) would
     // pass every other test and silently multiply timeline memory; this pins
-    // the overhead in bytes using the debug allocator's live accounting.
+    // the overhead in bytes using the debug allocator's live accounting
+    // (deterministic: requested sizes, deterministic list growth).
     var debug: std.heap.DebugAllocator(.{ .enable_memory_limit = true }) = .init;
     defer std.debug.assert(debug.deinit() == .ok);
     const gpa = debug.allocator();
@@ -1932,12 +1933,16 @@ test "per-version scene overhead beyond blob bytes stays within a fixed envelope
         try applyEncoded(&scene, &encoded, &frame);
     }
     const overhead = (debug.total_requested_bytes - before) - (scene.blob_bytes - blob_before);
-    const per_version = overhead / versions;
-    // Measured 68 bytes on 2026-08-24 (Version record + Blob record + list
-    // growth slack). The envelope leaves room for slack, not for new
-    // per-version records; if this trips, look for a container per version.
-    if (per_version > 128) {
-        std.debug.print("scene per-version overhead: {d} bytes ({d} versions)\n", .{ per_version, versions });
-        return error.PerVersionOverheadExceeded;
+    // Pinned exactly, on purpose: this is a ratchet, not a ceiling. A change
+    // that moves it is not banned — it becomes visible at the moment it is
+    // made, so the memory trade-off is evaluated and the pin updated
+    // deliberately. Measured 2026-08-24; identical for aos3/aos4/soa.
+    const expected_overhead: usize = 68_436;
+    if (overhead != expected_overhead) {
+        std.debug.print(
+            "scene per-version overhead changed: {d} bytes total for {d} versions ({d} B/version), pinned {d} ({d} B/version)\n",
+            .{ overhead, versions, overhead / versions, expected_overhead, expected_overhead / versions },
+        );
+        return error.PerVersionOverheadChanged;
     }
 }
