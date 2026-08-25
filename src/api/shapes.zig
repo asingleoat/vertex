@@ -14,119 +14,74 @@
 //! selected once at build time with `-Dvertex_layout=aos3|aos4|soa`, and the
 //! kernels and the wire format both derive from that choice, so code written
 //! against the named accessors is unaffected by it.
+//!
+//! Each declaration below is re-exported from the module that defines it, and
+//! the full documentation lives at that definition. The summaries here say what
+//! each one is for and when to reach for it.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const geometry = @import("../geometry/geometry.zig");
 const fixtures = @import("../geometry/fixtures.zig");
 
-/// A point or direction in three dimensions, with the usual arithmetic.
-///
-/// A value type of twelve bytes that owns nothing and is copied freely.
-/// `Vec3.init(x, y, z)` and the `zero` constant construct one; `add`, `sub`,
-/// `scale`, `dot`, `cross`, `length`, `normalize`, `min`, `max` and `eql`
-/// combine them. Two-dimensional sketches use the same type, leaving `z` at
-/// zero and passing `.{ .dim = .d2 }` when registering the structure.
+/// A point or direction in three dimensions, and the value type every stream
+/// accessor speaks. Construct one with `Vec3.init(x, y, z)` or `Vec3.zero`.
+/// Two-dimensional sketches use it with `z` left at zero.
 pub const Vec3 = layout.Vec3;
 
-/// A vertex stream: `n` positions in the layout selected at build time.
-///
-/// Every geometry call accepts or returns this type. It is a view over bytes
-/// together with a length rather than a container, so copying a `Positions`
-/// copies the view and not the data. `Positions.Mut` is returned by `alloc` and
-/// is writable; `Positions.Const` is what the viewer and the kernels accept.
-/// `toConst` converts between them.
+/// The coordinates of `n` vertices: the type every geometry call and every
+/// message takes. It is a view rather than a container, so the caller owns the
+/// memory behind it.
 ///
 /// ```zig
 /// const p = try Positions.alloc(gpa, 3);
 /// defer p.free(gpa);
 /// p.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
-/// p.set(2, .init(0, 2, 0));
 /// ```
-///
-/// `get(i)` returns one `Vec3`; `x(i)`, `y(i)` and `z(i)` return single
-/// components; `len()` returns the count and `bytes()` the underlying stream.
-/// Indices are `u32`. The accessors are `inline` and compile to the same code as
-/// direct indexing in every layout.
-///
-/// `fromSlice` wraps memory the caller already holds, such as a stack array,
-/// without copying it; the resulting `Positions` is valid for as long as that
-/// memory is.
 pub const Positions = layout.Positions;
 
-/// The memory layout selected for `Positions` at build time: `.aos3`, the
-/// default, packed into twelve bytes; `.aos4`, sixteen bytes and castable to
-/// `@Vector`; or `.soa`, three separate component arrays. A kernel that wants a
-/// layout-specific fast path can branch on it at compile time. Other code does
-/// not need it, because the accessors are independent of the layout.
+/// The vertex layout this build selected. A kernel that wants a
+/// layout-specific fast path branches on it at compile time; nothing else needs
+/// it.
 pub const vertex_layout = layout.layout;
 
-/// An axis-aligned bounding box, providing `center`, `extent`, `radius` and
-/// `isEmpty`. Returned by `bounds` and owns nothing.
+/// An axis-aligned bounding box, with `center`, `extent`, `radius` and
+/// `isEmpty`. Returned by `bounds`.
 pub const Aabb = geometry.current.Aabb;
 
-/// Computes the axis-aligned bounds of a vertex stream.
-///
-/// Returns an `Aabb` by value, or `Aabb.empty` when the stream is empty. Reads
-/// only the stream and allocates nothing. Typical uses are framing a result,
-/// normalising a model to unit size and sizing a spatial grid.
+/// Computes the axis-aligned bounds of a vertex stream, for framing a result,
+/// normalising a model or sizing a spatial structure.
 pub const bounds = geometry.current.bounds;
 
-/// Computes one geometric normal per triangle.
-///
-/// Reads `positions` and `faces` and writes one `Vec3` per face into `out`,
-/// which the caller owns and which must already have length `faces.len`. This
-/// function allocates nothing. The normals are unit length and follow the
-/// winding order, counter-clockwise being front-facing. The result can be sent
-/// as a face-target vector quantity or used for shading.
+/// Computes one unit normal per triangle into a caller-owned `out` of length
+/// `faces.len`. Use it for flat shading and face-target vector quantities.
 pub const faceNormals = geometry.current.faceNormals;
 
-/// Computes one smooth normal per vertex, weighted by the area of the incident
-/// faces.
-///
-/// Reads `positions` and `faces` and writes one `Vec3` per vertex into `out`,
-/// which the caller owns and which must already have length `positions.len()`.
-/// This function allocates nothing. The result suits smooth shading and serves
-/// as a direction field for displacing a surface.
+/// Computes one area-weighted unit normal per vertex into a caller-owned `out`
+/// of length `positions.len()`. Use it for smooth shading and as a direction
+/// field for displacement.
 pub const vertexNormals = geometry.current.vertexNormals;
 
-/// Extracts the unique undirected edges of a triangle mesh.
-///
-/// Allocates the edge array from `gpa` and transfers ownership to the caller,
-/// which must free it with the same allocator. Each edge appears once however
-/// many faces share it, as a wireframe or a graph algorithm requires. The cost
-/// is proportional to the face count.
+/// Collects the unique undirected edges of a triangle mesh into a caller-owned
+/// list, which it clears and refills. Use it for wireframes and for walking a
+/// mesh's connectivity.
 pub const uniqueEdges = geometry.current.uniqueEdges;
 
-/// A generated mesh holding both its `positions` and its `faces`.
-///
-/// Returned by the fixture functions below and released with `deinit`, passing
-/// the allocator it was built with. Its `positions` field is a `Positions.Mut`,
-/// so the vertices can be displaced in place and sent again.
+/// A generated mesh owning its `positions` and its `faces`, returned by the
+/// generators below and released with `deinit`.
 pub const Mesh = fixtures.current.Mesh;
 
-/// Builds a flat `nx` by `ny` quad grid, triangulated into a mesh, spanning
-/// `size` in x and y and centred on the origin.
-///
-/// Allocates the positions and faces from `gpa` and transfers ownership of the
-/// returned `Mesh` to the caller, which releases it with `deinit`. It is a
-/// convenient starting point for height fields, parameter domains and cloth.
+/// Generates a flat `nx` by `ny` triangulated grid in the XY plane, spanning
+/// `size` and centred on the origin. The starting surface for height fields,
+/// parameter domains and cloth.
 pub const grid = fixtures.current.grid;
 
-/// Builds an icosphere of the given `radius`, subdivided `subdivisions` times.
-///
-/// Allocates the positions and faces from `gpa` and transfers ownership of the
-/// returned `Mesh` to the caller, which releases it with `deinit`. The triangle
-/// count is 20·4^subdivisions, so three subdivisions give 1,280 faces and six
-/// give 81,920. The result is a well-conditioned test surface with no poles or
-/// seams.
+/// Generates a sphere of the given `radius` with `20·4^subdivisions`
+/// near-equilateral triangles and no poles or seams. The default test surface.
 pub const icosphere = fixtures.current.icosphere;
 
-/// Builds `n` points placed pseudo-randomly in the ball of radius `extent`,
-/// determined entirely by `seed`.
-///
-/// Allocates from `gpa` and returns a `Positions.Mut` that the caller owns and
-/// frees with `free`. Because the placement depends only on the seed, a sketch
-/// using this function produces the same scene on every run.
+/// Generates `n` points uniformly within the cube spanning `-extent` to
+/// `+extent`, determined entirely by `seed`. Returns a stream the caller frees
+/// with `free`.
 pub const randomPoints = fixtures.current.randomPoints;
 
 test {

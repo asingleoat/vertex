@@ -1,30 +1,63 @@
-//! Procedural geometry fixtures with explicit ownership and allocation.
+//! Procedural geometry: meshes and point sets generated from a few parameters
+//! rather than loaded from a file.
+//!
+//! These exist so that a sketch, a test or a benchmark can obtain a surface of
+//! a known shape and size in one call, with no asset to check in and no I/O.
+//! Every generator is deterministic: the same arguments always produce the same
+//! geometry, down to the vertex order, so a test can assert against exact
+//! counts and a sketch produces the same scene on every run.
+//!
+//! Each generator allocates from an explicit allocator and transfers ownership
+//! to the caller, which releases a `Mesh` with `deinit` and a bare stream with
+//! `free`.
 const std = @import("std");
 const layout = @import("layout.zig");
 
 const Vec3 = layout.Vec3;
 
-/// Returns fixture constructors specialized for vertex layout `l`.
-/// Every returned stream or mesh is owned by the caller.
+/// Returns the fixture generators specialized for vertex layout `l`.
+///
+/// Ordinary code uses `current`, the instantiation for this build. This
+/// function exists so that a benchmark can build the same fixture in every
+/// layout. Everything returned is owned by the caller.
 pub fn Fixtures(comptime l: layout.Layout) type {
     return struct {
-        /// Mutable position stream produced by this specialization.
+        /// The vertex stream type these generators produce, which is
+        /// `PositionsOf(l)`.
         pub const P = layout.PositionsOf(l);
 
-        /// Owned procedural mesh; `deinit` releases both backing allocations.
+        /// A generated mesh: a vertex stream and the triangles indexing it,
+        /// owning both.
+        ///
+        /// `positions` is writable, so a caller can displace the vertices in
+        /// place and send the result again rather than regenerating. `faces`
+        /// holds three vertex indices per triangle, wound counter-clockwise.
+        /// Release the whole thing with `deinit` and the allocator it was built
+        /// with.
         pub const Mesh = struct {
             positions: P.Mut,
             faces: [][3]u32,
 
-            /// Frees all memory owned by this mesh through the original allocator.
+            /// Frees the positions and the faces. Pass the allocator the mesh
+            /// was generated with.
             pub fn deinit(self: Mesh, gpa: std.mem.Allocator) void {
                 self.positions.free(gpa);
                 gpa.free(self.faces);
             }
         };
 
-        /// Allocates and fills a caller-owned CCW XY grid mesh.
-        /// The returned mesh owns one positions allocation and one faces allocation.
+        /// Generates a flat rectangular grid in the XY plane, triangulated.
+        ///
+        /// The grid spans `size` in both x and y, is centred on the origin and
+        /// lies at z = 0. It has `nx` by `ny` quads, so `(nx+1)·(ny+1)` vertices
+        /// and `2·nx·ny` triangles, wound counter-clockwise as seen from +Z.
+        /// Vertices are in row-major order, which makes the index of the vertex
+        /// at column x and row y equal to `y * (nx + 1) + x` — useful when
+        /// setting a height field or applying a parameterization.
+        ///
+        /// Allocates the positions and the faces from `gpa`; the caller owns the
+        /// returned mesh and releases it with `deinit`. This is the usual
+        /// starting surface for height fields, parameter domains and cloth.
         pub fn grid(
             gpa: std.mem.Allocator,
             nx: u32,
@@ -74,8 +107,21 @@ pub fn Fixtures(comptime l: layout.Layout) type {
             return .{ .positions = positions, .faces = faces };
         }
 
-        /// Allocates an indexed icosphere projected to `radius`.
-        /// Returned buffers are caller-owned; the midpoint map is freed before return.
+        /// Generates a sphere of the given `radius` by subdividing an
+        /// icosahedron `subdivisions` times and projecting each vertex onto the
+        /// sphere.
+        ///
+        /// The result has `20·4^subdivisions` triangles: 1,280 at three
+        /// subdivisions and 81,920 at six. Unlike a latitude-longitude sphere it
+        /// has no poles and no seam, and its triangles are close to equilateral
+        /// everywhere, which is why it is the default test surface here — a
+        /// kernel that misbehaves on degenerate or wildly varying triangles will
+        /// not be flattered by it.
+        ///
+        /// Allocates the positions and the faces from `gpa`; the caller owns the
+        /// returned mesh and releases it with `deinit`. The midpoint table used
+        /// during subdivision, which is what keeps shared edges from duplicating
+        /// vertices, is freed before returning.
         pub fn icosphere(
             gpa: std.mem.Allocator,
             subdivisions: u32,
@@ -153,7 +199,17 @@ pub fn Fixtures(comptime l: layout.Layout) type {
             return .{ .positions = positions, .faces = faces };
         }
 
-        /// Allocates a caller-owned seeded random point stream in the requested cube.
+        /// Generates `n` points distributed uniformly in the axis-aligned cube
+        /// spanning `-extent` to `+extent` on every axis.
+        ///
+        /// The placement depends only on `seed`, so a given seed always produces
+        /// the same points in the same order. Allocates from `gpa` and returns a
+        /// stream the caller owns and releases with `free`.
+        ///
+        /// This is a point cloud for exercising point rendering, picking and
+        /// spatial structures. Note that the distribution is uniform in the cube
+        /// and not in the inscribed ball, so it is denser toward the corners
+        /// when interpreted radially.
         pub fn randomPoints(
             gpa: std.mem.Allocator,
             n: u32,
@@ -197,7 +253,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
     };
 }
 
-/// Fixture constructors specialized for the build-selected vertex layout.
+/// The fixture generators for the layout this build selected. This is the
+/// instantiation ordinary code calls, as `fixtures.current.icosphere(...)`.
 pub const current = Fixtures(layout.layout);
 
 const testing = std.testing;
