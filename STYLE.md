@@ -274,6 +274,10 @@ Neither is used yet. The code is shaped to keep both available.
   dashes, or a definition given as a list of parts. "A `Positions` value provides
   a stream of vertex coordinates. Any additional structure, such as connectivity
   information, must be carried alongside it" needs none of them.
+- Prefer a word to a punctuation mark. A colon or a semicolon standing in for
+  "because", "so that", "and" or "which" reads worse than the word it replaced,
+  and reads as terse for its own sake. Keep the colon for a genuine list or
+  label, and write the conjunction everywhere else.
 - Treat "so that", "because" and "since" as suspect without banning them. Each
   introduces a justification, which is worth keeping when the causal or
   purposive link is itself the information the reader needs: "Indices are

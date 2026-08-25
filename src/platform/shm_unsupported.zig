@@ -52,11 +52,11 @@ pub fn unmap(_: Region) void {}
 /// No-op counterpart for a handle that unsupported constructors cannot create.
 pub fn close(_: platform.Handle) void {}
 
-/// Always false: huge shared regions are unsupported here.
-/// No-op: huge pages are a Linux hugetlbfs feature.
+/// Always false, because huge shared regions are unsupported here.
+/// Does nothing, because huge pages are a Linux hugetlbfs feature.
 pub fn warnIfHugeUnavailable(_: []const u8) void {}
 
-/// Always false: no hugetlbfs on this platform.
+/// Always false, because this platform has no hugetlbfs.
 pub fn hugePagesConfigured() bool {
     return false;
 }

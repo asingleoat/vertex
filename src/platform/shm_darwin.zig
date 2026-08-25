@@ -115,16 +115,16 @@ pub fn close(handle: platform.Handle) void {
     std.Io.Threaded.closeFd(handle);
 }
 
-/// No-op: there is no huge-page class to be misconfigured on this platform,
-/// so there is nothing to advise about.
+/// Does nothing, because this platform has no huge-page class to be
+/// misconfigured and nothing to advise about.
 pub fn warnIfHugeUnavailable(_: []const u8) void {}
 
-/// Always false: macOS has no hugetlbfs equivalent.
+/// Always false, because macOS has no equivalent of hugetlbfs.
 pub fn hugePagesConfigured() bool {
     return false;
 }
 
-/// Always false: macOS has no hugetlbfs equivalent.
+/// Always false, because macOS has no equivalent of hugetlbfs.
 pub fn hugePagesAvailable() bool {
     return false;
 }

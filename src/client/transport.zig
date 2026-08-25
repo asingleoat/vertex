@@ -35,7 +35,7 @@ pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddr
 /// ---
 /// `len` is the number of bytes requested. `map` covers the whole mapping and
 /// may be longer, a mapping being a whole number of pages. `huge` records
-/// whether the kernel provided huge pages; requesting them is not a
+/// whether the kernel provided huge pages, which requesting them does not
 /// guarantee.
 /// ---
 /// The connection owns this until the message that sends it succeeds, which
@@ -48,8 +48,8 @@ pub const Shared = struct {
 };
 
 /// How many shared buffers one connection may hold at a time. Each is a
-/// descriptor and a mapping; without the bound, a sketch that leaked them would
-/// exhaust both silently.
+/// descriptor and a mapping, and without the bound a sketch that leaked them
+/// would exhaust both silently.
 pub const max_outstanding_shared = 8;
 
 const max_consumed_ranges = 8;

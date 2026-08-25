@@ -2,7 +2,7 @@
 //!
 //! A `DirectSink` only supports inline messages. Shared memfd buffers remain a
 //! socket-only `Connection` API; `Session` deliberately has no shared-buffer
-//! methods; it can target any sink.
+//! methods, because it can target any sink.
 const std = @import("std");
 const client = @import("session.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -282,7 +282,7 @@ const ErrorSketch = struct {
         return error.Intentional;
     }
 
-    /// Releases nothing: the state owns no memory.
+    /// Releases nothing, because the state owns no memory.
     pub fn deinit(_: *State, _: std.mem.Allocator) void {}
 };
 

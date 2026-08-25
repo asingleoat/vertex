@@ -14,10 +14,11 @@
 //! the display settings for "surface" are untouched when a new run replaces the
 //! geometry behind it.
 //!
-//! The module is pure: no I/O, no globals, no sokol and no socket. Its only
-//! memory comes from the allocator passed to `init`. Its inputs are decoded
-//! `protocol.Message` values; its outputs are mutations to its own storage and
-//! lists of blob indices the render edge drains. Blob bytes are either copied
+//! The module is pure. It performs no I/O, holds no globals and touches neither
+//! sokol nor the socket. Its only memory comes from the allocator passed to
+//! `init`. Its inputs are decoded
+//! `protocol.Message` values, and its outputs are mutations to its own storage
+//! and lists of blob indices the render edge drains. Blob bytes are either copied
 //! into scene-owned storage or, on the zero-copy path, adopted as views into a
 //! mapping the edge owns; see `Blob` and `Mapping`.
 //!
@@ -163,7 +164,7 @@ pub const Blob = struct {
 /// into.
 /// ---
 /// The socket thread maps a descriptor the client sent and registers the region
-/// here; blobs then adopt slices of it as views instead of copying. The scene
+/// here, and blobs then adopt slices of it as views instead of copying. The scene
 /// never unmaps or closes anything. It counts references and, when a mapping
 /// reaches zero, queues its index in `released_mappings` for the edge. Ownership
 /// remains with the edge.
@@ -195,7 +196,7 @@ pub const ApplyError = std.mem.Allocator.Error || error{
 
 /// How many console lines the scene retains. Beyond this the oldest entry is
 /// dropped and the array does not grow further. The interned text of a dropped
-/// entry stays in the string buffer; interning is append-only.
+/// entry stays in the string buffer, because interning is append-only.
 pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
@@ -271,8 +272,9 @@ pub const Scene = struct {
     /// Frees everything the scene owns.
     ///
     /// The edge must first call `takeAllMappings` and unmap and close what it
-    /// receives; the scene borrows those regions and cannot release them. Every
-    /// view and index obtained from the scene is invalid afterwards.
+    /// receives, because the scene borrows those regions and cannot release
+    /// them. Every view and index obtained from the scene is invalid
+    /// afterwards.
     pub fn deinit(self: *Scene) void {
         std.debug.assert(self.live_mappings == 0);
         var structures = self.structures.slice();
@@ -1166,7 +1168,7 @@ pub const Scene = struct {
     /// display, or null if the structure had not appeared by then.
     ///
     /// Frames are deltas, so this is the latest version at or before `frame`
-    /// rather than one recorded for it: a structure registered once and never
+    /// rather than one recorded for it. A structure registered once and never
     /// updated displays that version for the rest of the run. A structure with
     /// no version in the current run falls back to the last one retained from
     /// the previous run, so geometry stays on screen between a rebuild and the

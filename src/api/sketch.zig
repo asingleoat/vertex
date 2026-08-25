@@ -39,8 +39,8 @@ const validateName = session_mod.validateName;
 
 /// Sequences messages to a borrowed sink, independent of the transport
 /// underneath. A `Connection` is a `Session` wrapped around a socket. A stepping
-/// sketch in `steps/*.zig` receives a `Session` directly; the viewer owns the
-/// transport in that mode. The calls and the ordering rules are identical.
+/// sketch in `steps/*.zig` receives a `Session` directly, because the viewer
+/// owns the transport in that mode. The calls and the ordering rules are identical.
 pub const Session = session_mod.Session;
 
 /// Selects what a quantity attaches to: `.vertex` for one value per vertex,

@@ -155,7 +155,7 @@ than copies, so nothing is copied between the sketch's write and the GPU
 upload. Mappings are reference-counted by the blobs that view them, and only the
 edge unmaps and closes them, through `released_mappings`. A shared buffer is
 consumed by the send that carries it. The viewer retains versions, so reuse is
-impossible; a fresh buffer is requested per message.
+impossible, and a fresh buffer is requested per message.
 
 On Linux, shared buffers of 2 MiB or more are created with
 `MFD_HUGETLB | MFD_HUGE_2MB`. hugetlbfs reserves or fails at `mmap`, which makes
@@ -484,7 +484,7 @@ The data path reuses everything else. A `DirectSink` encodes with the wire
 protocol and hands the byte parts to a host callback; the viewer copies them into
 the same `Inbox` the socket server feeds. Decoding, the scene, the timeline,
 retention and picking are unchanged. Shared buffers belong to `Connection` and
-are socket-mode only; the in-process path copies inline.
+are socket-mode only, so the in-process path copies inline.
 
 A worker thread owns the library and runs `vertex_step`, and each viewer-driven
 step is one timeline frame. The controls are Load, Reload, Unload, Step, Run,

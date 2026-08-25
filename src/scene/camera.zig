@@ -3,7 +3,7 @@
 //! `Orbit` is a turntable for three-dimensional geometry, looking at a target
 //! from a distance and an orientation. `Ortho2D` is a plane view for
 //! two-dimensional geometry, panning and zooming without perspective. The viewer
-//! selects between them; either can be driven directly.
+//! selects between them, and either can be driven directly.
 //!
 //! Both are values. Each holds a pose, allocates nothing, and produces matrices
 //! on demand. The viewer stores the pose across a rebuild to restore the view.

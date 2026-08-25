@@ -72,8 +72,8 @@ pub const Sink = struct {
 /// Sends messages to a sink in a valid order, and is the client API when the
 /// transport belongs to someone else.
 /// ---
-/// A stepping sketch under `steps/` is handed one of these; the viewer owns the
-/// transport in that mode. A socket client instead holds a `Connection`, which
+/// A stepping sketch under `steps/` is handed one of these, because the viewer
+/// owns the transport in that mode. A socket client instead holds a `Connection`, which
 /// wraps a `Session` around a socket it owns. The calls and the rules are
 /// identical. What each message means to the viewer is documented on
 /// `Connection` in `api/sketch.zig`.
@@ -338,9 +338,9 @@ pub const State = struct {
 /// Encodes one message into `out`, dispatching to the matching `protocol`
 /// encoder.
 ///
-/// This is the inline path: every section is written as bytes rather than
-/// referred to. `SocketSink` uses it for messages with no shared sections.
-/// `DirectSink` uses it for all of them; the in-process path passes no
+/// This is the inline path, in which every section is written as bytes rather
+/// than referred to. `SocketSink` uses it for messages with no shared sections.
+/// `DirectSink` uses it for all of them, because the in-process path passes no
 /// descriptors.
 pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     switch (message) {

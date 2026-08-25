@@ -16,8 +16,8 @@ const Vec3 = layout.Vec3;
 
 /// Returns the fixture generators specialized for vertex layout `l`.
 ///
-/// Ordinary code uses `current`, the instantiation for this build; a benchmark
-/// uses this to build the same fixture in every layout. Everything returned is
+/// Ordinary code uses `current`, the instantiation for this build, while a
+/// benchmark uses this to build the same fixture in every layout. Everything returned is
 /// owned by the caller.
 pub fn Fixtures(comptime l: layout.Layout) type {
     return struct {
@@ -118,8 +118,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         ///
         /// Allocates the positions and the faces from `gpa`; the caller owns the
         /// returned mesh and releases it with `deinit`. A midpoint table gives
-        /// an edge shared by two faces one vertex rather than two; the table is
-        /// freed before returning.
+        /// an edge shared by two faces one vertex rather than two, and the
+        /// table is freed before returning.
         pub fn icosphere(
             gpa: std.mem.Allocator,
             subdivisions: u32,

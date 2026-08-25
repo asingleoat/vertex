@@ -2,8 +2,8 @@
 //!
 //! Solid meshes first, establishing depth for everything that follows, then
 //! wireframe overlays, lines, vector arrows and points. The overlays require
-//! depth to have been written. Points are drawn last: they are the smallest and
-//! must not be hidden by an arrow over them.
+//! depth to have been written. Points are drawn last, because they are the
+//! smallest and must not be hidden by an arrow over them.
 //!
 //! Each pass walks the same structures and skips those that are hidden or have
 //! nothing to display at the current frame.

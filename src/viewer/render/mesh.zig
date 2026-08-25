@@ -8,7 +8,7 @@
 //! A mesh is drawn one of three ways, with a pipeline for each: plain, coloured
 //! by a per-vertex scalar, or coloured by a per-face scalar. The face-scalar
 //! pipeline reads the values by primitive index and is unavailable on backends
-//! whose shading language cannot express that; the renderer tests for it and
+//! whose shading language cannot express that. The renderer tests for it and
 //! falls back to plain drawing.
 const std = @import("std");
 const vertex = @import("vertex");

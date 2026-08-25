@@ -18,8 +18,8 @@ const Vec3 = layout.Vec3;
 
 /// Returns the geometry kernels specialized for vertex layout `l`.
 ///
-/// Ordinary code uses `current`, the instantiation for this build; `bench/` uses
-/// this to run all three layouts against the same inputs. A kernel may switch on
+/// Ordinary code uses `current`, the instantiation for this build, while
+/// `bench/` uses this to run all three layouts against the same inputs. A kernel may switch on
 /// `l` at compile time to take a planar fast path, with the accessor path as the
 /// always-correct fallback.
 pub fn Geometry(comptime l: layout.Layout) type {

@@ -142,7 +142,7 @@ descriptor is marked individually. `std.c` declares `recvmsg` without exporting
 it, so the module declares its own extern.
 
 `shm_darwin.zig` names each object and unlinks it immediately, leaving the
-descriptor as its only reference; a crash leaves nothing behind.
+descriptor as its only reference, so a crash leaves nothing behind.
 `O_EXCL` turns a name collision into a retry.
 
 `getrusage` alone was sufficient for `stats`, so `task_info` was not needed.
@@ -188,7 +188,7 @@ touching a source and rebuilding leaves the mtime alone. Edit something.
 
 **Step 5, the smoke tests.** Completed 2026-08-24. The suite passes in about 46
 seconds, with every scenario and assertion including the leak checks. Four
-windows appear and close; there is no Xvfb. Every platform difference is
+windows appear and close, because there is no Xvfb. Every platform difference is
 in one block at the top of `scripts/smoke.sh`: the viewer wrapper, the step
 library suffix, the frame caps, smaller here where vsync paces frames and
 llvmpipe does not, and the pick probe, which is asserted to miss while
