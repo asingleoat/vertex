@@ -2,14 +2,12 @@
 const std = @import("std");
 const platform = @import("platform.zig");
 
-/// Whether this build can create shared regions at all: never here, so every
+/// Whether this build can create shared regions. It never can here, so every
 /// caller falls back to the inline payload path.
 pub const supported = false;
 
-/// Whether a huge-page class exists on this platform at all: there is no shared memory here at all.
-/// Comptime, unlike `hugePagesConfigured`, which asks how the running kernel
-/// is set up. Callers use it to avoid advertising a preference that cannot
-/// apply.
+/// Whether a huge-page class exists on this platform. There is no shared memory
+/// here at all, so the question does not arise.
 pub const huge_supported = false;
 
 /// Errors from unsupported shared-memory operations. Failed calls never

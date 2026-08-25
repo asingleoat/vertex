@@ -91,9 +91,9 @@ pub const Orbit = struct {
     yaw: f32,
     pitch: f32,
     fovy: f32 = 0.8,
-    /// Radius of the scene last fitted, or 0 before any fit. The clip planes
-    /// derive from it and `distance` rather than being stored, so no camera
-    /// move can leave them stale.
+    /// The radius of the scene last fitted, or zero before any fit. The clip
+    /// planes are derived from it and from `distance` rather than stored, so no
+    /// camera movement can leave them out of date.
     extent: f32 = 0,
 
     /// Conventional initial orbit pose looking down the negative Z axis.
@@ -120,13 +120,16 @@ pub const Orbit = struct {
         return .lookAt(self.eye(), self.target, .init(0, 1, 0));
     }
 
-    /// Near and far clip distances for the *current* pose, both tracking
-    /// `distance`. That is the whole point: planes fixed at fit time clip the
-    /// scene away as soon as the camera leaves that pose — the near plane eats
-    /// the model as you dolly in, the far plane drops it as you dolly out.
-    /// Near is a thousandth of the orbit distance, so you can approach a
-    /// surface arbitrarily closely; far always reaches past the scene, and past
-    /// the target by at least the orbit distance when the scene is small.
+    /// Returns the near and far clip distances for the current pose.
+    ///
+    /// Both derive from `distance`, so that dollying cannot move the scene
+    /// outside the frustum. Planes computed once at fit time clip the scene as
+    /// soon as the camera leaves that pose: the near plane removes the model as
+    /// the camera approaches, and the far plane removes it as the camera
+    /// retreats. The near distance is a thousandth of the orbit distance, which
+    /// allows the camera to approach a surface closely, and the far distance
+    /// always exceeds the extent of the scene, exceeding the target distance by
+    /// at least the orbit distance when the scene is small.
     fn clipPlanes(self: Orbit) struct { near: f32, far: f32 } {
         return .{
             .near = @max(self.distance * 1e-3, 1e-5),
@@ -303,9 +306,9 @@ test "Orbit fit contains every unit-cube corner" {
 }
 
 test "Orbit clip planes keep the scene visible across the dolly range" {
-    // The regression this pins: clip planes computed once by `fit` and left
-    // alone by `dolly` clipped the model away at both ends — the near plane
-    // ate it on approach, the far plane dropped it on retreat.
+    // The regression this pins: clip planes computed once by `fit` and not
+    // updated by `dolly` removed the model at both ends of the range, the near
+    // plane on approach and the far plane on retreat.
     const bounds: Aabb = .{ .min = .init(-1, -1, -1), .max = .init(1, 1, 1) };
     var camera: Orbit = .default;
     camera.fit(bounds);
@@ -316,10 +319,11 @@ test "Orbit clip planes keep the scene visible across the dolly range" {
         camera.distance = fitted * scale;
         const planes = camera.clipPlanes();
         try testing.expect(planes.near > 0 and planes.near < planes.far);
-        // The far side of the bounding sphere is still inside the frustum.
+        // The far side of the bounding sphere remains inside the frustum.
         try testing.expect(planes.far > camera.distance + radius);
-        // Outside the sphere, the near side is not clipped either. Inside it
-        // there is no "near side" to preserve — any positive near will do.
+        // Outside the sphere the near face must also remain visible. Inside
+        // it there is no near face to preserve, so any positive near distance
+        // is acceptable.
         if (camera.distance > radius) {
             try testing.expect(planes.near < camera.distance - radius);
         }

@@ -1,22 +1,22 @@
 //! Allocation-free Darwin SCM_RIGHTS transport.
 //!
-//! Same mechanism as Linux, three differences that matter:
-//!   * `CMSG_ALIGN` is `__DARWIN_ALIGN32` — control data aligns to 4 bytes,
-//!     not to `sizeof(size_t)`. Reusing the Linux arithmetic here computes
-//!     wrong lengths and offsets.
-//!   * There is no `MSG_NOSIGNAL`. The socket gets `SO_NOSIGPIPE` instead, so
-//!     a send to a departed viewer returns EPIPE rather than killing the
-//!     process.
-//!   * There is no `MSG_CMSG_CLOEXEC`. Received descriptors are marked
-//!     close-on-exec individually.
+//! The mechanism is the same as on Linux, but three details differ and each
+//! would fail silently if the Linux implementation were copied unchanged.
+//! `CMSG_ALIGN` is `__DARWIN_ALIGN32`, so control data aligns to four bytes
+//! rather than to `sizeof(size_t)`, and the Linux arithmetic computes incorrect
+//! lengths and offsets. There is no `MSG_NOSIGNAL`, so the socket is given
+//! `SO_NOSIGPIPE` instead and a send to a departed viewer returns `EPIPE`
+//! rather than terminating the process. There is no `MSG_CMSG_CLOEXEC`, so
+//! received descriptors are marked close-on-exec individually.
 const std = @import("std");
 const platform = @import("platform.zig");
 
 const max_parts = 64;
 const max_handles = 64;
 
-/// Whether this build can pass handles over a socket. Callers that only need
-/// the bytes read plainly when it is false; ownership rules are unaffected.
+/// Whether this build can pass handles over a socket. When it is false, a
+/// caller that needs only the bytes reads them with an ordinary read; ownership
+/// rules are unaffected either way.
 pub const supported = true;
 
 /// Errors from one allocation-free sendmsg or recvmsg operation. On receive
@@ -48,10 +48,10 @@ pub fn sendWithHandles(
     if (parts.len > max_parts) return error.TooManyParts;
     if (handles.len > max_handles) return error.TooManyHandles;
 
-    // Darwin's per-message alternative to MSG_NOSIGNAL is a socket option, so
-    // it is set here rather than passed as a flag. Idempotent and cheap next
-    // to the sendmsg it guards; this path runs once per shared-section
-    // message, never per byte.
+    // Darwin's equivalent of MSG_NOSIGNAL is a socket option rather than a
+    // per-message flag, so it is set here. The call is idempotent and
+    // inexpensive relative to the sendmsg it guards, and this path runs once
+    // per message carrying a shared section, not once per byte.
     suppressSigpipe(socket);
 
     var iovecs: [max_parts]std.posix.iovec_const = undefined;
@@ -144,10 +144,11 @@ pub fn recvWithHandles(
             while (i < count) : (i += 1) {
                 const handle = @as(*align(1) const platform.Handle, @ptrCast(data[i * @sizeOf(platform.Handle) ..].ptr)).*;
                 if (handle_count < handles_out.len) {
-                    // No MSG_CMSG_CLOEXEC here, so each descriptor is marked
-                    // individually; a failure is not worth losing the handle
-                    // over, it only means it would survive an exec we do not
-                    // perform.
+                    // Without MSG_CMSG_CLOEXEC each descriptor is marked
+                    // individually. A failure here is ignored rather than
+                    // costing the handle: its only consequence is that the
+                    // descriptor would survive an exec, which this program
+                    // does not perform.
                     _ = std.c.fcntl(handle, std.c.F.SETFD, @as(c_int, std.c.FD_CLOEXEC));
                     handles_out[handle_count] = handle;
                     handle_count += 1;
@@ -167,8 +168,8 @@ pub fn recvWithHandles(
     };
 }
 
-/// `__DARWIN_ALIGN32`: control data aligns to 4 bytes here, where Linux aligns
-/// to `sizeof(size_t)`.
+/// Implements `__DARWIN_ALIGN32`: control data aligns to four bytes here, where
+/// Linux aligns to `sizeof(size_t)`.
 fn cmsgAlign(len: usize) usize {
     return std.mem.alignForward(usize, len, @sizeOf(u32));
 }
@@ -185,9 +186,9 @@ fn closeHandles(handles: []const platform.Handle) void {
     for (handles) |handle| std.Io.Threaded.closeFd(handle);
 }
 
-/// Best-effort: a socket that refuses the option still sends correctly, it
-/// just risks SIGPIPE if the peer is gone, which is the pre-existing behaviour
-/// of every other write in the program.
+/// Sets `SO_NOSIGPIPE` on a best-effort basis. A socket that rejects the option
+/// still sends correctly, but risks `SIGPIPE` if the peer has gone, which is the
+/// existing behaviour of every other write in the program.
 fn suppressSigpipe(socket: platform.Handle) void {
     const on: c_int = 1;
     _ = std.c.setsockopt(
@@ -199,5 +200,5 @@ fn suppressSigpipe(socket: platform.Handle) void {
     );
 }
 
-/// `std.c` declares `recvmsg` but does not export it.
+/// Declared here because `std.c` declares `recvmsg` without exporting it.
 extern "c" fn recvmsg(socket: platform.Handle, msg: *std.c.msghdr, flags: u32) isize;

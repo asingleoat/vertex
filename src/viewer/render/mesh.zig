@@ -43,11 +43,12 @@ pub const Renderer = struct {
             .aos3, .aos4 => scalar_shader.meshScalarShaderDesc(sg.queryBackend()),
             .soa => scalar_soa_shader.meshScalarSoaShaderDesc(sg.queryBackend()),
         });
-        // Face-target scalars read the quantity blob by `gl_PrimitiveID`, which
-        // has no MSL translation below 2.2 and so no source in a Metal desc
-        // (see build.zig's `isGlOnlyShader`). Ask the generated artifact rather
-        // than naming a backend: regenerate with a shdc that can emit it and
-        // the feature turns itself back on.
+        // Face-target scalars read the quantity blob by `gl_PrimitiveID`,
+        // which has no MSL translation below version 2.2 and therefore no
+        // source in a Metal descriptor; see `isGlOnlyShader` in build.zig.
+        // Testing the generated descriptor rather than naming a backend means
+        // that regenerating with a shader compiler able to emit it re-enables
+        // the feature without a further change here.
         const face_scalar_shader_desc = switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => face_scalar_shader.meshFaceScalarShaderDesc(sg.queryBackend()),
             .soa => face_scalar_soa_shader.meshFaceScalarSoaShaderDesc(sg.queryBackend()),

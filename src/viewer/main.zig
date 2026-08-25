@@ -108,9 +108,10 @@ fn configureEnvironment(environ: std.process.Environ) void {
     if (std.process.Environ.getPosix(environ, "VERTEX_SHARED_HUGE")) |value| {
         state.huge_pages = !std.mem.eql(u8, value, "0");
     }
-    // A preference about how shared mappings are backed. Where no huge-page
-    // class exists — or no shared memory at all — report and carry `off`
-    // rather than advertising a setting this platform could never honour.
+    // This is a preference about how shared mappings are backed. Where no
+    // huge-page class exists, or no shared memory at all, it is reported and
+    // carried as off rather than advertising a setting the platform cannot
+    // honour.
     if (!vertex.internal.platform.shm.huge_supported) state.huge_pages = false;
     if (std.process.Environ.getPosix(environ, "VERTEX_STEP_LIB")) |value| {
         state.report_stepper = value.len != 0;

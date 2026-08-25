@@ -1,23 +1,24 @@
 //! Darwin POSIX shared-memory regions.
 //!
-//! There is no `memfd_create`, so a region is a `shm_open`ed object created
-//! with an exclusive one-shot name that is `shm_unlink`ed immediately: the
-//! descriptor keeps the object alive, nothing is left in the global namespace
-//! for another process or a crash to collide with, and the handle passes over
-//! the socket exactly like a memfd does. There is no huge-page class at all on
-//! macOS — no hugetlbfs, no `MAP_POPULATE` — so `huge` is always false and the
-//! hugetlb notice never fires.
+//! Darwin has no `memfd_create`, so a region is instead created with `shm_open`
+//! under an exclusive single-use name and unlinked immediately. The descriptor
+//! then keeps the object alive, no name is left in the global namespace for
+//! another process or a crash to collide with, and the handle is passed over
+//! the socket exactly as a memfd is. Darwin also has no huge-page class,
+//! hugetlbfs or `MAP_POPULATE`, so `huge` is always false and the hugetlb
+//! notice is never printed.
 const std = @import("std");
 const platform = @import("platform.zig");
 
-/// Whether this build can create shared regions at all. Callers gate the
-/// zero-copy path on it rather than on `builtin.os.tag`.
+/// Whether this build can create shared regions. Callers use this rather than
+/// testing `builtin.os.tag` to decide whether the zero-copy path is available.
 pub const supported = true;
 
-/// Whether a huge-page class exists on this platform at all: macOS has no hugetlbfs equivalent, so the preference can never be honoured.
-/// Comptime, unlike `hugePagesConfigured`, which asks how the running kernel
-/// is set up. Callers use it to avoid advertising a preference that cannot
-/// apply.
+/// Whether a huge-page class exists on this platform. macOS has no equivalent
+/// of hugetlbfs, so a request for huge pages can never be honoured. This is a
+/// compile-time constant, unlike `hugePagesConfigured`, which reports how the
+/// running kernel is configured; callers use it to avoid reporting a preference
+/// that cannot apply.
 pub const huge_supported = false;
 
 /// Errors from creating or mapping a region. Failed calls leave no mapping or
@@ -39,22 +40,24 @@ pub const Region = struct {
     huge: bool,
 };
 
-/// Shared-memory creation preference. Huge pages do not exist on this
-/// platform, so the request is accepted and ignored rather than failing.
+/// Shared-memory creation options. Huge pages do not exist on this platform, so
+/// a request for them is accepted and ignored rather than rejected.
 pub const CreateOptions = struct {
     huge_pages: bool,
 };
 
-/// Size of the huge-page class the Linux implementation requests. Kept so the
-/// shared API is identical; nothing here can provide it.
+/// The size of the huge-page class the Linux implementation requests. It is
+/// retained so that both implementations expose the same API, but no allocation
+/// here can use it.
 pub const huge_page_size: usize = 2 * 1024 * 1024;
 
-/// `PSHMNAMLEN` is 31 on Darwin, so the generated name must stay short.
+/// `PSHMNAMLEN` is 31 on Darwin, which bounds the generated name.
 const max_name_len = 31;
 
-/// Distinguishes concurrent regions within this process; the pid distinguishes
-/// processes. Only the window between `shm_open` and `shm_unlink` can collide,
-/// and `O_EXCL` turns a collision into a retry rather than a shared object.
+/// Distinguishes concurrent regions within this process, while the process
+/// identifier distinguishes processes. Only the interval between `shm_open` and
+/// `shm_unlink` can collide, and `O_EXCL` turns such a collision into a retry
+/// rather than into a shared object.
 var name_counter = std.atomic.Value(u32).init(0);
 const name_attempts = 8;
 
@@ -127,8 +130,8 @@ pub fn hugePagesAvailable() bool {
     return false;
 }
 
-/// Opens a fresh shared-memory object and unlinks its name, leaving the
-/// returned descriptor as its only reference. The caller owns it.
+/// Opens a new shared-memory object and unlinks its name, so that the returned
+/// descriptor is its only reference. The caller owns the descriptor.
 fn openExclusive() Error!platform.Handle {
     const pid: u32 = @bitCast(std.c.getpid());
     var attempt: u32 = 0;
@@ -145,8 +148,9 @@ fn openExclusive() Error!platform.Handle {
             .EXCL = true,
         }), 0o600);
         if (rc >= 0) {
-            // The descriptor holds the object; drop the name so no other
-            // process can open it and nothing survives a crash.
+            // The descriptor holds the object open, so the name can be
+            // removed at once: no other process can then open it, and nothing
+            // is left behind if this one crashes.
             _ = std.c.shm_unlink(name.ptr);
             return rc;
         }
@@ -167,7 +171,7 @@ fn roundedLength(len: usize, alignment: usize) error{SharedTooLarge}!usize {
     return with_slack & ~(alignment - 1);
 }
 
-/// Variadic in C (the mode argument is read only when `O_CREAT` is set), so it
-/// is declared here with the one signature this module uses rather than taken
-/// from `std.c`, which does not expose it.
+/// Declared here rather than taken from `std.c`, which does not expose it. The
+/// C function is variadic, reading the mode argument only when `O_CREAT` is
+/// set; this declaration fixes the single signature this module uses.
 extern "c" fn shm_open(name: [*:0]const u8, oflag: c_int, mode: std.c.mode_t) platform.Handle;

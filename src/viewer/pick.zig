@@ -4,11 +4,12 @@
 //! bound. The pinned GL backend executes draw calls immediately. Its generic
 //! pass clear path calls `glClearBufferfv` for every color format, including
 //! integer attachments, so the queried pixel is cleared explicitly with
-//! `glClearBufferuiv` after applying the 1x1 scissor. sokol-gfx has no readback
-//! API, so every backend needs its own escape hatch: `Picker` selects one at
-//! comptime and picking is simply off where none exists (Metal readback is
-//! Step 3 of the macOS port). `Hit`/`ElementKind` are backend-independent and
-//! stay the vocabulary the UI speaks either way.
+//! `glClearBufferuiv` after the 1x1 scissor has been applied. sokol-gfx has no
+//! readback API, so each backend requires its own escape hatch. `Picker`
+//! selects one at compile time, and picking is disabled where none exists;
+//! Metal readback is step 3 of the macOS port. `Hit` and `ElementKind` are
+//! independent of the backend and remain the vocabulary the UI uses in either
+//! case.
 const std = @import("std");
 const build_options = @import("build_options");
 const vertex = @import("vertex");
@@ -63,16 +64,17 @@ pub const Hit = struct {
     kind: ElementKind,
 };
 
-/// Whether this build can run the ID-buffer pass and read a pixel back. False
-/// leaves every query a miss; nothing else in the viewer changes.
+/// Whether this build can run the ID-buffer pass and read a pixel back. When it
+/// is false every query reports a miss, and nothing else in the viewer
+/// changes.
 pub const supported = build_options.gl_backend;
 
-/// The backend's picker. Only the selected branch is analyzed, so the raw GL
-/// externs above exist solely in a GL build.
+/// The picker for this backend. Only the selected branch is analyzed, so the
+/// raw GL externs above are present only in a GL build.
 pub const Picker = if (supported) GlPicker else DisabledPicker;
 
-/// Stand-in for a backend without a readback path: costs nothing, holds
-/// nothing, and reports no hit. It exists so main.zig has one code path.
+/// Stands in for a backend without a readback path. It holds nothing, costs
+/// nothing and reports no hit, so that main.zig needs only one code path.
 const DisabledPicker = struct {
     pub fn init() DisabledPicker {
         return .{};

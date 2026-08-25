@@ -150,10 +150,11 @@ pub const Input = struct {
                     self.orbit.pan(ev.mouse_dx, ev.mouse_dy, viewport_height);
                 } else if (left) {
                     self.camera_touched = true;
-                    // Direct manipulation on both axes: the surface under the
-                    // cursor follows it, as if the scene were a trackball.
-                    // Dragging down rolls the front face down, bringing the top
-                    // into view, which is what both pans already do with `dy`.
+                    // Both axes follow the cursor, as if the scene were a
+                    // trackball under it: dragging down rotates the front of
+                    // the model downwards and brings its top into view. This
+                    // matches the sign both pan operations already use for
+                    // `dy`.
                     self.orbit.rotate(-ev.mouse_dx * 0.01, ev.mouse_dy * 0.01);
                 }
             },

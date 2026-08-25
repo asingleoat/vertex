@@ -20,18 +20,20 @@ pub fn build(b: *Build) !void {
     const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
     const sketch_name = b.option([]const u8, "sketch", "Sketch to run with `zig build run-sketch` (default: current)") orelse "current";
 
-    // sokol's `auto` backend is Metal on darwin and GL elsewhere; force GL
-    // where that is what we mean, and tell our own code which one it got.
-    // `pick.zig`'s readback is a raw GL escape hatch, so it exists exactly
-    // when this is true (DESIGN.md, portability table).
+    // sokol's `auto` backend resolves to Metal on Darwin and to GL elsewhere.
+    // GL is requested explicitly where it is intended, and the result is passed
+    // to our own code as a build option. The readback in `pick.zig` is a raw GL
+    // escape hatch and exists exactly when this is true; see the portability
+    // table in DESIGN.md.
     const gl_backend = !target.result.os.tag.isDarwin();
 
     const build_options = b.addOptions();
     build_options.addOption(Layout, "vertex_layout", vertex_layout);
     build_options.addOption(bool, "gl_backend", gl_backend);
-    // One module, imported everywhere: `addOptions` creates a fresh module per
-    // call, and two modules cannot share a source file, so the viewer importing
-    // `build_options` directly while `vertex` has its own copy is a hard error.
+    // One module, imported everywhere. `addOptions` creates a new module on
+    // each call and two modules cannot share a source file, so the viewer
+    // importing `build_options` directly while `vertex` holds its own copy is a
+    // compile error.
     const options_module = build_options.createModule();
 
     // ---- `vertex`: pure core (geometry, protocol, scene) + client library ----
@@ -159,9 +161,9 @@ pub fn build(b: *Build) !void {
             "-o",
             b.fmt("src/viewer/shaders/{s}.zig", .{name}),
             "-l",
-            // One generated file per shader carrying every backend we target,
-            // so a Linux checkout and a macOS checkout produce byte-identical
-            // output and neither has to regenerate for the other.
+            // Each generated file carries every backend the project targets,
+            // so that a Linux checkout and a macOS checkout produce identical
+            // output and neither needs to regenerate for the other.
             if (isGlOnlyShader(name)) "glsl430" else "glsl430:metal_macos",
             "-f",
             "sokol_zig",
@@ -175,9 +177,10 @@ pub fn build(b: *Build) !void {
     };
 
     // ---- docs: zig's autodoc for the `vertex` module ----
-    // The two api/ modules are written to be read as source, but the same doc
-    // comments render as a browsable site; `zig build docs` then open
-    // zig-out/docs/index.html.
+    // The two modules under api/ are written to be read as source, but the same
+    // doc comments also render as a browsable site. Run `zig build docs` and
+    // open zig-out/docs/index.html; the page fetches sources.tar, so it may
+    // need serving over HTTP rather than opening from the file system.
     const docs_obj = b.addObject(.{ .name = "vertex", .root_module = mod_vertex });
     const install_docs = b.addInstallDirectory(.{
         .source_dir = docs_obj.getEmittedDocs(),
@@ -206,10 +209,11 @@ pub fn build(b: *Build) !void {
 fn resolveTarget(b: *Build) Build.ResolvedTarget {
     var query = b.standardTargetOptionsQueryOnly(.{});
     const env = b.graph.environ_map;
-    // Linux-only by construction: nixpkgs' darwin cc wrapper also publishes a
-    // nix-support/dynamic-linker (/usr/lib/dyld), so the shell hook's file test
-    // is not a platform test. Pinning here would force abi=gnu on a macOS
-    // target and break the C/C++ dependencies (sokol, cimgui).
+    // This applies to Linux only. The nixpkgs Darwin cc wrapper also publishes
+    // a nix-support/dynamic-linker, holding /usr/lib/dyld, so the shell hook's
+    // test for that file is not a test of the platform. Pinning here would force
+    // abi=gnu on a macOS target and break the C and C++ dependencies, sokol and
+    // cimgui.
     const host_is_linux = (query.os_tag orelse builtin.os.tag) == .linux;
     if (host_is_linux) if (query.isNative()) if (nonEmpty(env.get("ZIG_DYNAMIC_LINKER"))) |dl| {
         query.dynamic_linker = .init(dl);
@@ -237,12 +241,13 @@ fn addRuntimeLibPaths(b: *Build, mod: *Build.Module) void {
     mod.addRPath(.{ .cwd_relative = "/run/opengl-driver/lib" });
 }
 
-/// Shaders that cannot be translated to MSL. `gl_PrimitiveID` in a fragment
-/// shader requires MSL 2.2; SPIRV-Cross refuses below that ("PrimitiveId on
-/// macOS requires MSL 2.2") and sokol-shdc exposes no MSL version flag —
-/// checked against both the pinned build and sokol-tools-bin master on
-/// 2026-08-24. The renderer asks the generated desc whether a backend has a
-/// source, so this list only decides what gets generated, never what runs.
+/// Reports whether a shader cannot be translated to MSL. `gl_PrimitiveID` in a
+/// fragment shader requires MSL 2.2; SPIRV-Cross rejects anything below that
+/// ("PrimitiveId on macOS requires MSL 2.2") and sokol-shdc exposes no flag for
+/// the MSL version, as checked against both the pinned build and
+/// sokol-tools-bin master on 2026-08-24. The renderer tests the generated
+/// descriptor for a source, so this list determines only what is generated and
+/// never what runs.
 fn isGlOnlyShader(name: []const u8) bool {
     const gl_only = [_][]const u8{
         "mesh_face_scalar",

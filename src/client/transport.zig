@@ -1,7 +1,8 @@
 //! Effectful client edge: the Unix-domain socket a sketch writes to, the
-//! shared-memory buffers it can pass through it, and the environment lookups
-//! that locate the viewer. Everything here touches the OS. The message
-//! vocabulary it carries is pure and lives in `session.zig`.
+//! shared-memory buffers that can be passed through it, and the environment
+//! lookups that locate the viewer. Every declaration here calls the operating
+//! system. The message vocabulary it carries is pure and defined in
+//! `session.zig`.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");

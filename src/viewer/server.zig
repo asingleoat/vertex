@@ -247,10 +247,11 @@ pub const Server = struct {
                 &read_buffer,
                 &received_handles,
             ) else read: {
-                // Without handle passing a client can never send a shared
-                // section, so a plain readv sees the whole stream. Reading
-                // through recvWithHandles here would be `error.Unsupported`,
-                // i.e. no ingest at all — not even the inline path.
+                // Without handle passing a client cannot send a shared
+                // section, so an ordinary readv sees the whole stream. Reading
+                // through recvWithHandles here would return
+                // `error.Unsupported`, which would disable ingest entirely,
+                // including the inline path.
                 var data: [1][]u8 = .{&read_buffer};
                 break :read platform.fdpass.Received{
                     .bytes = try stream.read(self.io, &data),

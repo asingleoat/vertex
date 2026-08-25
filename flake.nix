@@ -90,23 +90,24 @@
 
           # Zig's global cache is per-user; keep the project cache local so a
           # `git clean` resets everything.
-          # The glibc pin below is Linux-only. nixpkgs' *darwin* cc wrapper also
-          # ships nix-support/dynamic-linker (holding /usr/lib/dyld), so gating
-          # on that file's existence is not enough: guard on the platform.
+          # The glibc pin below applies to Linux only. The nixpkgs Darwin cc
+          # wrapper also ships nix-support/dynamic-linker, holding
+          # /usr/lib/dyld, so testing for that file is not sufficient; the guard
+          # is on the platform instead.
           shellHook = ''
             export ZIG_LOCAL_CACHE_DIR="$PWD/.zig-cache"
           '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-            # zig 0.17.0-dev.1857: setting either NIX_CFLAGS_COMPILE or
-            # NIX_LDFLAGS makes zig skip its darwin SDK detection entirely
-            # (`xcrun --sdk macosx --show-sdk-path`), so no framework search
-            # path is ever added and every `-framework` in the sokol_app /
-            # sokol_gfx link fails with `searched paths: none`. Neither is
-            # needed here: zig links libSystem, the Cocoa/Metal/OpenGL
-            # frameworks and the C headers from the SDK, and it ships its own
-            # libc++. Drop them so detection runs, exactly as on a Mac
-            # without nix. DEVELOPER_DIR/SDKROOT (set by the apple-sdk setup
-            # hook) point xcrun at the pinned nixpkgs SDK, so detection stays
-            # reproducible.
+            # In zig 0.17.0-dev.1857, setting either NIX_CFLAGS_COMPILE or
+            # NIX_LDFLAGS causes zig to skip its Darwin SDK detection, which
+            # runs `xcrun --sdk macosx --show-sdk-path`. No framework search
+            # path is then added, and every `-framework` in the sokol_app and
+            # sokol_gfx link fails with `searched paths: none`. Neither
+            # variable is needed here, because zig takes libSystem, the Cocoa,
+            # Metal and OpenGL frameworks and the C headers from the SDK, and
+            # ships its own libc++. Unsetting them restores detection, as on a
+            # Mac without nix. DEVELOPER_DIR and SDKROOT, set by the apple-sdk
+            # setup hook, point xcrun at the pinned nixpkgs SDK, so detection
+            # remains reproducible.
             unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
           '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             # zig's compiler detects the native dynamic linker by probing

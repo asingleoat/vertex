@@ -14,14 +14,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Platform differences, all of them, in one place.
-#   * No Xvfb on macOS: the viewer runs on the real display.
-#   * The frame cap only has to outlive each scenario's sketch. Under llvmpipe
-#     frames are free-running; on a real display they are vsync-paced, so the
-#     same wall-clock budget is far fewer frames.
-#   * Picking is comptime-disabled off the GL backend until the CPU ray cast
-#     lands (DESIGN.md, "Picking, decided 2026-08-24"), so the probe is
-#     asserted to miss rather than to find a face.
+# Every platform difference is collected here.
+#   * macOS has no Xvfb, so the viewer runs on the real display.
+#   * The frame cap need only outlive each scenario's sketch. Under llvmpipe
+#     frames run as fast as they are drawn; on a real display they are paced by
+#     vsync, so the same wall-clock budget corresponds to far fewer frames.
+#   * Picking is disabled at compile time off the GL backend until the CPU ray
+#     cast lands; see "Picking, decided 2026-08-24" in DESIGN.md. The probe is
+#     therefore asserted to miss rather than to find a face.
 if [ "$(uname -s)" = "Darwin" ]; then
   viewer_wrapper=(env)
   lib_suffix=.dylib
@@ -78,7 +78,7 @@ run() {
 run current "$frames_current" "VERTEX_PICK_PROBE=700,450" sketch-current
 expect "$LOGS/current.log" 'vertex-view: structures=4 frames=25 blobs=83'
 if [ "$picking" = 1 ]; then
-  # The expected face is display-dependent: this is the 1400x900 Xvfb value.
+  # The expected face depends on the display; this is the 1400x900 Xvfb value.
   expect "$LOGS/current.log" 'vertex-view: probe structure=sphere kind=face element=693'
 else
   expect "$LOGS/current.log" 'vertex-view: probe miss'

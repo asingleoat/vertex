@@ -1,25 +1,26 @@
-//! Talking to the viewer: open a connection, describe geometry, step frames.
+//! Client interface to the viewer: connection setup, geometry registration
+//! and frame boundaries.
 //!
-//! This is one of the two modules a sketch imports; the other is `shapes.zig`,
-//! which is the pure vocabulary for the data you pass in here. Everything in
-//! this module is an *edge*: it opens sockets, maps shared memory and reads the
-//! environment. The message ordering it enforces is pure and lives in
-//! `../client/session.zig`.
+//! A sketch imports this module together with `shapes.zig`, which defines the
+//! data types the calls here accept. This module is an effectful edge: it opens
+//! the socket, maps shared memory and reads the environment. The message
+//! ordering it relies on is implemented in `../client/session.zig`, which is
+//! pure.
 //!
-//! The shape of a sketch:
+//! A minimal sketch:
 //!
 //! ```zig
 //! var vx = try vertex.connect(init, .{ .name = "my-experiment" });
 //! defer vx.close();
 //! try vx.mesh("surface", positions, faces, .{});
-//! try vx.step();                  // frame boundary
+//! try vx.step();
 //! try vx.finish();
 //! ```
 //!
-//! Nothing you pass is retained: every call borrows its slices only until it
-//! returns, and none of them allocate. Structures are keyed by name — sending
-//! the same name again replaces its geometry and adds a scrubbable version,
-//! while the viewer keeps your per-name view settings across runs.
+//! No call retains its arguments: each borrows its slices until it returns, and
+//! none allocate. Structures are identified by name. Registering an existing
+//! name replaces that structure's geometry and appends a version to the
+//! timeline, while the viewer's per-name display settings persist across runs.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
@@ -36,54 +37,56 @@ const resolveSocketPath = transport.resolveSocketPath;
 const resolveHugePages = transport.resolveHugePages;
 const validateName = session_mod.validateName;
 
-/// The sink-agnostic message sequencer. `Connection` is one wrapped around a
-/// socket; a stepping sketch (`steps/*.zig`) is handed a `Session` directly,
-/// because the viewer already owns the transport in that mode. Same calls,
-/// same ordering rules, no socket of its own.
+/// Sequences messages to a borrowed sink, independent of the transport
+/// underneath it. A `Connection` is a `Session` wrapped around a socket. A
+/// stepping sketch in `steps/*.zig` receives a `Session` directly, because the
+/// viewer owns the transport in that mode. The calls and the ordering rules are
+/// the same in both cases.
 pub const Session = session_mod.Session;
 
-/// Where a quantity attaches to its structure: `.vertex` (one value per
-/// vertex), `.face` (one per triangle) or `.point` (one per point). Passing a
-/// count that does not match the target is an error, not a silent stretch.
+/// Selects what a quantity attaches to: `.vertex` for one value per vertex,
+/// `.face` for one per triangle, or `.point` for one per point. A value count
+/// that does not match the target is rejected rather than resampled.
 pub const Target = protocol.Target;
 
-/// Severity of a `log` line, shown in the viewer's console: `.info`, `.warn`
-/// or `.err`.
+/// Severity of a line sent with `log`, displayed in the viewer's console:
+/// `.info`, `.warn` or `.err`.
 pub const LogLevel = protocol.LogLevel;
 
-/// Per-registration options. `dim` is `.d3` by default; pass `.d2` for planar
-/// work and the viewer switches to an orthographic pan/zoom camera once every
-/// live structure is 2D.
+/// Options accepted when registering a structure. `dim` defaults to `.d3`;
+/// passing `.d2` marks the structure as planar, and the viewer selects an
+/// orthographic camera once every live structure is two-dimensional.
 pub const GeometryOptions = session_mod.GeometryOptions;
 
-/// Errors any message call can return: `Finished` once the run has ended,
-/// `NameTooLong`, `TooManyElements`, `TextTooLong`, plus whatever the
-/// underlying socket write reports.
+/// Errors returned by any message call: `Finished` once the run has ended,
+/// `NameTooLong`, `TooManyElements` and `TextTooLong` from argument validation,
+/// together with the errors the underlying socket write can report.
 pub const Error = session_mod.Error;
 
-/// Errors from `connect`: everything in `Error` plus socket path resolution
-/// and connection failures. With `.optional = true` these degrade to a
-/// disconnected no-op connection instead.
+/// Errors returned by `connect`: those in `Error`, together with socket path
+/// resolution and connection failures. When `.optional` is set, these produce a
+/// disconnected connection instead of an error.
 pub const ConnectError = transport.ConnectError;
 
-/// Errors from requesting a shared buffer: `Unsupported` where the platform
-/// has no shared memory, `NotConnected`, `TooManyShared` (eight outstanding is
-/// the cap), `InvalidSharedLength`.
+/// Errors returned when requesting a shared buffer: `Unsupported` on platforms
+/// without shared memory, `NotConnected`, `TooManyShared` once eight buffers are
+/// outstanding, and `InvalidSharedLength`.
 pub const SharedError = transport.SharedError;
 
-/// One writable shared mapping owned by its connection until a message
-/// consumes it. Prefer `sharedPositions`/`sharedScalars`/`sharedVectors`,
-/// which hand you a typed view over the same memory.
+/// A writable shared mapping, owned by its connection until a message consumes
+/// it. `sharedPositions`, `sharedScalars` and `sharedVectors` return typed views
+/// over the same memory and are usually more convenient.
 pub const Shared = transport.Shared;
 
-/// How to open a connection.
+/// Options for opening a connection.
 ///
-/// `name` labels this run in the viewer and is the only required field.
-/// `optional = true` turns a missing viewer into a no-op connection instead of
-/// an error, so a sketch still runs headless — check `isConnected` if you care.
-/// `socket_path` overrides where to look, ahead of `$VERTEX_SOCK` and the
-/// default; `huge_pages` overrides the shared-buffer page preference. Every
-/// slice is borrowed for the duration of `connect` only.
+/// `name` labels the run in the viewer and is the only required field. Setting
+/// `optional` makes a missing viewer produce a disconnected connection rather
+/// than an error, so that the sketch still runs without one; `isConnected`
+/// reports which occurred. `socket_path` overrides the socket location, taking
+/// precedence over `$VERTEX_SOCK` and the default path, and `huge_pages`
+/// overrides the page-size preference for shared buffers. Every slice is
+/// borrowed for the duration of `connect`.
 pub const ConnectOptions = struct {
     name: []const u8,
     optional: bool = false,
@@ -91,55 +94,59 @@ pub const ConnectOptions = struct {
     huge_pages: ?bool = null,
 };
 
-/// A live connection to the viewer — the object a sketch holds and calls.
+/// A connection to the viewer, owning the socket and any shared buffers taken
+/// from it.
 ///
-/// **How to hold it.** `connect` returns one by value; keep it in a `var` and
-/// `defer vx.close()` immediately, so an early error still releases the socket
-/// and any shared buffers. End a successful run with `finish`, which closes
-/// too, making the `defer` a harmless second call. It owns its socket and up
-/// to eight outstanding shared mappings and nothing else; it is not thread-safe
-/// and is not meant to be copied once used.
+/// `connect` returns a `Connection` by value. The caller should store it in a
+/// `var` and defer `close`, so that an early error still releases the socket and
+/// any unsent shared buffers. `finish` ends the run and closes the connection,
+/// after which the deferred `close` has no further effect. A connection owns its
+/// socket and at most eight outstanding shared mappings, is not thread-safe, and
+/// should not be copied once in use.
 ///
-/// **What the calls do.** Each one encodes a message and writes it to the
-/// socket before returning — synchronous, allocation-free, and borrowing your
-/// slices only for the duration of the call. There is no queue to flush and
-/// nothing to keep alive afterwards. Registering a structure under a name that
-/// already exists replaces its geometry and adds a version to the timeline;
-/// viewer-side state keyed by that name (visibility, colormap, sizes) survives.
+/// Each message call encodes one message and writes it to the socket before
+/// returning. The calls are synchronous, allocate nothing, and borrow their
+/// arguments only for the duration of the call, so there is no queue to flush
+/// and nothing to keep alive afterwards. Registering a structure under an
+/// existing name replaces its geometry and appends a version to the timeline;
+/// the viewer's display state for that name, such as visibility, colormap and
+/// sizes, is preserved.
 ///
-/// **When it is not connected** (`.optional = true` and no viewer), every call
-/// is a successful no-op, so a sketch needs no branches.
+/// A connection opened with `.optional` set when no viewer is listening is not
+/// connected. Every call on it succeeds and does nothing, so a sketch needs no
+/// separate code path.
 pub const Connection = struct {
     socket: ?SocketSink,
     state: State,
     shared_tracker: SharedTracker = .{},
 
-    /// Whether a viewer is actually on the other end.
+    /// Reports whether a viewer is listening on the other end.
     ///
-    /// Only interesting with `.optional = true`, where a missing viewer yields
-    /// a connection whose calls all succeed and do nothing. Use it to skip
-    /// expensive work you would only do to visualise. Borrows `self`.
+    /// This is only meaningful for a connection opened with `.optional` set,
+    /// where a missing viewer produces a connection whose calls succeed and do
+    /// nothing. A sketch can use it to skip work performed only for display.
+    /// Borrows `self` and allocates nothing.
     pub fn isConnected(self: *const Connection) bool {
         return self.socket != null;
     }
 
-    /// Requests a `len`-byte buffer that the viewer will read without a copy.
+    /// Returns a `len`-byte buffer that the viewer reads without copying it.
     ///
-    /// The zero-copy path: instead of filling your own memory and having the
-    /// bytes copied through the socket, you fill memory that both processes
-    /// map, and only a descriptor crosses. Worth it for large, per-frame
-    /// payloads — a million-vertex update sends in microseconds instead of
-    /// milliseconds — and not worth the ceremony for small ones.
+    /// The buffer is shared memory mapped into both processes, so sending it
+    /// transfers a descriptor rather than the contents. This is worthwhile for
+    /// large payloads sent every frame, where it reduces a million-vertex update
+    /// from milliseconds to microseconds, and unnecessary for small ones.
     ///
-    /// **How to hold it.** The connection owns the buffer until the message
-    /// that sends it succeeds, which consumes it; unsent buffers are released
-    /// by `finish`/`close`. Never reuse one after sending: the viewer retains
-    /// versions, so the memory is still being read. Ask for a fresh buffer per
-    /// message. At most eight may be outstanding at once.
+    /// The connection owns the buffer until the message that sends it succeeds,
+    /// which consumes it; unsent buffers are released by `finish` and `close`. A
+    /// buffer must not be reused after it has been sent, because the viewer
+    /// retains the version that refers to it. The caller should request one
+    /// buffer per message, and at most eight may be outstanding at a time.
     ///
-    /// Returns `error.Unsupported` where the platform has no shared memory, in
-    /// which case fill your own slice and send it normally — the wire result is
-    /// identical, only slower. Prefer the typed helpers below.
+    /// Returns `error.Unsupported` on platforms without shared memory. The
+    /// caller should then fill an ordinary slice and send it as usual, which
+    /// produces the same result over the wire at a higher cost. The typed
+    /// functions below are usually more convenient than this one.
     pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
         if (!platform.shm.supported) return error.Unsupported;
         if (self.state.finished) return error.Finished;
@@ -147,23 +154,23 @@ pub const Connection = struct {
         return self.shared_tracker.create(len);
     }
 
-    /// A shared buffer sized and typed for `n` positions.
+    /// Returns a shared buffer sized and typed for `n` positions.
     ///
-    /// Fill it exactly like an allocated `Positions.Mut` (`set`, `setAll`),
-    /// then pass `.toConst()` to `mesh` or `meshPositions`. The view is dead
-    /// the moment that send succeeds. See `sharedBytes` for the ownership
-    /// rules and the `error.Unsupported` fallback.
+    /// The caller fills it as it would an allocated `Positions.Mut`, using `set`
+    /// and `setAll`, then passes `toConst()` to `mesh` or `meshPositions`. The
+    /// view becomes invalid once that send succeeds. See `sharedBytes` for the
+    /// ownership rules and for the fallback when shared memory is unsupported.
     pub fn sharedPositions(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         const shared = try self.sharedBytes(layout.Positions.byteSize(n));
         return layout.Positions.fromBytes(shared.map[0..shared.len]);
     }
 
-    /// A shared buffer sized for `n` `f32` scalars.
+    /// Returns a shared buffer sized for `n` `f32` scalars.
     ///
-    /// Fill the slice, then hand it to `scalar`. Pass the whole slice: a
-    /// subslice is not 64-byte aligned and is rejected with
-    /// `error.MisalignedShared`. Dead once the send succeeds; see
-    /// `sharedBytes`.
+    /// The caller fills the slice and passes it to `scalar`. The whole slice
+    /// must be passed, because a subslice is not 64-byte aligned and is rejected
+    /// with `error.MisalignedShared`. The slice becomes invalid once the send
+    /// succeeds; see `sharedBytes`.
     pub fn sharedScalars(self: *Connection, n: u32) SharedError![]f32 {
         const shared = try self.sharedBytes(@as(usize, n) * @sizeOf(f32));
         return std.mem.bytesAsSlice(
@@ -172,33 +179,38 @@ pub const Connection = struct {
         );
     }
 
-    /// A shared buffer sized and typed for `n` vectors, for `vector`.
+    /// Returns a shared buffer sized and typed for `n` vectors, for use with
+    /// `vector`.
     ///
-    /// Identical to `sharedPositions` — vectors travel in the same layout as
-    /// positions — and named separately so call sites read as what they mean.
+    /// Vectors use the same layout as positions, so this is equivalent to
+    /// `sharedPositions`. It exists under its own name so that call sites state
+    /// which of the two they mean.
     pub fn sharedVectors(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         return self.sharedPositions(n);
     }
 
-    /// How many shared buffers this connection actually got huge pages for.
+    /// Returns how many of this connection's shared buffers were actually
+    /// backed by huge pages.
     ///
-    /// Diagnostic, for benchmarks that want to report what the kernel granted
-    /// rather than what was asked for. Always 0 where huge pages do not exist.
-    /// Borrows `self`.
+    /// This is a diagnostic for benchmarks that report what the kernel granted
+    /// rather than what was requested. It is always zero on platforms without
+    /// huge pages. Borrows `self` and allocates nothing.
     pub fn sharedHugeRegions(self: *const Connection) u64 {
         return self.shared_tracker.huge_regions;
     }
 
-    /// Registers a triangle mesh under `name`, replacing any previous geometry.
+    /// Registers a triangle mesh under `name`, replacing any geometry
+    /// previously registered under that name.
     ///
-    /// `positions` is the vertex stream; `faces` indexes into it, three `u32`
-    /// per triangle, counter-clockwise for a front face. `options.dim` selects
-    /// 3D (default) or 2D. Both slices are read and released by the time the
-    /// call returns.
+    /// `positions` is the vertex stream and `faces` indexes into it, three `u32`
+    /// per triangle, wound counter-clockwise when seen from the front.
+    /// `options.dim` selects three or two dimensions. Both slices are borrowed
+    /// only until the call returns.
     ///
-    /// Use this whenever the *topology* is new — first registration, a remesh,
-    /// a decimation. If only the vertices moved, `meshPositions` is much
-    /// cheaper. Every call adds a version you can scrub back to.
+    /// This is the call to use whenever the topology is new, such as an initial
+    /// registration, a remesh or a decimation. When only the vertex positions
+    /// have changed, `meshPositions` is considerably cheaper. Each call appends
+    /// a version that the viewer's timeline can return to.
     pub fn mesh(
         self: *Connection,
         name: []const u8,
@@ -209,24 +221,28 @@ pub const Connection = struct {
         return self.state.mesh(self.currentSink(), name, positions, faces, options);
     }
 
-    /// Updates the vertices of an existing mesh, keeping its triangles.
+    /// Updates the vertex positions of an existing mesh, leaving its triangles
+    /// unchanged.
     ///
-    /// The cheap per-frame update: smoothing, relaxation, flows,
-    /// parameterisation — anything that moves points without changing how they
-    /// connect. The new version shares the previous version's index buffer, so
-    /// only the positions are stored and uploaded.
+    /// This is the inexpensive per-frame update, suited to smoothing,
+    /// relaxation, flows and parameterisation, where points move but their
+    /// connectivity does not. The new version shares the previous version's
+    /// index buffer, so only the positions are stored and uploaded.
     ///
-    /// `positions` must have the same vertex count as the registered mesh, and
-    /// `name` must already exist. Borrowed for the call only.
+    /// `name` must already be registered and `positions` must have the same
+    /// vertex count as the registered mesh. The slice is borrowed only until the
+    /// call returns.
     pub fn meshPositions(self: *Connection, name: []const u8, positions: layout.Positions.Const) Error!void {
         return self.state.meshPositions(self.currentSink(), name, positions);
     }
 
-    /// Registers a point cloud under `name`, replacing any previous geometry.
+    /// Registers a point cloud under `name`, replacing any geometry previously
+    /// registered under that name.
     ///
-    /// Points are drawn as screen-space sprites of a size you control in the
-    /// viewer, so they stay legible at any zoom. `options.dim` selects 3D or
-    /// 2D. Borrowed for the call only.
+    /// Points are drawn as screen-space sprites whose size is controlled in the
+    /// viewer, so they remain visible at any zoom level. `options.dim` selects
+    /// three or two dimensions. The slice is borrowed only until the call
+    /// returns.
     pub fn points(
         self: *Connection,
         name: []const u8,
@@ -236,12 +252,13 @@ pub const Connection = struct {
         return self.state.points(self.currentSink(), name, positions, options);
     }
 
-    /// Registers a line set under `name`, replacing any previous geometry.
+    /// Registers a set of line segments under `name`, replacing any geometry
+    /// previously registered under that name.
     ///
-    /// `segments` indexes into `positions`, two `u32` per segment. This one
-    /// primitive covers polylines, edge sets, graphs, trajectories and normals
-    /// drawn as sticks — anything made of straight pieces. Lines are drawn at a
-    /// constant pixel width. Borrowed for the call only.
+    /// `segments` indexes into `positions`, two `u32` per segment. The same
+    /// primitive represents polylines, edge sets, graphs and trajectories.
+    /// Segments are drawn at a constant width in pixels. Both slices are
+    /// borrowed only until the call returns.
     pub fn lines(
         self: *Connection,
         name: []const u8,
@@ -252,16 +269,17 @@ pub const Connection = struct {
         return self.state.lines(self.currentSink(), name, positions, segments, options);
     }
 
-    /// Attaches a named scalar field to an existing structure.
+    /// Attaches a named scalar field to an already registered structure.
     ///
-    /// One `f32` per element of `target`: per vertex, per face, or per point.
-    /// The viewer maps it through a colormap you pick per structure, so this is
-    /// how curvature, error, area, temperature or any other per-element number
-    /// becomes something you can see. `values.len` must match the count that
-    /// `target` implies.
+    /// `values` holds one `f32` per element of `target`, that is per vertex, per
+    /// face or per point, and its length must match the count that `target`
+    /// implies. The viewer maps the values through a colormap selected per
+    /// structure, which is how per-element quantities such as curvature, error,
+    /// area or temperature are displayed.
     ///
-    /// A structure can carry several; you switch between them in the viewer.
-    /// Re-sending the same quantity name replaces it. Borrowed for the call.
+    /// A structure may carry several quantities, and the viewer selects between
+    /// them. Sending the same quantity name again replaces it. The slice is
+    /// borrowed only until the call returns.
     pub fn scalar(
         self: *Connection,
         structure: []const u8,
@@ -272,12 +290,13 @@ pub const Connection = struct {
         return self.state.scalar(self.currentSink(), structure, name, target, values);
     }
 
-    /// Attaches a named vector field to an existing structure.
+    /// Attaches a named vector field to an already registered structure.
     ///
-    /// One `Vec3` per element of `target`, drawn as arrows scaled in the
-    /// viewer: normals, gradients, velocities, forces. `vectors.len()` must
-    /// match the count that `target` implies. Re-sending the same name replaces
-    /// it. Borrowed for the call.
+    /// `vectors` holds one `Vec3` per element of `target`, and its length must
+    /// match the count that `target` implies. The viewer draws them as arrows
+    /// at a scale selected per structure, which suits normals, gradients,
+    /// velocities and forces. Sending the same quantity name again replaces it.
+    /// The stream is borrowed only until the call returns.
     pub fn vector(
         self: *Connection,
         structure: []const u8,
@@ -288,54 +307,54 @@ pub const Connection = struct {
         return self.state.vector(self.currentSink(), structure, name, target, vectors);
     }
 
-    /// Writes a line to the viewer's console at `level`.
+    /// Writes one line to the viewer's console at the given severity.
     ///
-    /// For the running commentary a sketch would otherwise print to a terminal
-    /// you are not looking at — iteration counts, convergence, "this input was
-    /// degenerate". `message` is borrowed for the call.
+    /// This carries the commentary a sketch would otherwise print to a terminal,
+    /// such as iteration counts, convergence measurements or notes about
+    /// degenerate input. `message` is borrowed only until the call returns.
     pub fn log(self: *Connection, level: protocol.LogLevel, message: []const u8) Error!void {
         return self.state.log(self.currentSink(), level, message);
     }
 
     /// Ends the current frame and opens the next one.
     ///
-    /// This is what makes the timeline: everything sent since the last `step`
-    /// belongs to one frame, and the viewer's scrubber moves between them.
-    /// Call it at the bottom of your iteration loop. Structures you do not
-    /// re-send simply persist into the next frame, so a static mesh costs
-    /// nothing per step.
+    /// Frames divide a run into the states the viewer's timeline moves between:
+    /// everything sent since the previous `step` belongs to one frame. A sketch
+    /// normally calls this at the end of each iteration. Structures that are not
+    /// sent again persist into the following frame, so a structure that does not
+    /// change costs nothing per step.
     pub fn step(self: *Connection) Error!void {
         return self.state.step(self.currentSink(), "");
     }
 
-    /// Like `step`, but names the frame you are about to open.
+    /// Ends the current frame and opens the next one, giving it a label.
     ///
-    /// The label shows on the scrubber — "iteration 12", "after collapse" —
-    /// which is worth it when the frames are not interchangeable. Borrowed for
-    /// the call.
+    /// The label is shown on the viewer's timeline, which is useful when the
+    /// frames represent distinct stages rather than repetitions of one step.
+    /// `label` is borrowed only until the call returns.
     pub fn stepLabeled(self: *Connection, label: []const u8) Error!void {
         return self.state.step(self.currentSink(), label);
     }
 
-    /// Ends the run cleanly and closes the connection.
+    /// Ends the run and closes the connection.
     ///
     /// Sends the frame and run terminators, then releases any unsent shared
-    /// buffers and the socket. The viewer keeps everything this run registered
-    /// and discards anything it did not — so a run that stops naming a
-    /// structure removes it. Safe to call once and then have `defer close()`
-    /// run harmlessly after.
+    /// buffers and the socket. The viewer retains everything the run registered
+    /// and discards any structure it did not, so a run that stops registering a
+    /// name removes that structure. A deferred `close` after this call has no
+    /// further effect.
     pub fn finish(self: *Connection) Error!void {
         defer self.close();
         return self.state.finish(self.currentSink());
     }
 
-    /// Drops the connection without ending the run.
+    /// Releases the connection without ending the run.
     ///
-    /// The `defer` partner to `connect`: it releases unsent shared buffers and
-    /// the socket, and is safe to call repeatedly and after `finish`. Because
-    /// no run terminator is sent, the viewer keeps the last frame as it stood —
-    /// which is what you want when a sketch dies partway and you would rather
-    /// look at how far it got.
+    /// Releases any unsent shared buffers and the socket. It is safe to call
+    /// repeatedly and after `finish`, which is what makes it suitable for a
+    /// `defer` immediately after `connect`. No run terminator is sent, so the
+    /// viewer retains the last frame as it stood; a sketch that fails partway
+    /// therefore leaves its progress on screen.
     pub fn close(self: *Connection) void {
         if (self.socket) |*socket| {
             self.shared_tracker.releaseAll();
@@ -355,26 +374,27 @@ pub const Connection = struct {
     }
 };
 
-/// Opens a connection to the viewer. The first line of nearly every sketch.
+/// Opens a connection to the viewer, using the I/O implementation and
+/// environment supplied by process startup.
 ///
-/// Takes the `std.process.Init` your `main` was handed, and `options` (only
-/// `.name` is required). Returns a `Connection` you own — hold it in a `var`
-/// and `defer vx.close()` on the next line.
+/// `init` is the `std.process.Init` passed to `main`; of `options`, only `name`
+/// is required. Returns a `Connection` that the caller owns and should store in
+/// a `var` with a deferred `close`.
 ///
-/// The socket is found in this order: `options.socket_path`, then
-/// `$VERTEX_SOCK`, then `$XDG_RUNTIME_DIR/vertex.sock`, then
-/// `/tmp/vertex.sock`. A missing viewer is an error unless you pass
-/// `.optional = true`, which yields a connection whose calls all quietly
-/// succeed. Sends the run's opening messages before returning, so the viewer
-/// shows the run as live from this moment.
+/// The socket path is resolved in this order: `options.socket_path`,
+/// `$VERTEX_SOCK`, `$XDG_RUNTIME_DIR/vertex.sock`, and finally
+/// `/tmp/vertex.sock`. A viewer that is not listening is an error unless
+/// `options.optional` is set, in which case the returned connection is
+/// disconnected and its calls do nothing. The opening messages of the run are
+/// sent before this function returns, so the viewer shows the run as active
+/// from that point.
 pub fn connect(init: std.process.Init, options: ConnectOptions) ConnectError!Connection {
     return connectWith(init.io, init.minimal.environ, options);
 }
 
-/// `connect` with the I/O implementation and environment passed explicitly.
-///
-/// For tests and for callers that are not a process `main`. Identical
-/// behaviour and ownership otherwise.
+/// Opens a connection with the I/O implementation and environment passed
+/// explicitly, for tests and for callers that are not a process `main`.
+/// Behaviour and ownership are otherwise identical to `connect`.
 pub fn connectWith(io: std.Io, environ: std.process.Environ, options: ConnectOptions) ConnectError!Connection {
     try validateName(options.name);
     const huge_pages = resolveHugePages(environ, options.huge_pages);

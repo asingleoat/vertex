@@ -150,8 +150,8 @@ fn drawStructures(
         const ui_states = structures.items(.ui);
         const versions = structures.items(.versions);
         for (names, kinds, ui_states, versions, 0..) |name_index, kind, *ui_state, version_list, i| {
-            // A run that never registered this structure discarded its
-            // versions; there is nothing left to list.
+            // A run that did not register this structure discarded its
+            // versions, so there is nothing left to list.
             if (version_list.items.len == 0) continue;
             ig.igPushIDInt(@intCast(i));
             defer ig.igPopID();

@@ -25,7 +25,8 @@ pub fn main(init: std.process.Init) !void {
     tri.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
     try vx.mesh("tri", tri.toConst(), &.{.{ 0, 1, 2 }}, .{});
 
-    // Quantities on it: per-vertex scalar, per-face scalar, per-vertex vector.
+    // Quantities attached to it: per-vertex and per-face scalars, and a
+    // per-vertex vector.
     try vx.scalar("tri", "height", .vertex, &.{ 0.0, 0.5, 1.0 });
     try vx.scalar("tri", "area", .face, &.{0.5});
     const normals = try Positions.alloc(init.gpa, 3);
@@ -33,22 +34,22 @@ pub fn main(init: std.process.Init) !void {
     normals.setAll(&.{ .init(0, 0, 1), .init(0, 0, 1), .init(0, 0, 1) });
     try vx.vector("tri", "normal", .vertex, normals.toConst());
 
-    // Point cloud, with a per-point scalar.
+    // A point cloud, with a per-point scalar.
     const cloud = try Positions.alloc(init.gpa, 2);
     defer cloud.free(init.gpa);
     cloud.setAll(&.{ .init(-1, 0, 0), .init(-1, 1, 0) });
     try vx.points("cloud", cloud.toConst(), .{});
     try vx.scalar("cloud", "weight", .point, &.{ 0.2, 0.9 });
 
-    // Polylines and edge sets: vertices + segments.
+    // Line segments, indexing into the points above.
     try vx.lines("edge", cloud.toConst(), &.{.{ 0, 1 }}, .{});
 
     try vx.log(.info, "hello from a sketch");
 
-    // Frame boundary: everything above is frame 0, the update below is frame 1.
+    // A frame boundary: everything above is frame 0, the update below frame 1.
     try vx.step();
     tri.set(2, .init(0, 2, 0));
-    try vx.meshPositions("tri", tri.toConst()); // topology unchanged
+    try vx.meshPositions("tri", tri.toConst()); // same triangles, moved vertices
 
     try vx.finish();
 }

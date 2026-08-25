@@ -449,8 +449,8 @@ pub const Stepper = struct {
         self.next_generation +|= 1;
         const copied_slice = std.fmt.bufPrint(
             &copied_buffer,
-            // `dlopen` does not care about the suffix, but everything a
-            // developer points at these copies does.
+            // `dlopen` ignores the suffix, but the tools a developer might
+            // point at these copies do not.
             "{s}/vertex-step-{d}-{d}" ++ builtin.target.os.tag.dynamicLibSuffix(),
             .{ self.copy_dir.slice(), std.c.getpid(), generation },
         ) catch {

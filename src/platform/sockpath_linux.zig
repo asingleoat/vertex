@@ -57,9 +57,9 @@ pub fn release(io: std.Io, shortened: *Shortened) void {
 pub const limit_note = "Unix socket paths are limited to 107 bytes; vertex rebases longer paths via /proc/self/fd on Linux";
 
 test "long socket paths bind and connect through a directory handle" {
-    // platform.zig imports this file on every target for the decl-parity
-    // check, which pulls this test into non-Linux test binaries too. The
-    // rebasing it exercises is /proc-specific, so it can only run on Linux.
+    // platform.zig imports this file on every target for the declaration
+    // parity check, which also pulls this test into non-Linux test binaries.
+    // The rebasing it exercises depends on /proc and can only run on Linux.
     if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const testing = std.testing;
     var tmp = testing.tmpDir(.{});

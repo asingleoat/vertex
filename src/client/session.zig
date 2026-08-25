@@ -1,10 +1,11 @@
-//! Pure client core: what a sketch can say to the viewer, and in what order.
+//! Pure client core: the messages a sketch can send to the viewer, and the
+//! order in which they are valid.
 //!
-//! `Session` turns method calls into `protocol.Message` values and hands each
-//! one to a borrowed `Sink`. It performs no I/O itself — the effect belongs to
-//! whichever sink is plugged in (`transport.zig` for a socket, `dylib.zig` for
-//! the in-process path), which is why this module is testable with a recorder
-//! and allocates nothing.
+//! `Session` converts method calls into `protocol.Message` values and passes
+//! each to a borrowed `Sink`. It performs no I/O of its own; the effect belongs
+//! to whichever sink is supplied, `transport.zig` for a socket or `dylib.zig`
+//! for the in-process path. This module therefore allocates nothing and can be
+//! tested with a recording sink.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 // Only for the error set a socket sink can return; no OS call is made here.

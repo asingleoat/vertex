@@ -38,10 +38,10 @@ pub const Kind = enum(u8) { mesh, points, lines };
 /// Quantity payload kind; this value owns no memory and never allocates.
 pub const QuantityKind = enum(u8) { scalar, vector };
 
-/// Live-blob limit. The value owns no memory and changing it allocates
-/// nothing; a lowered byte budget is enforced on the next apply or an explicit
-/// `Scene.enforceBudget` call. Only the current run is retained: a new run
-/// frees the previous one's versions.
+/// The live-blob limit. The value owns no memory and changing it allocates
+/// nothing; a lowered byte budget takes effect on the next apply or on an
+/// explicit call to `Scene.enforceBudget`. Only the current run is retained, so
+/// beginning a new run frees the previous run's versions.
 pub const Retention = struct {
     budget_bytes: usize = 2 * 1024 * 1024 * 1024,
 };
@@ -360,10 +360,12 @@ pub const Scene = struct {
         self.frame = frame;
     }
 
-    /// Ends the run, discarding every structure the run never registered. A
-    /// structure with no versions is invisible to `versionAt`, so it neither
-    /// draws nor lists; its slot and `UiState` stay keyed by name, so
-    /// re-registering it later brings back its viewer settings.
+    /// Ends the run, discarding every structure that the run did not register.
+    ///
+    /// A structure with no versions is invisible to `versionAt`, so it is
+    /// neither drawn nor listed. Its slot and `UiState` remain keyed by name, so
+    /// registering that name again restores the structure with its previous
+    /// viewer settings.
     fn endRun(self: *Scene) void {
         var structure_i: usize = 0;
         while (structure_i < self.structures.len) : (structure_i += 1) {
@@ -373,8 +375,9 @@ pub const Scene = struct {
         self.run_active = false;
     }
 
-    /// Releases every version of `structure_index`, freeing the blobs they
-    /// hold. The structure keeps its slot, name binding and `UiState`.
+    /// Releases every version of `structure_index` and frees the blobs they
+    /// hold. The structure retains its slot, its name binding and its
+    /// `UiState`.
     fn releaseAllVersions(self: *Scene, structure_index: StructureIndex) void {
         const i = indexOf(structure_index);
         var structures = self.structures.slice();
@@ -653,8 +656,9 @@ pub const Scene = struct {
 
     /// Enforces the configured byte budget by progressively decimating the
     /// current run's history. Only the current run is retained, so there are
-    /// never older-run versions to release first. The operation allocates
-    /// nothing; released quantity side-array ranges remain as harmless holes.
+    /// never versions from an earlier run to release first. The operation
+    /// allocates nothing; released ranges in the quantity side array remain as
+    /// unused holes.
     pub fn enforceBudget(self: *Scene) void {
         while (self.blob_bytes > self.retention.budget_bytes) {
             var candidate = self.findDecimationCandidate();
@@ -702,8 +706,9 @@ pub const Scene = struct {
     }
 
     /// Drops every version left over from an earlier run. Only the current run
-    /// is retained, so a rebuild never leaves the previous run's geometry in
-    /// the scene; the newest version survives until the run replaces it.
+    /// is retained, so a rebuild never leaves the previous run's geometry in the
+    /// scene. The most recent version survives until the current run replaces
+    /// it.
     fn releaseExpiredVersions(self: *Scene, structure_index: StructureIndex) void {
         if (self.run < 1) return;
         const last_expired_run = self.run - 1;
@@ -1291,7 +1296,8 @@ test "upsert keeps UI state and drops the previous run's geometry" {
     try applyMesh(&scene, "surface", positions.toConst(), &faces);
 
     structures = scene.structures.slice();
-    // Only the current run survives; per-name viewer state does.
+    // Only the current run's versions survive, but the per-name viewer state
+    // persists.
     const version_list = structures.items(.versions)[indexOf(structure_index)].items;
     try testing.expectEqual(1, version_list.len);
     try testing.expectEqual(scene.run, version_list[0].run);
@@ -1383,8 +1389,8 @@ test "quantity errors, discard on an untouched run, and timeline selection" {
     try scene.apply(.{ .end_run = {} });
     try scene.apply(.{ .begin_run = {} });
     try scene.apply(.{ .end_run = {} });
-    // A run that never registered them discards both outright: no versions,
-    // so nothing draws and nothing lists.
+    // A run that did not register them discards both: with no versions, they
+    // are neither drawn nor listed.
     const structures = scene.structures.slice();
     try testing.expectEqual(0, structures.items(.versions)[indexOf(surface)].items.len);
     try testing.expectEqual(0, structures.items(.versions)[indexOf(late)].items.len);
@@ -1392,7 +1398,7 @@ test "quantity errors, discard on an untouched run, and timeline selection" {
     try testing.expectError(error.NoRunActive, scene.apply(.{ .end_frame = {} }));
     try scene.apply(.{ .begin_run = {} });
     try applyMesh(&scene, "surface", positions.toConst(), &faces);
-    // Registering the name again brings the structure back in its old slot.
+    // Registering the name again restores the structure in its original slot.
     const refreshed = scene.structures.slice();
     try testing.expectEqual(1, refreshed.items(.versions)[indexOf(surface)].items.len);
     try testing.expect(scene.versionAt(surface, 0) != null);
@@ -1630,7 +1636,7 @@ test "a new run drops every version the previous run left" {
     try scene.apply(.{ .begin_frame = .{ .index = 1, .label = "run-two" } });
     try scene.apply(.{ .mesh_positions = .{ .name = "surface", .positions = positions.toConst() } });
 
-    // Run one is gone entirely: only run two's two frames remain.
+    // No version from run one remains; only run two's two frames.
     const versions = scene.structures.slice().items(.versions)[indexOf(surface)].items;
     try testing.expectEqual(2, versions.len);
     for (versions) |version| try testing.expectEqual(scene.run, version.run);
@@ -1650,8 +1656,8 @@ test "a leftover previous-run version is released once the run replaces it" {
     const first_run = scene.run;
     try scene.apply(.{ .end_run = {} });
     try scene.apply(.{ .begin_run = {} });
-    // Still displayed between runs: frames are deltas, so the last geometry
-    // stands until the new run replaces it.
+    // The structure is still displayed between runs: frames are deltas, so the
+    // last geometry stands until the new run replaces it.
     const carried = scene.structures.slice().items(.versions)[indexOf(surface)].items;
     try testing.expectEqual(1, carried.len);
     try testing.expectEqual(first_run, carried[0].run);
@@ -1678,7 +1684,8 @@ test "discarding an untouched structure frees the blobs it held" {
     const bytes_with_both = scene.blob_bytes;
     try scene.apply(.{ .end_run = {} });
 
-    // Second run registers only "kept"; "dropped" goes at end_run.
+    // The second run registers only "kept", so "dropped" is discarded at
+    // end_run.
     try scene.apply(.{ .begin_run = {} });
     try applyMesh(&scene, "kept", positions.toConst(), &faces);
     try scene.apply(.{ .end_run = {} });

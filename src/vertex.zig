@@ -1,21 +1,17 @@
-//! vertex — a geometry playground you drive from a sketch.
+//! Root module of the vertex library, and an index to the two modules a sketch
+//! reads.
 //!
-//! An index, not an API. Two modules are what a sketch actually reads, and both
-//! are written to be read top to bottom:
+//! `shapes` is pure and holds the geometry vocabulary: `Positions`, `Vec3`, the
+//! kernels `bounds`, `vertexNormals` and `uniqueEdges`, and the fixtures
+//! `icosphere`, `grid` and `randomPoints`. `sketch` is the effectful edge that
+//! talks to the viewer: `connect`, the `Connection` a sketch holds, and the
+//! messages it can send. Both are documented in full in their own files, which
+//! are the ones to read; the names below are re-exported only so that a sketch
+//! can write `vertex.connect` and `vertex.Positions` unqualified.
 //!
-//! * `shapes` — **pure**. The geometry vocabulary: `Positions`, `Vec3`, the
-//!   kernels (`bounds`, `vertexNormals`, `uniqueEdges`) and the fixtures
-//!   (`icosphere`, `grid`, `randomPoints`).
-//! * `sketch` — **the edge**. Talking to the viewer: `connect`, the
-//!   `Connection` you hold, and every message you can send it.
-//!
-//! Their names are re-exported here so a sketch can write `vertex.connect` and
-//! `vertex.Positions` without qualifying, but the documentation lives in those
-//! two files and they are the ones to open.
-//!
-//! Everything else is library code, reachable through `internal`. Nothing is
-//! off-limits — read it, change it, take it apart. It sits behind a namespace
-//! only so that what a sketch needs is not buried in what it does not.
+//! The remaining modules are reachable through `internal`. They are ordinary
+//! library code and may be read and modified freely; the namespace exists only
+//! to keep what a sketch needs separate from what it does not.
 const std = @import("std");
 
 /// Pure geometry vocabulary. See `api/shapes.zig`.
@@ -55,8 +51,8 @@ pub const Mesh = shapes.Mesh;
 /// `client/dylib.zig`. Used only by `steps/*.zig`.
 pub const dylib = @import("client/dylib.zig");
 
-/// Library internals. Pure modules and the edges that implement them, kept out
-/// of the sketch-facing surface but not out of reach.
+/// The library modules behind the sketch-facing surface: the pure ones and the
+/// edges that implement them. Each declaration below notes which it is.
 pub const internal = struct {
     /// Pure: vertex memory layouts and the `Positions` machinery.
     pub const layout = @import("geometry/layout.zig");
@@ -85,9 +81,9 @@ pub const internal = struct {
 };
 
 test {
-    // Reaching every namespace is what pulls each file's tests into the test
-    // binary; `internal` needs its own walk because referencing the struct
-    // does not analyze the modules behind its declarations.
+    // Referencing every namespace is what pulls each file's tests into the test
+    // binary. `internal` needs a separate walk, because referencing the struct
+    // itself does not analyze the modules its declarations name.
     std.testing.refAllDecls(@This());
     std.testing.refAllDecls(internal);
     _ = shapes;
