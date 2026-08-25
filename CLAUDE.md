@@ -3,6 +3,7 @@
 Persistent geometry visualization viewer with a hot-recompile loop, in Zig.
 
 Read before writing code:
+- `HANDOFF-macos.md` — if you are on macOS: project state, working agreements, and the ordered port plan.
 - `DESIGN.md` — architecture, protocol, scene model, milestones.
 - `STYLE.md` — coding rules. Non-negotiable summary:
   1. Index, don't point: typed `enum(u32)` handles into flat arrays; no pointer-linked structures.
