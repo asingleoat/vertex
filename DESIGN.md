@@ -151,6 +151,13 @@ Semantics:
     +populate ~2 ms (kernel zero-fill is the residual), send 0.03 ms, viewer
     0.43 ms, 244 minor faults. Inline remains the default for ordinary
     slices; all platform-specific code lives in `src/platform/`.
+  - Same run on aarch64-darwin (M1 Pro, Metal viewer, 2026-08-24), totals
+    over the 40 steps: inline — send 348.3 ms, viewer apply 62.7 ms, 517 MB
+    through the socket; shared — send 3.8 ms, viewer apply 6.6 ms, 36 MB
+    through the socket, `mapped_bytes=480960480`. Send is 92× faster
+    (8.7 → 0.095 ms/step, i.e. quicker than Linux's 4 KiB shared path
+    despite having no huge pages to fall back on); buffer creation costs
+    ~1.2 ms per 12 MB.
 
 ## Client library
 
@@ -352,16 +359,16 @@ inside a viewer edge module with a documented backend assumption. The
 touchpoints and their counterparts:
 
 macOS cells marked ✅ are facts established on aarch64-darwin (macOS 26.5.2,
-M1 Pro, 2026-08-24) while getting `zig build test` green and the viewer up
-on Metal; the rest are still the plan.
+M1 Pro, 2026-08-24) while getting `zig build test` green, the viewer up on
+Metal and the zero-copy path restored; the rest are still the plan.
 
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
 | Toolchain | zig from `zig-overlay`, glibc pinned to the shell's (`ZIG_DYNAMIC_LINKER`) | ✅ same zig, no pin: the pin must be Linux-gated because nixpkgs' *darwin* cc wrapper also ships `nix-support/dynamic-linker` (`/usr/lib/dyld`), which used to force `abi=gnu` | — |
 | SDK / frameworks | n/a | ✅ zig 0.17.0-dev.1857 skips its darwin SDK detection (`xcrun --sdk macosx --show-sdk-path`) whenever `NIX_CFLAGS_COMPILE` *or* `NIX_LDFLAGS` is set, and then finds no framework at all (`searched paths:  none`); the dev shell unsets both, leaving `DEVELOPER_DIR`/`SDKROOT` (nixpkgs `apple-sdk` 14.4) to pin the SDK | Win SDK via zig's own headers |
-| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, hugetlbfs via `MFD_HUGETLB` with fallback | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent, so `huge` stays false and the hugetlb notice is silent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
-| Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | `SCM_RIGHTS` (same API) via `std.c` `sendmsg`/`recvmsg` | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
-| Receiving without handle passing | `recvmsg` always | ✅ needed: `recvWithHandles` is `error.Unsupported` here, so a receiver that calls it cannot read the socket at all. Until fdpass lands, read plainly (`Stream.read`) when `platform.fdpass.supported` is false | same, permanently — Windows never passes handles this way |
+| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, hugetlbfs via `MFD_HUGETLB` with fallback | ✅ `shm_open` with an exclusive one-shot name, `shm_unlink`ed immediately so the descriptor is the only reference; `ftruncate` + `mmap`. No `MAP_POPULATE`, no huge pages: `huge` is always false and the notice never fires. ~1.2 ms per 12 MB buffer (open + truncate + map + first touch) | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
+| Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | ✅ `SCM_RIGHTS` via `std.c` `sendmsg`/`recvmsg`, but **not** a copy of the Linux file: `CMSG_ALIGN` is `__DARWIN_ALIGN32` (4 bytes, not `sizeof(size_t)`) and `cmsghdr` is 12 bytes not 16; no `MSG_NOSIGNAL` (use `SO_NOSIGPIPE` on the socket); no `MSG_CMSG_CLOEXEC` (mark each received fd) | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
+| Receiving without handle passing | `recvmsg` always | ✅ no longer needed here (fdpass landed), but the `platform.fdpass.supported` branch stays: without it a receiver cannot read the socket *at all*, inline path included, because `recvWithHandles` is `error.Unsupported` | needed permanently — Windows never passes handles this way |
 | Transport | Unix domain socket via `std.Io.net` | ✅ same; `std.Io.net` binds, connects and accepts on the kqueue `Threaded` backend | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
 | Abstract sockets | `"\0name"`, no file to clean up | ✅ none — Darwin has no abstract namespace; bind a real file | none |
 | Windowing / GPU | sokol_app X11 + GL 4.3 | ✅ sokol_app Cocoa + Metal, selected by passing `.gl = false` to sokol-zig (its `auto` resolves to Metal on darwin); frameworks `AppKit`, `QuartzCore`, `Metal`, `AudioToolbox`. Mesh, points, lines and ImGui all render | sokol_app Win32 + D3D11 |
@@ -370,7 +377,7 @@ on Metal; the rest are still the plan.
 | Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | ❌ blocked: `gl_PrimitiveID` in a fragment shader needs **MSL 2.2** and SPIRV-Cross refuses below it (`PrimitiveId on macOS requires MSL 2.2`) — sokol-shdc has no MSL version flag, in the pinned build *or* master (checked 2026-08-24). `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` stay GL-only; the renderer asks the generated desc whether the backend has a source and falls back to the plain mesh pipeline. Fixing it means a shdc that sets MSL 2.2, or dropping `primitive_id` for a per-vertex face index (which costs vertex duplication) | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
 | Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock` — the existing fallback, because `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is *per `nix develop` shell* (`/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`), which would put viewer and sketch on different sockets | `\\.\pipe` or a temp-dir `AF_UNIX` path |
 | `sun_path` limit | 107 usable bytes, longer ones rebased via `/proc/self/fd/<fd>` | ✅ `sun_path` is `char[104]` (SDK `sys/un.h`) → 103 usable, and there is no `/proc` to rebase on, so longer paths are rejected naming the limit | 107 usable, no rebasing |
-| Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | `getrusage`, `task_info`; ✅ `huge=` in the exit stats reads `off` where there is no shared memory to back | `GetProcessMemoryInfo` |
+| Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | ✅ `getrusage` alone — `task_info` is unnecessary, since `stats` only exposes minor faults and hugetlb KiB and the latter is always zero here. Whether a huge-page class exists is the comptime `shm.huge_supported`, so viewer, client and sketch all report `huge=off` instead of advertising an impossible preference | `GetProcessMemoryInfo` |
 
 Rules that keep this cheap: no `std.os.linux` or raw GL call outside
 `src/platform/*` and `pick.zig`; the scene and protocol never see handles as

@@ -141,16 +141,33 @@ path is untested here. Retina reports a 2× framebuffer, and the expected
 face (693 on a 1400×900 Xvfb) is display-dependent — re-pin per platform, or
 fix the window size and dpi scale for the smoke.
 
-**Step 2 — platform layer for darwin (restore zero-copy).** `fdpass`:
-`SCM_RIGHTS` works on macOS — port `fdpass_linux.zig` to `std.c`/posix
-`sendmsg`/`recvmsg` (no `std.os.linux`). `shm`: `shm_open` + `shm_unlink`
-+ `mmap` (no memfd, no `MAP_POPULATE`, no huge pages — keep `huge` false and
-the notice silent). `sockpath`: `sun_path` is 104 bytes and there is no
-`/proc/self/fd`; keep the rejection path, or rebase via `fchdir`-free
-tricks only if a real need appears. `stats`: `getrusage` + `task_info`.
-Keep the decl-parity test honest (`platform.zig`). Done: `sketches/stress.zig`
-in shared mode reports `mapped_bytes=480960480` and the client-side send
-time collapses as it did on Linux (§DESIGN "Copies on the path").
+**Step 2 — platform layer for darwin (restore zero-copy).** ✅ (2026-08-24)
+`sketches/stress.zig` in shared mode reports `mapped_bytes=480960480`, the
+figure the Linux smoke pins, and send collapses from 348.3 ms to 3.8 ms over
+the 40 steps (92×; viewer apply 62.7 → 6.6 ms; 517 MB → 36 MB through the
+socket). Test skips went 3 → 1: only the `/proc`-rebasing sockpath test is
+left, and the live socket round-trip now asserts the zero-copy flag *here*
+because of the ratchet added in Step 0.
+
+Two things not to copy blindly from the Linux files if you touch them:
+
+- `fdpass_darwin.zig` is not a transliteration. `CMSG_ALIGN` is
+  `__DARWIN_ALIGN32` — 4 bytes, not `sizeof(size_t)` — and `cmsghdr` is 12
+  bytes not 16, so Linux's cmsg arithmetic computes wrong lengths *silently*.
+  There is no `MSG_NOSIGNAL` (set `SO_NOSIGPIPE` on the socket) and no
+  `MSG_CMSG_CLOEXEC` (mark each received fd). `std.c` declares `recvmsg` but
+  does not export it, so the module declares its own extern.
+- `shm_darwin.zig` names each object, then `shm_unlink`s it immediately so
+  the descriptor is its only reference — otherwise a crash leaves objects in
+  a global namespace. `O_EXCL` makes a name collision a retry.
+
+`stats`: `getrusage` was enough; `task_info` is not needed, because `stats`
+only exposes minor faults and hugetlb KiB. `sockpath` keeps the rejection
+path (`sockpath_unsupported`, 103 bytes) — no `/proc` to rebase on and no
+demand for it yet. Huge pages are now the comptime `shm.huge_supported`
+rather than something inferred, because the viewer, the client and the
+stress sketch were all advertising `huge=on` on a platform that has no
+huge-page class.
 
 **Step 3 — picking: superseded, and deliberately last.** Do *not* write a
 Metal readback. Decided 2026-08-24 (rationale in DESIGN.md, "Picking,
