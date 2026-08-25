@@ -9,12 +9,12 @@ const noise_seed: u64 = 0x5eed_5eed;
 const smoothing_lambda: f32 = 0.5;
 const smoothing_steps: u32 = 60;
 
-const Positions = vertex.layout.Positions;
+const Positions = vertex.Positions;
 
 /// Owned smoothing state. `deinit` releases every allocation through the same
 /// allocator that `init` received; position access is layout-independent.
 pub const State = struct {
-    sphere: vertex.fixtures.current.Mesh,
+    sphere: vertex.shapes.Mesh,
     next_positions: Positions.Mut,
     edges: std.ArrayList([2]u32),
     neighbor_offsets: []u32,
@@ -26,7 +26,7 @@ pub const State = struct {
 /// Allocates the noisy mesh, unique edges, one flat CSR adjacency, scratch
 /// positions, and scalar storage, then registers the initial frame.
 pub fn init(gpa: std.mem.Allocator, session: *vertex.Session) !State {
-    var sphere = try vertex.fixtures.current.icosphere(gpa, subdivisions, sphere_radius);
+    var sphere = try vertex.shapes.icosphere(gpa, subdivisions, sphere_radius);
     errdefer sphere.deinit(gpa);
 
     var prng = std.Random.DefaultPrng.init(noise_seed);
@@ -39,7 +39,7 @@ pub fn init(gpa: std.mem.Allocator, session: *vertex.Session) !State {
 
     var edges: std.ArrayList([2]u32) = .empty;
     errdefer edges.deinit(gpa);
-    try vertex.geometry.current.uniqueEdges(gpa, sphere.faces, &edges);
+    try vertex.shapes.uniqueEdges(gpa, sphere.faces, &edges);
 
     const vertex_count = sphere.positions.len();
     const counts = try gpa.alloc(u32, vertex_count);
@@ -96,7 +96,7 @@ pub fn step(state: *State, _: std.mem.Allocator, session: *vertex.Session) !bool
         const begin = state.neighbor_offsets[vertex_index];
         const end = state.neighbor_offsets[vertex_index + 1];
         std.debug.assert(begin < end);
-        var sum = vertex.layout.Vec3.zero;
+        var sum = vertex.Vec3.zero;
         for (state.neighbors[begin..end]) |neighbor| {
             sum = sum.add(state.sphere.positions.get(neighbor));
         }

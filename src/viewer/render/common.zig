@@ -3,12 +3,12 @@ const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;
 
-const BlobIndex = vertex.scene.BlobIndex;
-const Colormap = vertex.colormap.Colormap;
-const Positions = vertex.layout.Positions;
-const QuantityRef = vertex.scene.QuantityRef;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
+const BlobIndex = vertex.internal.scene.BlobIndex;
+const Colormap = vertex.internal.colormap.Colormap;
+const Positions = vertex.internal.layout.Positions;
+const QuantityRef = vertex.internal.scene.QuantityRef;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
 
 /// Resource kind used when lazily mirroring a scene blob into a GPU buffer.
 pub const BufferKind = enum { vertex, index, storage };
@@ -16,7 +16,7 @@ pub const BufferKind = enum { vertex, index, storage };
 /// Configures build-selected position attributes on `desc`. Position data is
 /// borrowed, no allocation occurs, and `instanced` selects the input step rate.
 pub fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             desc.layout.buffers[0] = .{
                 .stride = @intCast(Positions.stride),
@@ -41,7 +41,7 @@ pub fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
 /// Binds one borrowed build-selected position buffer and its planar offsets.
 /// The binding is updated in place without allocation or ownership transfer.
 pub fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => bindings.vertex_buffers[0] = buffer,
         .soa => {
             const component_bytes = @as(u64, count) * @sizeOf(f32);
@@ -55,7 +55,7 @@ pub fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void
 
 /// Returns the build-selected scalar texture-view slot without allocation.
 pub fn scalarViewSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
-    return switch (vertex.layout.layout) {
+    return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => aos_shader.VIEW_cmap_tex,
         .soa => soa_shader.VIEW_cmap_tex,
     };
@@ -63,7 +63,7 @@ pub fn scalarViewSlot(comptime aos_shader: type, comptime soa_shader: type) usiz
 
 /// Returns the build-selected scalar sampler slot without allocation.
 pub fn scalarSamplerSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
-    return switch (vertex.layout.layout) {
+    return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => aos_shader.SMP_cmap_smp,
         .soa => soa_shader.SMP_cmap_smp,
     };
@@ -243,7 +243,7 @@ pub const Gpu = struct {
     /// may allocate through the retained allocator; returned values own no memory.
     pub fn scalarRange(self: *Gpu, scene: *const Scene, blob_index: BlobIndex) std.mem.Allocator.Error![2]f32 {
         if (self.ranges.get(blob_index)) |cached| return cached;
-        const result = vertex.colormap.range(scalarValues(scene, blob_index));
+        const result = vertex.internal.colormap.range(scalarValues(scene, blob_index));
         try self.ranges.put(self.gpa, blob_index, result);
         return result;
     }
@@ -253,7 +253,7 @@ pub const Gpu = struct {
     pub fn colormapView(self: *Gpu, cm: Colormap) sg.View {
         const i: usize = @backingInt(cm);
         if (self.colormaps[i]) |entry| return entry.view;
-        const pixels = vertex.colormap.table(cm);
+        const pixels = vertex.internal.colormap.table(cm);
         const image = sg.makeImage(.{
             .width = 256,
             .height = 1,
@@ -302,7 +302,7 @@ pub const Gpu = struct {
 pub fn activeQuantity(
     scene: *const Scene,
     structure_index: StructureIndex,
-    version: vertex.scene.Version,
+    version: vertex.internal.scene.Version,
 ) ?QuantityRef {
     const structures = scene.structures.slice();
     const active = structures.items(.ui)[indexOf(structure_index)].active_quantity;

@@ -174,6 +174,18 @@ pub fn build(b: *Build) !void {
         shaders_step.dependOn(&fmt.step);
     };
 
+    // ---- docs: zig's autodoc for the `vertex` module ----
+    // The two api/ modules are written to be read as source, but the same doc
+    // comments render as a browsable site; `zig build docs` then open
+    // zig-out/docs/index.html.
+    const docs_obj = b.addObject(.{ .name = "vertex", .root_module = mod_vertex });
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+    b.step("docs", "Emit HTML documentation to zig-out/docs").dependOn(&install_docs.step);
+
     // ---- check: compile everything without installing (for zls) ----
     const check_step = b.step("check", "Type-check all artifacts without installing");
     check_step.dependOn(&viewer.step);

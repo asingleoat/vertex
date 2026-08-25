@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     var conn = try vertex.connect(init, .{ .name = "stress" });
     defer conn.close();
 
-    var grid = try vertex.fixtures.current.grid(init.gpa, 1000, 1000, 2.0);
+    var grid = try vertex.shapes.grid(init.gpa, 1000, 1000, 2.0);
     defer grid.deinit(init.gpa);
     try conn.mesh("grid", grid.positions.toConst(), grid.faces, .{});
     const shared_mode = if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_STRESS_SHARED")) |value|
@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
         false;
     // Mirrors the connection's resolution: off where the platform has no
     // huge-page class, otherwise absent means on (with fallback).
-    const huge_pages = vertex.platform.shm.huge_supported and
+    const huge_pages = vertex.internal.platform.shm.huge_supported and
         if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_SHARED_HUGE")) |value|
             !std.mem.eql(u8, value, "0")
         else
@@ -27,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
     var send_ns: i96 = 0;
     var prep_ns: i96 = 0; // buffer acquisition (memfd + populate in shared mode) + fill
     var step_index: u32 = 0;
-    const minflt_start = vertex.platform.stats.minorFaults();
+    const minflt_start = vertex.internal.platform.stats.minorFaults();
     while (step_index < step_count) : (step_index += 1) {
         const phase = @as(f32, @floatFromInt(step_index)) * (2.0 * std.math.pi / @as(f32, @floatFromInt(step_count)));
         const prep_started = std.Io.Clock.awake.now(init.io);
@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
     const sent_bytes = @as(u64, grid.positions.toConst().bytes().len) * step_count;
     const seconds = @as(f64, @floatFromInt(@max(send_ns, 1))) / 1_000_000_000.0;
     const mib = @as(f64, @floatFromInt(sent_bytes)) / (1024.0 * 1024.0);
-    const minflt = vertex.platform.stats.minorFaults() -| minflt_start;
+    const minflt = vertex.internal.platform.stats.minorFaults() -| minflt_start;
     std.debug.print(
         "vertex-stress: mode={s} mesh_positions steps={d} prep_ms={d:.1} send_ms={d:.1} send_throughput={d:.1} MB/s minflt={d} hugetlb_kb={d} huge={s} huge_regions={d}\n",
         .{
@@ -64,7 +64,7 @@ pub fn main(init: std.process.Init) !void {
             seconds * 1000.0,
             mib / seconds,
             minflt,
-            vertex.platform.stats.hugetlbKb(),
+            vertex.internal.platform.stats.hugetlbKb(),
             if (huge_pages) "on" else "off",
             conn.sharedHugeRegions(),
         },

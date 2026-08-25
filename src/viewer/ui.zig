@@ -5,10 +5,10 @@ const ig = @import("cimgui");
 
 const pick = @import("pick.zig");
 const stepper_mod = @import("stepper.zig");
-const Mat4 = vertex.camera.Mat4;
-const Positions = vertex.layout.Positions;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
+const Mat4 = vertex.internal.camera.Mat4;
+const Positions = vertex.internal.layout.Positions;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
 
 /// Camera mode selected by UI and keyboard controls. The value owns no memory.
 pub const CameraMode = enum { orbit, ortho_2d };
@@ -163,7 +163,7 @@ fn drawStructures(
             var vertex_count: u32 = 0;
             var face_count: usize = 0;
             var segment_count: usize = 0;
-            var displayed_version: ?vertex.scene.Version = null;
+            var displayed_version: ?vertex.internal.scene.Version = null;
             if (scene.versionAt(structure_index, scrub)) |version_index| {
                 const version = version_list.items[version_index];
                 displayed_version = version;
@@ -223,11 +223,11 @@ fn drawStructures(
 fn drawQuantityControls(
     scene: *const Scene,
     structure_index: StructureIndex,
-    version: vertex.scene.Version,
-    ui_state: *vertex.scene.UiState,
+    version: vertex.internal.scene.Version,
+    ui_state: *vertex.internal.scene.UiState,
 ) void {
     const quantities = scene.quantities(structure_index, version);
-    var active: ?vertex.scene.QuantityRef = null;
+    var active: ?vertex.internal.scene.QuantityRef = null;
     for (quantities) |quantity| {
         if (quantity.name == ui_state.active_quantity) {
             active = quantity;
@@ -267,7 +267,7 @@ fn drawQuantityControls(
     ig.igBeginDisabled(!scalar_active);
     const colormap_names = [_][*:0]const u8{ "viridis", "turbo", "coolwarm", "plasma" };
     if (ig.igBeginCombo("Colormap", colormap_names[@backingInt(ui_state.colormap)], ig.ImGuiComboFlags_None)) {
-        inline for (std.enums.values(vertex.colormap.Colormap), 0..) |cm, cm_i| {
+        inline for (std.enums.values(vertex.internal.colormap.Colormap), 0..) |cm, cm_i| {
             const selected = cm == ui_state.colormap;
             if (ig.igSelectableEx(
                 colormap_names[cm_i],
@@ -284,7 +284,7 @@ fn drawQuantityControls(
     if (active) |quantity| switch (quantity.kind) {
         .scalar => {
             const values = std.mem.bytesAsSlice(f32, scene.blobBytes(quantity.blob));
-            const value_range = vertex.colormap.range(values);
+            const value_range = vertex.internal.colormap.range(values);
             var buffer: [128]u8 = undefined;
             const readout = std.fmt.bufPrint(
                 &buffer,
@@ -306,7 +306,7 @@ fn drawQuantityControls(
 
 fn quantityLabel(
     scene: *const Scene,
-    quantity: vertex.scene.QuantityRef,
+    quantity: vertex.internal.scene.QuantityRef,
     buffer: *[320]u8,
 ) [:0]const u8 {
     const name = scene.string(quantity.name);
@@ -439,7 +439,7 @@ fn drawHitDetails(
 fn quantityValueIndex(
     hit: pick.Hit,
     nearest: ?u32,
-    quantity: vertex.scene.QuantityRef,
+    quantity: vertex.internal.scene.QuantityRef,
 ) ?u32 {
     return switch (hit.kind) {
         .face => switch (quantity.target) {

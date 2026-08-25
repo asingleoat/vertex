@@ -3,7 +3,7 @@ const std = @import("std");
 const vertex = @import("vertex");
 const harness = @import("lib/harness.zig");
 
-const Vec3 = vertex.layout.Vec3;
+const Vec3 = vertex.Vec3;
 const all_layouts = [_]vertex.layout.Layout{ .aos3, .aos4, .soa };
 
 /// Runs every geometry kernel over roughly 1K, 100K, and 1M vertices.

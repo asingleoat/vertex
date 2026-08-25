@@ -13,9 +13,9 @@ const scalar_shader = @import("../shaders/mesh_scalar.zig");
 const scalar_soa_shader = @import("../shaders/mesh_scalar_soa.zig");
 const face_scalar_shader = @import("../shaders/mesh_face_scalar.zig");
 const face_scalar_soa_shader = @import("../shaders/mesh_face_scalar_soa.zig");
-const Mat4 = vertex.camera.Mat4;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
+const Mat4 = vertex.internal.camera.Mat4;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
 
 /// Owns all M2 renderer modules plus the sole per-BlobIndex GPU mirror. CPU
 /// allocations use the allocator supplied to `init`.
@@ -35,11 +35,11 @@ pub const Renderer = struct {
     /// Creates every immutable renderer pipeline. The returned renderer owns
     /// all Sokol handles and must be released before `sg.shutdown`.
     pub fn init(gpa: std.mem.Allocator) Renderer {
-        const shader = sg.makeShader(switch (vertex.layout.layout) {
+        const shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => mesh_shader.meshShaderDesc(sg.queryBackend()),
             .soa => mesh_soa_shader.meshSoaShaderDesc(sg.queryBackend()),
         });
-        const scalar = sg.makeShader(switch (vertex.layout.layout) {
+        const scalar = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => scalar_shader.meshScalarShaderDesc(sg.queryBackend()),
             .soa => scalar_soa_shader.meshScalarSoaShaderDesc(sg.queryBackend()),
         });
@@ -48,7 +48,7 @@ pub const Renderer = struct {
         // (see build.zig's `isGlOnlyShader`). Ask the generated artifact rather
         // than naming a backend: regenerate with a shdc that can emit it and
         // the feature turns itself back on.
-        const face_scalar_shader_desc = switch (vertex.layout.layout) {
+        const face_scalar_shader_desc = switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => face_scalar_shader.meshFaceScalarShaderDesc(sg.queryBackend()),
             .soa => face_scalar_soa_shader.meshFaceScalarSoaShaderDesc(sg.queryBackend()),
         };
@@ -64,13 +64,13 @@ pub const Renderer = struct {
         common.configurePositions(&mesh_desc, false);
         common.configurePositions(&scalar_desc, false);
         common.configurePositions(&face_scalar_desc, false);
-        const value_buffer = switch (vertex.layout.layout) {
+        const value_buffer = switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => 1,
             .soa => 3,
         };
         scalar_desc.layout.buffers[value_buffer].stride = @sizeOf(f32);
         scalar_desc.layout.attrs[
-            switch (vertex.layout.layout) {
+            switch (vertex.internal.layout.layout) {
                 .aos3, .aos4 => scalar_shader.ATTR_mesh_scalar_value,
                 .soa => scalar_soa_shader.ATTR_mesh_scalar_soa_value,
             }
@@ -163,7 +163,7 @@ pub const Renderer = struct {
             false;
         if (use_vertex_scalar) {
             const quantity = active.?;
-            const value_buffer = switch (vertex.layout.layout) {
+            const value_buffer = switch (vertex.internal.layout.layout) {
                 .aos3, .aos4 => 1,
                 .soa => 3,
             };
@@ -273,7 +273,7 @@ fn baseMeshPipeline(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
 }
 
 fn applyPlainUniforms(vp: Mat4, color: [4]f32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: mesh_shader.VsParams = .{ .mvp = vp.m, .model = Mat4.identity.m };
             const fs: mesh_shader.FsParams = .{ .color = color, .light_dir = .{ 0.4, 0.8, 0.6, 0 } };
@@ -290,7 +290,7 @@ fn applyPlainUniforms(vp: Mat4, color: [4]f32) void {
 }
 
 fn applyScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: scalar_shader.VsParams = .{ .mvp = vp.m, .model = Mat4.identity.m };
             const fs: scalar_shader.FsParams = .{
@@ -315,7 +315,7 @@ fn applyScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
 }
 
 fn applyFaceScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: face_scalar_shader.VsParams = .{ .mvp = vp.m, .model = Mat4.identity.m };
             const fs: face_scalar_shader.FsParams = .{
@@ -340,21 +340,21 @@ fn applyFaceScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
 }
 
 fn faceScalarStorageSlot() usize {
-    return switch (vertex.layout.layout) {
+    return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => face_scalar_shader.VIEW_face_values,
         .soa => face_scalar_soa_shader.VIEW_face_values,
     };
 }
 
 fn faceScalarViewSlot() usize {
-    return switch (vertex.layout.layout) {
+    return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => face_scalar_shader.VIEW_cmap_tex,
         .soa => face_scalar_soa_shader.VIEW_cmap_tex,
     };
 }
 
 fn faceScalarSamplerSlot() usize {
-    return switch (vertex.layout.layout) {
+    return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => face_scalar_shader.SMP_cmap_smp,
         .soa => face_scalar_soa_shader.SMP_cmap_smp,
     };

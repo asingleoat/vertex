@@ -7,9 +7,9 @@ pub fn main(init: std.process.Init) !void {
     var conn = try vertex.connect(init, .{ .name = "churn" });
     defer conn.close();
 
-    var grid = try vertex.fixtures.current.grid(init.gpa, 20, 20, 2.0);
+    var grid = try vertex.shapes.grid(init.gpa, 20, 20, 2.0);
     defer grid.deinit(init.gpa);
-    const update = try vertex.layout.Positions.alloc(init.gpa, grid.positions.len());
+    const update = try vertex.Positions.alloc(init.gpa, grid.positions.len());
     defer update.free(init.gpa);
     const values = try init.gpa.alloc(f32, grid.positions.len());
     defer init.gpa.free(values);

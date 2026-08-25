@@ -5,11 +5,11 @@ const sg = @import("sokol").gfx;
 
 const common = @import("common.zig");
 const line_shader = @import("../shaders/lines.zig");
-const BlobIndex = vertex.scene.BlobIndex;
-const Mat4 = vertex.camera.Mat4;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
-const Vec3 = vertex.layout.Vec3;
+const BlobIndex = vertex.internal.scene.BlobIndex;
+const Mat4 = vertex.internal.camera.Mat4;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
+const Vec3 = vertex.internal.layout.Vec3;
 
 const Key = struct {
     positions: BlobIndex,
@@ -161,7 +161,7 @@ pub const Renderer = struct {
         self.* = undefined;
     }
 
-    fn lineEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.scene.Version) std.mem.Allocator.Error!?Entry {
+    fn lineEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.internal.scene.Version) std.mem.Allocator.Error!?Entry {
         if (self.line_cache.getPtr(key)) |entry| {
             entry.last_used = self.frame;
             return entry.*;
@@ -182,12 +182,12 @@ pub const Renderer = struct {
         return entry;
     }
 
-    fn wireEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.scene.Version) std.mem.Allocator.Error!?Entry {
+    fn wireEntry(self: *Renderer, scene: *const Scene, key: Key, version: vertex.internal.scene.Version) std.mem.Allocator.Error!?Entry {
         if (self.wire_cache.getPtr(key)) |entry| {
             entry.last_used = self.frame;
             return entry.*;
         }
-        try vertex.geometry.current.uniqueEdges(self.gpa, scene.facesOf(version), &self.scratch_edges);
+        try vertex.internal.geometry.current.uniqueEdges(self.gpa, scene.facesOf(version), &self.scratch_edges);
         if (self.scratch_edges.items.len == 0) return null;
         const positions = scene.positionsOf(version);
         const instances = try self.gpa.alloc(Instance, self.scratch_edges.items.len);

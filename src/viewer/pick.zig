@@ -21,10 +21,10 @@ const pick_mesh_shader = @import("shaders/pick_mesh.zig");
 const pick_mesh_soa_shader = @import("shaders/pick_mesh_soa.zig");
 const pick_points_shader = @import("shaders/pick_points.zig");
 const pick_points_soa_shader = @import("shaders/pick_points_soa.zig");
-const Mat4 = vertex.camera.Mat4;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
-const Vec3 = vertex.layout.Vec3;
+const Mat4 = vertex.internal.camera.Mat4;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
+const Vec3 = vertex.internal.layout.Vec3;
 
 // Derived endpoint instances are the documented layout-independent f32x6
 // exception and match render/lines.zig exactly.
@@ -118,11 +118,11 @@ const GlPicker = struct {
     /// Creates GL 4.3 integer-output pipelines without CPU allocation. The
     /// returned owner must be destroyed before `sg.shutdown`.
     pub fn init() GlPicker {
-        const mesh_shader = sg.makeShader(switch (vertex.layout.layout) {
+        const mesh_shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => pick_mesh_shader.pickMeshShaderDesc(sg.queryBackend()),
             .soa => pick_mesh_soa_shader.pickMeshSoaShaderDesc(sg.queryBackend()),
         });
-        const points_shader = sg.makeShader(switch (vertex.layout.layout) {
+        const points_shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => pick_points_shader.pickPointsShaderDesc(sg.queryBackend()),
             .soa => pick_points_soa_shader.pickPointsSoaShaderDesc(sg.queryBackend()),
         });
@@ -395,7 +395,7 @@ fn pickPipelineDesc(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
 }
 
 fn applyMeshUniforms(vp: Mat4, structure_id: i32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: pick_mesh_shader.VsParams = .{ .mvp = vp.m };
             const fs: pick_mesh_shader.FsParams = .{ .structure_id = structure_id };
@@ -412,7 +412,7 @@ fn applyMeshUniforms(vp: Mat4, structure_id: i32) void {
 }
 
 fn applyPointUniforms(vp: Mat4, viewport: [2]i32, point_size: f32, structure_id: i32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: pick_points_shader.VsParams = .{
                 .mvp = vp.m,
@@ -473,6 +473,6 @@ fn decode(scene: *const Scene, scrub: u32, encoded: [2]u32) ?Hit {
 }
 
 comptime {
-    std.debug.assert(@sizeOf(vertex.layout.Vec3) == 12);
+    std.debug.assert(@sizeOf(vertex.internal.layout.Vec3) == 12);
     std.debug.assert(@sizeOf(LineInstance) == 24);
 }

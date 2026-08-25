@@ -5,12 +5,12 @@ const sg = @import("sokol").gfx;
 
 const common = @import("common.zig");
 const vector_shader = @import("../shaders/vectors.zig");
-const BlobIndex = vertex.scene.BlobIndex;
-const Mat4 = vertex.camera.Mat4;
-const Positions = vertex.layout.Positions;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
-const Vec3 = vertex.layout.Vec3;
+const BlobIndex = vertex.internal.scene.BlobIndex;
+const Mat4 = vertex.internal.camera.Mat4;
+const Positions = vertex.internal.layout.Positions;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
+const Vec3 = vertex.internal.layout.Vec3;
 
 const Key = struct {
     positions: BlobIndex,
@@ -125,7 +125,7 @@ pub const Renderer = struct {
 
         const key: Key = .{ .positions = version.positions, .vectors = quantity.blob };
         const entry = try self.entryFor(scene, key, positions) orelse return;
-        const bounds = vertex.geometry.current.bounds(positions);
+        const bounds = vertex.internal.geometry.current.bounds(positions);
         if (bounds.isEmpty()) return;
         // A stable scene-scale heuristic: the UI multiplier scales 15% of the
         // bounds radius, divided by the cube root of the sample count.

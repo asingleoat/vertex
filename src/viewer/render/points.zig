@@ -8,9 +8,9 @@ const points_shader = @import("../shaders/points.zig");
 const points_soa_shader = @import("../shaders/points_soa.zig");
 const scalar_shader = @import("../shaders/points_scalar.zig");
 const scalar_soa_shader = @import("../shaders/points_scalar_soa.zig");
-const Mat4 = vertex.camera.Mat4;
-const Scene = vertex.scene.Scene;
-const StructureIndex = vertex.scene.StructureIndex;
+const Mat4 = vertex.internal.camera.Mat4;
+const Scene = vertex.internal.scene.Scene;
+const StructureIndex = vertex.internal.scene.StructureIndex;
 
 /// Owns point shader and pipeline handles. Position and scalar buffers remain
 /// owned by the shared per-blob GPU mirror supplied to `draw`.
@@ -23,11 +23,11 @@ pub const Renderer = struct {
     /// Creates immutable point pipelines without CPU allocation. The result
     /// owns its Sokol handles until `deinit`.
     pub fn init() Renderer {
-        const shader = sg.makeShader(switch (vertex.layout.layout) {
+        const shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => points_shader.pointsShaderDesc(sg.queryBackend()),
             .soa => points_soa_shader.pointsSoaShaderDesc(sg.queryBackend()),
         });
-        const scalar = sg.makeShader(switch (vertex.layout.layout) {
+        const scalar = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => scalar_shader.pointsScalarShaderDesc(sg.queryBackend()),
             .soa => scalar_soa_shader.pointsScalarSoaShaderDesc(sg.queryBackend()),
         });
@@ -35,7 +35,7 @@ pub const Renderer = struct {
         var scalar_desc = basePipeline(scalar, "vertex scalar points pipeline");
         common.configurePositions(&plain_desc, true);
         common.configurePositions(&scalar_desc, true);
-        const value_buffer = switch (vertex.layout.layout) {
+        const value_buffer = switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => 1,
             .soa => 3,
         };
@@ -44,7 +44,7 @@ pub const Renderer = struct {
             .step_func = .PER_INSTANCE,
         };
         scalar_desc.layout.attrs[
-            switch (vertex.layout.layout) {
+            switch (vertex.internal.layout.layout) {
                 .aos3, .aos4 => scalar_shader.ATTR_points_scalar_value,
                 .soa => scalar_soa_shader.ATTR_points_scalar_soa_value,
             }
@@ -90,7 +90,7 @@ pub const Renderer = struct {
             false;
         if (scalar) {
             const quantity = active.?;
-            const value_buffer = switch (vertex.layout.layout) {
+            const value_buffer = switch (vertex.internal.layout.layout) {
                 .aos3, .aos4 => 1,
                 .soa => 3,
             };
@@ -129,7 +129,7 @@ fn basePipeline(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
 }
 
 fn applyPlainUniforms(vp: Mat4, viewport: [2]f32, point_size: f32, color: [4]f32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const params: points_shader.VsParams = vsParams(points_shader.VsParams, vp, viewport, point_size, color);
             sg.applyUniforms(points_shader.UB_vs_params, .{ .ptr = &params, .size = @sizeOf(points_shader.VsParams) });
@@ -142,7 +142,7 @@ fn applyPlainUniforms(vp: Mat4, viewport: [2]f32, point_size: f32, color: [4]f32
 }
 
 fn applyScalarUniforms(vp: Mat4, viewport: [2]f32, point_size: f32, color: [4]f32, value_range: [2]f32) void {
-    switch (vertex.layout.layout) {
+    switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
             const vs: scalar_shader.VsParams = vsParams(scalar_shader.VsParams, vp, viewport, point_size, color);
             const fs: scalar_shader.FsParams = .{ .value_range = value_range };

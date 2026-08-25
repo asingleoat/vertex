@@ -18,9 +18,9 @@ const sg = sokol.gfx;
 const sglue = sokol.glue;
 const simgui = sokol.imgui;
 const slog = sokol.log;
-const Scene = vertex.scene.Scene;
+const Scene = vertex.internal.scene.Scene;
 const mebibyte: usize = 1024 * 1024;
-const default_retention: vertex.scene.Retention = .{};
+const default_retention: vertex.internal.scene.Retention = .{};
 
 const Probe = struct {
     pixel: [2]u32,
@@ -66,8 +66,8 @@ var state: State = undefined;
 pub fn main(init: std.process.Init) !void {
     state = .{ .gpa = init.gpa, .io = init.io, .environ = init.minimal.environ };
     configureEnvironment(init.minimal.environ);
-    if (state.huge_pages and !vertex.platform.shm.hugePagesConfigured()) {
-        vertex.platform.shm.warnIfHugeUnavailable("viewer startup");
+    if (state.huge_pages and !vertex.internal.platform.shm.hugePagesConfigured()) {
+        vertex.internal.platform.shm.warnIfHugeUnavailable("viewer startup");
     }
     sapp.run(.{
         .init_cb = initCallback,
@@ -111,7 +111,7 @@ fn configureEnvironment(environ: std.process.Environ) void {
     // A preference about how shared mappings are backed. Where no huge-page
     // class exists — or no shared memory at all — report and carry `off`
     // rather than advertising a setting this platform could never honour.
-    if (!vertex.platform.shm.huge_supported) state.huge_pages = false;
+    if (!vertex.internal.platform.shm.huge_supported) state.huge_pages = false;
     if (std.process.Environ.getPosix(environ, "VERTEX_STEP_LIB")) |value| {
         state.report_stepper = value.len != 0;
     }
@@ -318,7 +318,7 @@ fn cleanupCallback() callconv(.c) void {
 }
 
 fn printExitStats() void {
-    const exit_minflt = vertex.platform.stats.minorFaults();
+    const exit_minflt = vertex.internal.platform.stats.minorFaults();
     std.debug.print("vertex-view: structures={d} frames={d} blobs={d}\n", .{
         state.scene.structures.len,
         state.scene.frameCount(),
@@ -332,9 +332,9 @@ fn printExitStats() void {
             state.ingest.mapped_bytes,
             @as(f64, @floatFromInt(state.ingest.apply_ns)) / 1_000_000.0,
             exit_minflt -| (state.server.firstIngestMinorFaults() orelse exit_minflt),
-            vertex.platform.stats.hugetlbKb(),
+            vertex.internal.platform.stats.hugetlbKb(),
             if (state.huge_pages) "on" else "off",
-            vertex.platform.shm.hugePagesAvailable(),
+            vertex.internal.platform.shm.hugePagesAvailable(),
             state.server.hugeMappingsReceived(),
         },
     );

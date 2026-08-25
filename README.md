@@ -13,7 +13,7 @@ zig build run-sketch --watch -Dsketch=NAME      # terminal 2 — rebuild + rerun
 ```zig
 const std = @import("std");
 const vertex = @import("vertex");
-const Positions = vertex.layout.Positions;
+const Positions = vertex.Positions;
 
 pub fn main(init: std.process.Init) !void {
     var vx = try vertex.connect(init, .{ .name = "example" });

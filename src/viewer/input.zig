@@ -6,8 +6,8 @@ const ig = @import("cimgui");
 const pick = @import("pick.zig");
 const ui = @import("ui.zig");
 const sapp = sokol.app;
-const Aabb = vertex.geometry.current.Aabb;
-const Scene = vertex.scene.Scene;
+const Aabb = vertex.internal.geometry.current.Aabb;
+const Scene = vertex.internal.scene.Scene;
 
 /// Owns camera and pointer interaction state while borrowing scene/timeline
 /// controls at stable addresses. Construction and event handling allocate nothing.
@@ -15,8 +15,8 @@ pub const Input = struct {
     scene: *const Scene,
     scrub: *u32,
     follow_latest: *bool,
-    orbit: vertex.camera.Orbit = .default,
-    ortho: vertex.camera.Ortho2D = .{},
+    orbit: vertex.internal.camera.Orbit = .default,
+    ortho: vertex.internal.camera.Ortho2D = .{},
     camera_mode: ui.CameraMode = .orbit,
     fitted_once: bool = false,
     frame0_fitted: bool = false,
@@ -76,7 +76,7 @@ pub const Input = struct {
     }
 
     /// Computes the active camera view-projection matrix without allocation.
-    pub fn viewProj(self: *const Input, aspect: f32) vertex.camera.Mat4 {
+    pub fn viewProj(self: *const Input, aspect: f32) vertex.internal.camera.Mat4 {
         return switch (self.camera_mode) {
             .orbit => self.orbit.viewProj(aspect),
             .ortho_2d => self.ortho.viewProj(aspect),
@@ -126,10 +126,10 @@ pub const Input = struct {
         const ui_states = structures.items(.ui);
         for (ui_states, 0..) |ui_state, i| {
             if (!ui_state.visible) continue;
-            const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+            const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
             const version_index = self.scene.versionAt(structure_index, self.scrub.*) orelse continue;
             const versions = structures.items(.versions)[i].items;
-            const bounds = vertex.geometry.current.bounds(self.scene.positionsOf(versions[version_index]));
+            const bounds = vertex.internal.geometry.current.bounds(self.scene.positionsOf(versions[version_index]));
             if (bounds.isEmpty()) continue;
             result.min = result.min.min(bounds.min);
             result.max = result.max.max(bounds.max);

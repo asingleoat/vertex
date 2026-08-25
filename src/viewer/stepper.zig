@@ -7,7 +7,7 @@ const builtin = @import("builtin");
 const vertex = @import("vertex");
 const server = @import("server.zig");
 
-const protocol = vertex.protocol;
+const protocol = vertex.internal.protocol;
 const dylib = vertex.dylib;
 const max_path_bytes = std.Io.Dir.max_path_bytes;
 const mailbox_capacity = 16;
@@ -587,7 +587,7 @@ pub const Stepper = struct {
 
     fn pushLog(self: *Stepper, level: protocol.LogLevel, message: []const u8) void {
         var encoded: protocol.Encoded = undefined;
-        vertex.client.encodeMessage(&encoded, .{ .log = .{ .level = level, .text = message } });
+        vertex.internal.session.encodeMessage(&encoded, .{ .log = .{ .level = level, .text = message } });
         const slices = encoded.slices();
         if (enqueueSlices(self, slices) != 0) {
             std.log.warn("could not enqueue stepper log: {s}", .{message});
@@ -662,7 +662,7 @@ test "host send copies one inline frame into the shared inbox" {
     };
 
     var encoded: protocol.Encoded = undefined;
-    vertex.client.encodeMessage(&encoded, .{ .log = .{ .level = .info, .text = "worker" } });
+    vertex.internal.session.encodeMessage(&encoded, .{ .log = .{ .level = .info, .text = "worker" } });
     const slices = encoded.slices();
     var parts: [protocol.max_parts]dylib.Part = undefined;
     for (slices, parts[0..slices.len]) |slice, *part| {

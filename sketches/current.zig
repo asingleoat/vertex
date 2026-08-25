@@ -7,24 +7,24 @@ pub fn main(init: std.process.Init) !void {
     var conn = try vertex.connect(init, .{ .name = "current" });
     defer conn.close();
 
-    var sphere = try vertex.fixtures.current.icosphere(init.gpa, 3, 1.0);
+    var sphere = try vertex.shapes.icosphere(init.gpa, 3, 1.0);
     defer sphere.deinit(init.gpa);
-    const displaced = try vertex.layout.Positions.alloc(init.gpa, sphere.positions.len());
+    const displaced = try vertex.Positions.alloc(init.gpa, sphere.positions.len());
     defer displaced.free(init.gpa);
     const height = try init.gpa.alloc(f32, sphere.positions.len());
     defer init.gpa.free(height);
     const face_area = try init.gpa.alloc(f32, sphere.faces.len);
     defer init.gpa.free(face_area);
-    const normal_values = try init.gpa.alloc(vertex.layout.Vec3, sphere.positions.len());
+    const normal_values = try init.gpa.alloc(vertex.Vec3, sphere.positions.len());
     defer init.gpa.free(normal_values);
-    const normals = try vertex.layout.Positions.alloc(init.gpa, sphere.positions.len());
+    const normals = try vertex.Positions.alloc(init.gpa, sphere.positions.len());
     defer normals.free(init.gpa);
 
     var vertex_index: u32 = 0;
     while (vertex_index < sphere.positions.len()) : (vertex_index += 1) {
         height[vertex_index] = sphere.positions.z(vertex_index);
     }
-    vertex.geometry.current.vertexNormals(sphere.positions.toConst(), sphere.faces, normal_values);
+    vertex.shapes.vertexNormals(sphere.positions.toConst(), sphere.faces, normal_values);
     normals.setAll(normal_values);
     faceAreas(sphere.positions.toConst(), sphere.faces, face_area);
     try conn.mesh("sphere", sphere.positions.toConst(), sphere.faces, .{});
@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     try conn.scalar("sphere", "face_area", .face, face_area);
     try conn.vector("sphere", "normal", .vertex, normals.toConst());
 
-    const sites = try vertex.fixtures.current.randomPoints(init.gpa, 200, 0x5eed, 1.35);
+    const sites = try vertex.shapes.randomPoints(init.gpa, 200, 0x5eed, 1.35);
     defer sites.free(init.gpa);
     const site_distance = try init.gpa.alloc(f32, sites.len());
     defer init.gpa.free(site_distance);
@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
     try conn.scalar("sites", "dist", .point, site_distance);
 
     const path_vertex_count: u32 = 65;
-    const path = try vertex.layout.Positions.alloc(init.gpa, path_vertex_count);
+    const path = try vertex.Positions.alloc(init.gpa, path_vertex_count);
     defer path.free(init.gpa);
     const path_segments = try init.gpa.alloc([2]u32, path_vertex_count - 1);
     defer init.gpa.free(path_segments);
@@ -62,7 +62,7 @@ pub fn main(init: std.process.Init) !void {
 
     // A compact orientation frame keeps the smoke scene at the documented
     // four structures and makes 3D camera motion immediately legible.
-    const axes = try vertex.layout.Positions.alloc(init.gpa, 4);
+    const axes = try vertex.Positions.alloc(init.gpa, 4);
     defer axes.free(init.gpa);
     axes.setAll(&.{
         .zero,
@@ -82,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
             const radius = 1.0 + 0.15 * @sin(4.0 * theta + t);
             displaced.set(vertex_index, base.normalize().scale(radius));
         }
-        vertex.geometry.current.vertexNormals(displaced.toConst(), sphere.faces, normal_values);
+        vertex.shapes.vertexNormals(displaced.toConst(), sphere.faces, normal_values);
         normals.setAll(normal_values);
         faceAreas(displaced.toConst(), sphere.faces, face_area);
         try conn.meshPositions("sphere", displaced.toConst());
@@ -96,7 +96,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn faceAreas(
-    positions: vertex.layout.Positions.Const,
+    positions: vertex.Positions.Const,
     faces: []const [3]u32,
     areas: []f32,
 ) void {

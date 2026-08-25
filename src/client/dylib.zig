@@ -4,7 +4,7 @@
 //! socket-only `Connection` API; `Session` deliberately has no shared-buffer
 //! methods because it can target any sink.
 const std = @import("std");
-const client = @import("client.zig");
+const client = @import("session.zig");
 const protocol = @import("../protocol/protocol.zig");
 
 /// Self-consistency version for the stepping-library ABI. Bump this whenever

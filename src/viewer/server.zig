@@ -2,8 +2,8 @@
 const std = @import("std");
 const vertex = @import("vertex");
 
-const protocol = vertex.protocol;
-const platform = vertex.platform;
+const protocol = vertex.internal.protocol;
+const platform = vertex.internal.platform;
 
 const InboxItem = struct {
     header: protocol.Header,
@@ -94,7 +94,7 @@ pub const Inbox = struct {
 
 /// Errors which can occur while resolving, cleaning, binding, or spawning the
 /// listener. No error owns memory.
-pub const StartError = vertex.platform.sockpath.Error || std.Io.net.UnixAddress.InitError ||
+pub const StartError = vertex.internal.platform.sockpath.Error || std.Io.net.UnixAddress.InitError ||
     std.Io.net.UnixAddress.ListenError ||
     std.Io.Dir.DeleteFileError ||
     std.Thread.SpawnError;
@@ -127,14 +127,14 @@ pub const Server = struct {
     /// and spawns the accept thread. The environment is borrowed for this call.
     pub fn start(self: *Server, environ: std.process.Environ) StartError!void {
         std.debug.assert(self.thread == null and self.listener == null);
-        self.path_len = (try vertex.client.resolveSocketPath(environ, null, &self.path_storage)).len;
+        self.path_len = (try vertex.internal.transport.resolveSocketPath(environ, null, &self.path_storage)).len;
         const path = self.socketPath();
-        var shortened: vertex.platform.sockpath.Shortened = .{};
-        vertex.platform.sockpath.shorten(self.io, path, &shortened) catch |err| {
-            std.log.err("viewer socket path is {d} bytes; {s}: {s}", .{ path.len, vertex.platform.sockpath.limit_note, @errorName(err) });
+        var shortened: vertex.internal.platform.sockpath.Shortened = .{};
+        vertex.internal.platform.sockpath.shorten(self.io, path, &shortened) catch |err| {
+            std.log.err("viewer socket path is {d} bytes; {s}: {s}", .{ path.len, vertex.internal.platform.sockpath.limit_note, @errorName(err) });
             return err;
         };
-        defer vertex.platform.sockpath.release(self.io, &shortened);
+        defer vertex.internal.platform.sockpath.release(self.io, &shortened);
         const address = try std.Io.net.UnixAddress.init(shortened.path());
         if (!address.isAbstract()) try deleteIfPresent(self.io, path);
 
@@ -178,9 +178,9 @@ pub const Server = struct {
         if (self.thread) |thread| {
             // Wake a thread blocked in accept. A short-lived local connection is
             // more reliable than closing a descriptor from another thread.
-            var shortened: vertex.platform.sockpath.Shortened = .{};
-            if (vertex.platform.sockpath.shorten(self.io, self.socketPath(), &shortened)) {
-                defer vertex.platform.sockpath.release(self.io, &shortened);
+            var shortened: vertex.internal.platform.sockpath.Shortened = .{};
+            if (vertex.internal.platform.sockpath.shorten(self.io, self.socketPath(), &shortened)) {
+                defer vertex.internal.platform.sockpath.release(self.io, &shortened);
                 if (std.Io.net.UnixAddress.init(shortened.path())) |address| {
                     if (address.connect(self.io)) |stream| stream.close(self.io) else |_| {}
                 } else |_| {}
@@ -414,7 +414,7 @@ test "Inbox receives items pushed by another thread" {
 
 test "Inbox drain allocates nothing after both lists are warm" {
     const n = 32;
-    var counting: vertex.testutil.CountingAllocator = .{ .child = testing.allocator };
+    var counting: vertex.internal.testutil.CountingAllocator = .{ .child = testing.allocator };
     const gpa = counting.allocator();
     var inbox: Inbox = .{};
     defer inbox.deinit(gpa);

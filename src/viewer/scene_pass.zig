@@ -3,7 +3,7 @@ const std = @import("std");
 const vertex = @import("vertex");
 
 const mesh_render = @import("render/mesh.zig");
-const Scene = vertex.scene.Scene;
+const Scene = vertex.internal.scene.Scene;
 
 /// Draws the displayed scene in the established solid, wire, line, vector,
 /// then point order. Inputs are borrowed; renderer cache misses may allocate.
@@ -11,7 +11,7 @@ pub fn drawScene(
     renderer: *mesh_render.Renderer,
     scene: *const Scene,
     scrub: u32,
-    vp: vertex.camera.Mat4,
+    vp: vertex.internal.camera.Mat4,
     viewport: [2]f32,
 ) std.mem.Allocator.Error!void {
     const structures = scene.structures.slice();
@@ -22,14 +22,14 @@ pub fn drawScene(
     // Solid meshes establish depth before every overlay and primitive pass.
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .mesh) continue;
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.draw(scene, structure_index, version_index, vp, .{ 0.72, 0.78, 0.86, 1.0 });
     }
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .mesh or !ui_state.wireframe) continue;
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.drawWireframe(
@@ -43,7 +43,7 @@ pub fn drawScene(
     }
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .lines) continue;
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.drawLines(
@@ -57,7 +57,7 @@ pub fn drawScene(
     }
     for (ui_states, versions, 0..) |ui_state, version_list, i| {
         if (!ui_state.visible) continue;
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.drawVectors(
@@ -70,7 +70,7 @@ pub fn drawScene(
     }
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .points) continue;
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.drawPoints(
@@ -89,7 +89,7 @@ pub fn drawScene(
 pub fn hasDisplayedGeometry(scene: *const Scene, scrub: u32) bool {
     const structures = scene.structures.slice();
     for (structures.items(.versions), 0..) |_, i| {
-        const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
+        const structure_index: vertex.internal.scene.StructureIndex = @fromBackingInt(@intCast(i));
         if (scene.versionAt(structure_index, scrub) != null) return true;
     }
     return false;

@@ -3,7 +3,7 @@ const std = @import("std");
 const vertex = @import("vertex");
 
 const server_mod = @import("server.zig");
-const Scene = vertex.scene.Scene;
+const Scene = vertex.internal.scene.Scene;
 
 /// Owns ingest counters and mapping-cleanup capacity while borrowing the
 /// process allocator, I/O implementation, inbox, and scene at stable addresses.
@@ -16,7 +16,7 @@ pub const Ingest = struct {
     bytes: u64 = 0,
     mapped_bytes: u64 = 0,
     apply_ns: u128 = 0,
-    mapping_cleanup: std.ArrayList(vertex.scene.Mapping) = .empty,
+    mapping_cleanup: std.ArrayList(vertex.internal.scene.Mapping) = .empty,
     frame0_complete: bool = false,
     began_run: bool = false,
 
@@ -47,7 +47,7 @@ pub const Ingest = struct {
                 disposeItemMappingsFrom(item, registered);
                 self.gpa.free(item.payload);
             }
-            const message: ?vertex.protocol.Message = blk: {
+            const message: ?vertex.internal.protocol.Message = blk: {
                 const started = std.Io.Clock.awake.now(self.io);
                 defer {
                     const elapsed: i96 = started.durationTo(std.Io.Clock.awake.now(self.io)).toNanoseconds();
@@ -75,7 +75,7 @@ pub const Ingest = struct {
                     };
                     mappings[registered] = self.scene.mappingBytes(mapping_index);
                 }
-                const decoded = vertex.protocol.decode(
+                const decoded = vertex.internal.protocol.decode(
                     item.header,
                     item.payload,
                     mappings[0..registered],
@@ -131,7 +131,7 @@ pub const Ingest = struct {
     }
 };
 
-fn decodedMappedBytes(message: vertex.protocol.Message, item: server_mod.Inbox.Item) u64 {
+fn decodedMappedBytes(message: vertex.internal.protocol.Message, item: server_mod.Inbox.Item) u64 {
     var total: u64 = 0;
     switch (message) {
         .mesh => |value| {
@@ -165,33 +165,33 @@ fn mappedSectionBytes(section: []const u8, item: server_mod.Inbox.Item) u64 {
 
 fn disposeItemMappingsFrom(item: server_mod.Inbox.Item, start: usize) void {
     for (item.mappings[start..item.fd_count], item.fds[start..item.fd_count]) |mapping, fd| {
-        if (mapping) |mapping_bytes| vertex.platform.shm.unmap(.{
+        if (mapping) |mapping_bytes| vertex.internal.platform.shm.unmap(.{
             .handle = fd,
             .map = mapping_bytes,
             .huge = false,
         });
-        vertex.platform.shm.close(fd);
+        vertex.internal.platform.shm.close(fd);
     }
 }
 
-fn disposeMapping(mapping: vertex.scene.Mapping) void {
-    vertex.platform.shm.unmap(.{
+fn disposeMapping(mapping: vertex.internal.scene.Mapping) void {
+    vertex.internal.platform.shm.unmap(.{
         .handle = mapping.fd,
         .map = @alignCast(@constCast(mapping.bytes)),
         .huge = false,
     });
-    vertex.platform.shm.close(mapping.fd);
+    vertex.internal.platform.shm.close(mapping.fd);
 }
 
 const testing = std.testing;
 
-fn pushEncoded(gpa: std.mem.Allocator, io: std.Io, inbox: *server_mod.Inbox, encoded: *vertex.protocol.Encoded) !void {
+fn pushEncoded(gpa: std.mem.Allocator, io: std.Io, inbox: *server_mod.Inbox, encoded: *vertex.internal.protocol.Encoded) !void {
     // Mirrors the socket server: exact-size, 16-aligned payload owned by the item.
-    var frame: [4096]u8 align(vertex.protocol.section_alignment) = undefined;
+    var frame: [4096]u8 align(vertex.internal.protocol.section_alignment) = undefined;
     const bytes = encoded.writeTo(&frame);
-    const header = try vertex.protocol.decodeHeader(bytes);
+    const header = try vertex.internal.protocol.decodeHeader(bytes);
     const payload = try gpa.alignedAlloc(u8, .@"16", header.len);
-    @memcpy(payload, bytes[@sizeOf(vertex.protocol.Header)..][0..header.len]);
+    @memcpy(payload, bytes[@sizeOf(vertex.internal.protocol.Header)..][0..header.len]);
     try inbox.push(gpa, io, .{ .header = header, .payload = payload });
 }
 
@@ -199,7 +199,7 @@ test "ingest drain allocates only the new blob per mesh_positions frame at stead
     // The per-frame hot path: inbox drain -> decode -> scene apply -> mapping
     // cleanup. After warm-up, a frame of N position updates must allocate
     // exactly N blobs and nothing else (STYLE §2).
-    var counting: vertex.testutil.CountingAllocator = .{ .child = testing.allocator };
+    var counting: vertex.internal.testutil.CountingAllocator = .{ .child = testing.allocator };
     const gpa = counting.allocator();
     var inbox: server_mod.Inbox = .{};
     defer inbox.deinit(gpa);
@@ -208,26 +208,26 @@ test "ingest drain allocates only the new blob per mesh_positions frame at stead
     var ingest = Ingest.init(gpa, testing.io, &inbox, &scene);
     defer ingest.deinit();
 
-    const layout = vertex.layout;
+    const layout = vertex.internal.layout;
     const elem_count = if (layout.layout == .soa) 9 else 3;
     var position_data: [elem_count]layout.Positions.Elem = undefined;
     const positions = layout.Positions.fromSlice(&position_data);
     positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
     const faces = [_][3]u32{.{ 0, 1, 2 }};
 
-    var encoded: vertex.protocol.Encoded = undefined;
-    vertex.protocol.encodeBeginRun(&encoded);
+    var encoded: vertex.internal.protocol.Encoded = undefined;
+    vertex.internal.protocol.encodeBeginRun(&encoded);
     try pushEncoded(gpa, testing.io, &inbox, &encoded);
-    vertex.protocol.encodeMesh(&encoded, "m", .d3, positions.toConst(), &faces);
+    vertex.internal.protocol.encodeMesh(&encoded, "m", .d3, positions.toConst(), &faces);
     try pushEncoded(gpa, testing.io, &inbox, &encoded);
     try testing.expect(ingest.drain());
 
     // Warm up: two frames grow every list to its steady capacity.
     var frame_index: u32 = 1;
     while (frame_index <= 2) : (frame_index += 1) {
-        vertex.protocol.encodeBeginFrame(&encoded, frame_index, "");
+        vertex.internal.protocol.encodeBeginFrame(&encoded, frame_index, "");
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
-        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        vertex.internal.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
         _ = ingest.drain();
     }
@@ -237,9 +237,9 @@ test "ingest drain allocates only the new blob per mesh_positions frame at stead
     var pre: [updates]void = undefined;
     _ = &pre;
     while (frame_index <= 2 + 64) : (frame_index += 1) {
-        vertex.protocol.encodeBeginFrame(&encoded, frame_index, "");
+        vertex.internal.protocol.encodeBeginFrame(&encoded, frame_index, "");
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
-        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        vertex.internal.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
         _ = ingest.drain();
     }
@@ -249,9 +249,9 @@ test "ingest drain allocates only the new blob per mesh_positions frame at stead
     // and are excluded by counting only inside drain.
     var k: u32 = 0;
     while (k < updates) : (k += 1) {
-        vertex.protocol.encodeBeginFrame(&encoded, frame_index + k, "");
+        vertex.internal.protocol.encodeBeginFrame(&encoded, frame_index + k, "");
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
-        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        vertex.internal.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
         try pushEncoded(gpa, testing.io, &inbox, &encoded);
     }
     const allocs_before = counting.alloc_calls;
