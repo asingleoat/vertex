@@ -560,3 +560,30 @@ starts it running. The exit statistics line gains
   darwin platform layer restoring zero-copy, dylib stepping and the smoke tests.
   Picking and face-target scalars are the two features not working there; see
   the portability table.
+
+## Planned
+
+Two changes are decided but deferred.
+
+**Picking becomes a CPU ray cast**, replacing the ID-buffer pass and its GPU
+readback. The reasoning and the plan are under "Picking: a CPU ray cast rather
+than an ID buffer" above.
+
+**Numeric types become parameters.** Every definition that depends on a numeric
+type should be parameterized over it, in the style of `PositionsOf(layout)` and
+`Geometry(layout)`. Today `Vec3` is `f32` and so is every kernel, every blob and
+the wire format. Rendering needs no more than `f32`, but robust predicates such
+as orientation and in-circle tests, and coordinates at CAD scale, exceed a
+24-bit mantissa, and an intermediate value computed for those purposes should be
+able to hold `f64`.
+
+The conversion point already exists and is one call. Intermediate geometry is
+computed in plain slices of vectors, and reaches the viewer through
+`Positions.alloc` followed by `setAll`, which is where a narrowing conversion
+from `f64` to `f32` belongs. Nothing downstream of the wire is affected, since
+the GPU takes `f32` in any case.
+
+The work is a `Vec3Of(T)` with its arithmetic, `PositionsOf` gaining a scalar
+parameter alongside its layout parameter, and the kernels following. It is
+deferred until a second instantiation exists to validate the abstraction rather
+than assume it.
