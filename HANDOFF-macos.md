@@ -1,259 +1,230 @@
-# Handoff: the macOS port
+# The macOS port
 
-Written 2026-08-24 on the Linux machine at the end of the first development
-stretch, for a fresh session on a Mac. Read `CLAUDE.md`, `DESIGN.md`,
-`STYLE.md`, then this file; `git log --oneline` is the narrative of every
-decision (each commit message says what was decided and why).
+Written on the Linux machine at the end of the first development stretch and
+completed on 2026-08-25. `git log --oneline` records the reasoning behind each
+change.
 
-## 1. Where the project stands
+## State
 
 Everything on the original design ladder is built and verified on Linux:
 
-- Viewer (sokol-gfx GL 4.3 + Dear ImGui), socket client library, wire
-  protocol v2, scene store with delta timeline, retention/A-B ghosting,
-  memory budget with decimation, points/lines/vectors/meshes with scalar
-  colormaps, wireframe, picking + inspector, face-target scalars.
-- Zero-copy shared-memory payloads (memfd + `SCM_RIGHTS`, hugetlbfs when
-  the kernel allows), measured: 40 × 1M-vertex updates in 16 ms client-side.
-- Dylib mode: viewer-driven stepping with hot reload (`steps/*.zig` →
-  `libstep-<name>.so`, Frame/Rate/Max pacing).
-- Platform layer `src/platform/` (comptime per OS) with `*_unsupported.zig`
-  stubs that compile everywhere and degrade to the inline path.
-- 69 tests across three vertex layouts (`-Dvertex_layout=aos3|aos4|soa`),
-  headless smokes in `scripts/smoke.sh` (Xvfb; see §5 for the Mac story).
+- The viewer, on sokol-gfx with GL 4.3 and Dear ImGui; the socket client
+  library; wire protocol version 2; the scene store with its delta timeline;
+  the memory budget with decimation; meshes, points, lines and vectors with
+  scalar colormaps, wireframes, picking and an inspector, including
+  face-target scalars.
+- Zero-copy shared-memory payloads, using memfd and `SCM_RIGHTS`, with hugetlbfs
+  where the kernel allows it. Forty updates of one million vertices take 16 ms
+  of client time.
+- Dylib mode: viewer-driven stepping with hot reload, from `steps/*.zig` to
+  `libstep-<name>.so`, with Frame, Rate and Max pacing.
+- The platform layer in `src/platform/`, selected per operating system at
+  compile time, with `*_unsupported.zig` stubs that compile everywhere and
+  degrade to the inline path.
+- 69 tests across the three vertex layouts, selected by
+  `-Dvertex_layout=aos3|aos4|soa`, and headless end-to-end tests in
+  `scripts/smoke.sh`.
 
-Toolchain: zig master (`0.17.0-dev.1857` pinned by `flake.lock` via
-`mitchellh/zig-overlay`), zls from the `zigtools/zls` flake, sokol-zig and
-dcimgui on their master branches. Everything comes from nix; never use
-`/nix/store` paths directly — go through `nix develop` and tool-resolved
-paths.
+The same is now true on aarch64-darwin, with two exceptions recorded under
+"What is left" below.
 
-## 2. Working agreements (these do not travel in Claude's memory — re-read)
+The toolchain is zig master, `0.17.0-dev.1857`, pinned by `flake.lock` through
+`mitchellh/zig-overlay`; zls comes from the `zigtools/zls` flake; sokol-zig and
+dcimgui are on their master branches. Everything comes from nix: use
+`nix develop` and the paths it resolves rather than `/nix/store` paths directly.
 
-- **Commit logical chunks as you go**, each with a message that records the
-  decision and the verification performed. History is the design log.
-- **Bleeding-edge Zig via nix**, as new as sokol-zig/dcimgui support. Known
-  master quirks: no `@bitCast` to/from extern structs (build field-by-field
-  or read via `*align(1) const T`), lowercase `OptimizeMode`, fetched
-  packages in project-local `zig-pkg/`, the configure phase is cached
-  (`build.zig` poisons it so new sketches are discovered), `-Drelease` gives
-  ReleaseSafe and a plain `zig build` is Debug.
-- **Optimize known-wasteful paths even when they are not the bottleneck**;
-  measure to prioritise and verify, never to dismiss. Present before/after.
-- **Tests must earn their keep**: keep contracts, regressions, ABI/format
-  pins, OOM/leak/steady-state checks; prune scaffolding. **Pin measured
-  performance quantities exactly** (a ratchet, not a ceiling) so a change's
-  cost is visible the moment it is made and the pin is moved deliberately.
-- **Pure core, effectful edges** (STYLE.md §4): no OS/sokol calls outside
-  `src/platform/` and the viewer edge modules; scene/protocol/geometry stay
-  pure. Layout is a type (`Positions`), index-not-pointer, reserve-then-assume.
-- If delegating to Codex: write self-contained briefs (task, definition of
-  done, scope box, verification loop, output contract); the sandbox may not
-  reach the nix daemon — `nix print-dev-env > devenv.sh` and have it source
-  that; re-verify everything yourself; review for test-gaming and scope
-  creep. On Linux the harness reaped background tasks a few minutes after a
-  turn ended — detach long runs (`setsid nohup … &`) and poll a log file.
-- Tim's global git config sets `worktree.useRelativePaths`; nix's libgit2
-  cannot read that extension, so `git worktree add --no-relative-paths`.
+## Working agreements
 
-## 3. Prep done on Linux (Step 0 has now tested it on a Mac — see §4)
+- Commit in logical chunks, each with a message recording the decision and the
+  verification performed. The history is the design log.
+- Track bleeding-edge Zig through nix, as new as sokol-zig and dcimgui support.
+  Known quirks of master: `@bitCast` to or from an extern struct is rejected, so
+  build the value field by field or read it through `*align(1) const T`;
+  `OptimizeMode` is lowercase; fetched packages live in `zig-pkg/`; the
+  configure phase is cached, and `build.zig` poisons that cache so that new
+  sketches are discovered; `-Drelease` selects ReleaseFast and a plain
+  `zig build` is Debug.
+- Optimize paths that are known to be wasteful even when they are not the
+  bottleneck. Measure to decide priority and to verify the result, never to
+  dismiss the question, and present before and after numbers.
+- Tests must earn their place. Keep contracts, regressions, ABI and format
+  pins, and checks of out-of-memory behaviour, leaks and steady-state
+  allocation; remove scaffolding. Pin measured quantities exactly, as a ratchet
+  rather than a ceiling, so that the cost of a change is visible when it is made
+  and the pin moves deliberately.
+- Keep the core pure and the effects at the edges, per `STYLE.md` §4: no
+  operating-system or sokol call outside `src/platform/` and the viewer edge
+  modules, and no effects in scene, protocol or geometry. This applies to file
+  organization as well as to individual functions: a module is either pure or an
+  edge, and an edge imports pure modules rather than the reverse.
+- If delegating to Codex, write a self-contained brief covering the task, the
+  definition of done, the scope, the verification loop and the output contract.
+  The sandbox may be unable to reach the nix daemon, in which case
+  `nix print-dev-env > devenv.sh` and have it source that. Re-verify everything,
+  and review for test-gaming and scope creep.
+- Tim's global git configuration sets `worktree.useRelativePaths`, which the
+  libgit2 that nix uses cannot read, so pass
+  `git worktree add --no-relative-paths`.
 
-- `flake.nix` lists `aarch64-darwin`; the dev shell gates Linux-only inputs
-  (glibc headers, X11/GL/ALSA libs, `gdb`, `xvfb-run`) behind
-  `hostPlatform.isLinux`; the `sokol-shdc` derivation picks the `osx_arm64`
-  binary (hash prefetched) — ✅ it runs. (`x86_64-darwin` was dropped:
-  nixpkgs 26.11 no longer supports it.) The glibc pin hook was *not*
-  gated — the assumption below was wrong.
-- ~~`build.zig`'s target pinning only acts when `ZIG_DYNAMIC_LINKER` is set,
-  so it is inert on macOS.~~ Wrong: the darwin cc wrapper publishes
-  `nix-support/dynamic-linker` too, so the hook exported it and the pin
-  fired. Both the hook and `resolveTarget` are Linux-gated now (§4 Step 0).
-  The zig `overrideAttrs` patch (maker `--dynamic-linker` dangling-slice
-  bug) is harmless on macOS, as expected.
+## The port
 
-## 4. The port, in order (each step has a done-criterion; stop and think if one fails)
+**Step 0, the toolchain and pure core.** Completed 2026-08-24.
+`nix develop -c zig build test` reports 34 of 34 steps and 66 of 69 tests, with
+three skipped, on each of `aos3`, `aos4` and `soa`. Every fact is in the
+portability table in `DESIGN.md`; two were expensive to find.
 
-**Step 0 — toolchain and pure core.** ✅ (2026-08-24) `nix develop -c zig
-build test`: 34/34 steps, 66/69 tests, 3 skipped, on `-Dvertex_layout=aos3`,
-`aos4` and `soa`. Every fact is in DESIGN.md's portability table; the two
-that cost the most to find:
+The glibc pin fired on macOS. `flake.nix` gated it on the existence of
+`$NIX_CC/nix-support/dynamic-linker`, but the nixpkgs Darwin cc wrapper ships
+that file too, holding `/usr/lib/dyld`, so the target was pinned to
+`aarch64-native-gnu` with a glibc version parsed out of `libSystem-B`. Both the
+hook and `resolveTarget` are now gated on Linux.
 
-- The glibc pin fired here. `flake.nix` gated it on `$NIX_CC/nix-support/
-  dynamic-linker` existing, but nixpkgs' *darwin* cc wrapper ships that file
-  too (holding `/usr/lib/dyld`), so the target got pinned to
-  `aarch64-native-gnu` with a glibc version parsed out of `libSystem-B`.
-  Now gated on `hostPlatform.isLinux`, and `resolveTarget` refuses to pin
-  unless the host is Linux.
-- zig 0.17.0-dev.1857 **skips darwin SDK detection entirely when
-  `NIX_CFLAGS_COMPILE` or `NIX_LDFLAGS` is set** (either alone suffices),
-  after which every `-framework` fails with `searched paths:  none`. The
-  darwin branch of the shell hook unsets both; `DEVELOPER_DIR`/`SDKROOT`
-  from the `apple-sdk` setup hook keep `xcrun` pointed at the pinned SDK.
-  If frameworks ever go missing again, check those two variables first.
+zig 0.17.0-dev.1857 skips Darwin SDK detection entirely when either
+`NIX_CFLAGS_COMPILE` or `NIX_LDFLAGS` is set; either alone is sufficient. Every
+`-framework` then fails with `searched paths:  none`. The Darwin branch of the
+shell hook unsets both, and `DEVELOPER_DIR` and `SDKROOT` from the apple-sdk
+setup hook keep `xcrun` pointed at the pinned SDK. If frameworks go missing
+again, check those two variables first.
 
-The tests went as predicted (abstract socket → a file under
-`std.testing.tmpDir`; the `/proc`-rebasing and shared-memory tests skip),
-with one addition: capability is now a `pub const supported` on the platform
-module rather than an `os.tag` comparison, so Step 2 switches the zero-copy
-path on by writing `shm_darwin.zig`/`fdpass_darwin.zig` — there is no OS
-check left outside `src/platform/` to find.
+The three failing tests were Linux-only by construction and went as predicted:
+the abstract socket became a file under `std.testing.tmpDir`, and the
+`/proc`-rebasing and shared-memory tests skip. Capability is now a
+`pub const supported` on the platform module rather than a comparison against
+`builtin.os.tag`, so step 2 enabled the zero-copy path by writing the module
+with no operating-system checks left to find outside `src/platform/`.
 
-**Carry into Step 1:** `src/viewer/server.zig:245` reads the socket through
-`platform.fdpass.recvWithHandles`, which is `error.Unsupported` here, so the
-viewer cannot ingest a single byte until that call takes the same
-`platform.fdpass.supported` branch the test's LiveServer now takes
-(`client.zig`, ~line 1124) — or until Step 2 lands a real darwin fdpass.
-Also confirmed while there: `sokol-shdc` (osx_arm64) runs straight from the
-nix store, so the Gatekeeper worry in §5 is a non-issue, and the default
-socket path resolves to `/tmp/vertex.sock` — do **not** switch it to
-`$TMPDIR`, which `nix develop` makes per-shell.
+**Step 1, the viewer on Metal with the inline path.** Completed 2026-08-24.
+`sketch-current` over the socket prints
+`vertex-view: structures=4 frames=25 blobs=83` for both `aos3` and `soa`, with
+no sokol error and no leak report, and a screenshot confirms that meshes,
+points, lines and the ImGui panels render.
 
-**Step 1 — viewer on Metal, inline path.** ✅ (2026-08-24) `sketch-current`
-over the socket prints `vertex-view: structures=4 frames=25 blobs=83` on
-`-Dvertex_layout=aos3` and `=soa`, no sokol error, no leak report; a
-screenshot confirms mesh, points, lines and the ImGui panels rendering.
+`build.zig` passes `.gl = !target.isDarwin()` and publishes
+`build_options.gl_backend`, after which sokol-zig's `auto` backend resolves to
+Metal. Note that `addOptions` creates a new module on each call and two modules
+cannot share a source file, so the options module is created once and imported
+everywhere.
 
-- Backend: `build.zig` passes `.gl = !target.isDarwin()` and publishes
-  `build_options.gl_backend`; sokol-zig's `auto` then resolves to Metal.
-  Watch out — `addOptions` mints a *new* module per call and two modules
-  cannot share a source file, so the options module is created once and
-  imported everywhere.
-- Shaders: `-l glsl430:metal_macos`, one checked-in file per shader for
-  both backends. Regenerating added only Metal; every GLCORE line is
-  unchanged, so Linux needs no re-verification beyond a build.
-- **`gl_PrimitiveID` does not translate.** MSL needs 2.2 for it and
-  SPIRV-Cross refuses below that; sokol-shdc has no MSL version flag —
-  checked against the pinned binary *and* sokol-tools-bin master, so it is
-  upstream, not a stale pin. `mesh_face_scalar{,_soa}` and
-  `pick_mesh{,_soa}` are listed GL-only in `build.zig` (`isGlOnlyShader`) so
-  `zig build shaders` stays reproducible. Face-target scalars fall back to
-  the plain mesh pipeline; the renderer decides by asking the generated desc
-  whether this backend has a source, so a future shdc turns the feature back
-  on by itself. If you want face scalars on Metal sooner, the options are a
-  shdc built with MSL 2.2 or replacing `primitive_id` with a per-vertex face
-  index (which costs vertex duplication — weigh it against §2's layout rules).
-- Picking is comptime-disabled (`pick.Picker` selects `DisabledPicker`).
-  This is load-bearing, not cosmetic: a Metal build does not link OpenGL, so
-  the GL externs must not be analyzed at all.
+Shaders are generated with `-l glsl430:metal_macos`, one checked-in file per
+shader carrying both backends. Regenerating added only the Metal branch and left
+every GLCORE line unchanged, so Linux needs no verification beyond a build.
 
-**Still open from Step 1, for whoever does Step 3:** the `VERTEX_PICK_PROBE`
-path is untested here. Retina reports a 2× framebuffer, and the expected
-face (693 on a 1400×900 Xvfb) is display-dependent — re-pin per platform, or
-fix the window size and dpi scale for the smoke.
+`gl_PrimitiveID` does not translate. MSL requires version 2.2 for it and
+SPIRV-Cross rejects anything below that, and sokol-shdc exposes no flag for the
+MSL version; this was checked against the pinned binary and against
+sokol-tools-bin master, so it is an upstream limitation rather than a stale pin.
+`mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` are listed as GL-only in
+`build.zig`, through `isGlOnlyShader`, so that `zig build shaders` remains
+reproducible. Face-target scalars fall back to the plain mesh pipeline, and the
+renderer decides by asking the generated descriptor whether this backend has a
+source, so a later shader compiler re-enables the feature without a code change.
+Restoring it sooner requires either a shdc built with MSL 2.2 or replacing
+`primitive_id` with a per-vertex face index, which costs vertex duplication.
 
-**Step 2 — platform layer for darwin (restore zero-copy).** ✅ (2026-08-24)
+Picking is disabled at compile time, with `pick.Picker` selecting
+`DisabledPicker`. This is load-bearing rather than cosmetic: a Metal build does
+not link OpenGL, so the GL externs must not be analyzed at all.
+
+**Step 2, the platform layer for darwin.** Completed 2026-08-24.
 `sketches/stress.zig` in shared mode reports `mapped_bytes=480960480`, the
-figure the Linux smoke pins, and send collapses from 348.3 ms to 3.8 ms over
-the 40 steps (92×; viewer apply 62.7 → 6.6 ms; 517 MB → 36 MB through the
-socket). Test skips went 3 → 1: only the `/proc`-rebasing sockpath test is
-left, and the live socket round-trip now asserts the zero-copy flag *here*
-because of the ratchet added in Step 0.
+figure the Linux smoke test pins, and sending collapses from 348.3 ms to 3.8 ms
+over the 40 steps, a factor of 92; viewer apply falls from 62.7 ms to 6.6 ms and
+the socket carries 36 MB rather than 517 MB. Skipped tests fell from three to
+one, the remaining one being the `/proc`-rebasing test, and the live socket
+round trip now asserts the zero-copy flag here.
 
-Two things not to copy blindly from the Linux files if you touch them:
+Two things not to copy from the Linux files. `fdpass_darwin.zig` is not a
+transliteration: `CMSG_ALIGN` is `__DARWIN_ALIGN32`, four bytes rather than
+`sizeof(size_t)`, and `cmsghdr` is 12 bytes rather than 16, so the Linux cmsg
+arithmetic computes incorrect lengths silently. There is no `MSG_NOSIGNAL`, so
+set `SO_NOSIGPIPE` on the socket, and no `MSG_CMSG_CLOEXEC`, so mark each
+received descriptor. `std.c` declares `recvmsg` without exporting it, so the
+module declares its own extern. `shm_darwin.zig` names each object and unlinks
+it immediately, so that the descriptor is its only reference and a crash leaves
+nothing behind; `O_EXCL` makes a name collision a retry.
 
-- `fdpass_darwin.zig` is not a transliteration. `CMSG_ALIGN` is
-  `__DARWIN_ALIGN32` — 4 bytes, not `sizeof(size_t)` — and `cmsghdr` is 12
-  bytes not 16, so Linux's cmsg arithmetic computes wrong lengths *silently*.
-  There is no `MSG_NOSIGNAL` (set `SO_NOSIGPIPE` on the socket) and no
-  `MSG_CMSG_CLOEXEC` (mark each received fd). `std.c` declares `recvmsg` but
-  does not export it, so the module declares its own extern.
-- `shm_darwin.zig` names each object, then `shm_unlink`s it immediately so
-  the descriptor is its only reference — otherwise a crash leaves objects in
-  a global namespace. `O_EXCL` makes a name collision a retry.
+`getrusage` alone was sufficient for `stats`, so `task_info` was not needed.
+`sockpath` keeps the rejection path, since there is no `/proc` to rebase on and
+no demand for an alternative. Huge pages became the compile-time
+`shm.huge_supported`, because the viewer, the client and the stress sketch were
+otherwise reporting `huge=on` on a platform with no huge-page class.
 
-`stats`: `getrusage` was enough; `task_info` is not needed, because `stats`
-only exposes minor faults and hugetlb KiB. `sockpath` keeps the rejection
-path (`sockpath_unsupported`, 103 bytes) — no `/proc` to rebase on and no
-demand for it yet. Huge pages are now the comptime `shm.huge_supported`
-rather than something inferred, because the viewer, the client and the
-stress sketch were all advertising `huge=on` on a platform that has no
-huge-page class.
+**Step 3, picking.** Superseded. Do not write a Metal readback. As decided on
+2026-08-24, and recorded in `DESIGN.md` under "Picking: a CPU ray cast rather
+than an ID buffer", picking becomes a CPU ray cast in the pure core, which needs
+no readback on any backend and removes the GL escape hatch, the four `pick_*`
+shaders and the `RG32UI` target.
 
-**Step 3 — picking: superseded, and deliberately last.** Do *not* write a
-Metal readback. Decided 2026-08-24 (rationale in DESIGN.md, "Picking,
-decided 2026-08-24"): picking becomes a **CPU ray cast in the pure core**,
-which needs no readback on any backend and deletes the GL escape hatch, the
-four `pick_*` shaders and the `RG32UI` target.
+Two things to know before starting it. The synchronous Metal readback this step
+used to describe cannot work: sokol creates one command buffer per frame,
+enqueues it at the first `beginPass`, commits it at `sg.commit()` and never
+exposes it, so a mid-frame blit followed by `waitUntilCompleted` waits on a
+command buffer queued behind an uncommitted one. And hover picking currently
+re-renders every visible structure on every mouse movement, so the CPU
+implementation starts from a low bar: implement brute force first, measure, then
+add a per-blob BVH cached as the derived edge lists are.
 
-Two things to know before starting it. The synchronous Metal readback this
-step used to describe cannot work — sokol creates one command buffer per
-frame, `enqueue`s it at the first `beginPass`, commits it at `sg.commit()`
-and never exposes it, so a mid-frame blit + `waitUntilCompleted` waits behind
-a command buffer that has not been committed. And hover picking today
-re-renders every visible structure per mouse move, so the CPU version starts
-from a low bar; brute force first, measure, then a per-blob BVH cached like
-the derived edge lists.
+It is sequenced after steps 2, 4 and 5 because it is a redesign of a working
+feature rather than a port step. It owes before and after numbers and a check
+that a CPU hit agrees with a GL hit on the same scene. The retina and dpi
+question below belongs to it.
 
-It is sequenced after Steps 2, 4 and 5 because it is a redesign of a working
-feature, not a port step. Owes before/after numbers and a check that a CPU
-hit agrees with a GL hit on the same scene. The retina/dpi question below
-belongs to it.
-
-**Step 4 — dylib mode.** ✅ (2026-08-24) Worked essentially unchanged:
+**Step 4, dylib mode.** Completed 2026-08-24, essentially unchanged.
 `zig build step` already names the artifact `libstep-<name>.dylib`,
 `std.DynLib` is `dlopen`, and macOS raises no code-signing objection to
-`dlopen`ing the viewer's copy. Only the copied-library path's hardcoded
-`.so` needed fixing. `stepper steps=60 state=finished reloads=0 leaks=0`
-with `structures=1 frames=61 blobs=123`, and an edit + rebuild mid-session
-gives `reloads=1` with the previous run retained (`blobs=246`).
+`dlopen`ing the viewer's copy. Only the copied library path's hardcoded `.so`
+needed fixing. The result is `stepper steps=60 state=finished reloads=0 leaks=0`
+with `structures=1 frames=61 blobs=123`, and an edit followed by a rebuild
+mid-session gives `reloads=1` with the previous run retained.
 
-If you test reload by hand: a rebuild with no source *content* change does
-not reload, on any platform. The stepper polls the installed artifact's
-mtime and zig's install step skips the copy when the artifact is
-byte-identical, so `touch` + rebuild leaves mtime alone. Edit something.
+When testing reload by hand, note that a rebuild producing an identical artifact
+does not reload, on any platform: the stepper polls the installed artifact's
+mtime, and zig's install step skips the copy when the artifact is unchanged, so
+touching a source and rebuilding leaves the mtime alone. Edit something.
 
-**Step 5 — smokes on a Mac.** ✅ (2026-08-24) SMOKE OK in ~46 s, every
-scenario and every assertion, leak checks included. Four windows appear and
-close — there is no Xvfb. All platform differences are one block at the top
-of `scripts/smoke.sh`: the viewer wrapper, the step-library suffix, the
-frame caps (smaller here because vsync paces frames where llvmpipe does
-not), and the pick probe, which is asserted to *miss* while picking is
-disabled so the path is still exercised and the assertion must be revisited
-deliberately when the CPU ray cast lands. §5's worry about the build-summary
-wording was unfounded: `" debug native"` appears for darwin targets too.
+**Step 5, the smoke tests.** Completed 2026-08-24. The suite passes in about 46
+seconds, with every scenario and assertion including the leak checks. Four
+windows appear and close, since there is no Xvfb. Every platform difference is
+in one block at the top of `scripts/smoke.sh`: the viewer wrapper, the step
+library suffix, the frame caps, which are smaller because vsync paces frames
+where llvmpipe does not, and the pick probe, which is asserted to miss while
+picking is disabled, so that the path is still exercised and the assertion has
+to be revisited deliberately. The concern that the build summary might word
+Debug builds differently on Darwin was unfounded: `" debug native"` appears
+there too.
 
-Fill in one row of DESIGN.md's portability table per step; update the
-table and this file as facts replace guesses.
+## What is left
 
-## 4b. What is left
+The port is complete. Two features do not work on macOS.
 
-The port is done: Steps 0, 1, 2, 4 and 5 are all ✅ and the smokes pass. The
-one feature not working on macOS is **picking**, deliberately — see Step 3
-above. Face-target scalars are also off, blocked upstream on MSL 2.2
-(Step 1); they come back for free if sokol-shdc ever gains the flag.
+Picking is disabled deliberately, pending the CPU ray cast described above.
 
-## 5. Things that will bite
+Face-target scalars are blocked upstream on MSL 2.2. They render as plain meshes
+and will work again if sokol-shdc gains a flag for the MSL version.
 
-- `std.Io.Threaded` on Darwin (kqueue path) is untested by us; the socket
-  server and stepper use `std.Io.Mutex`/`Condition` — watch for surprises.
-- `MAP_POPULATE`, `memfd_create`, hugetlbfs, abstract sockets, `/proc`:
-  all Linux-only; every use is inside `src/platform/*_linux.zig` or a test.
-- The hugetlb notice and `VERTEX_SHARED_HUGE` are meaningless on macOS; the
-  stubs report `huge=off` — do not emit the notice there.
-- ~~sokol-shdc darwin binary is unsigned; Gatekeeper may quarantine it~~ —
-  checked 2026-08-24: the `osx_arm64` binary runs from the nix store as-is
-  (`sokol-shdc --help` exits 0). Nothing to do.
-- `scripts/smoke.sh` greps `" debug native"` in the build summary to insist
-  on a Debug build; the summary wording may differ for darwin targets.
+## Things that will bite
 
-## 6. Commands
+- `std.Io.Threaded` on Darwin, which uses kqueue, is not otherwise exercised by
+  this project. The socket server and the stepper use `std.Io.Mutex` and
+  `std.Io.Condition`.
+- `MAP_POPULATE`, `memfd_create`, hugetlbfs, abstract sockets and `/proc` are
+  Linux-only. Every use is inside a `src/platform/*_linux.zig` file or a test.
+- The hugetlb notice and `VERTEX_SHARED_HUGE` have no meaning on macOS. The
+  darwin module reports `huge=off` and never prints the notice.
+- `-fincremental` is Linux-only. On macOS, `zig build --watch -fincremental`
+  rebuilds once and then panics with "nothing to watch" from
+  `Maker/Watch/FsEvents.zig`; plain `--watch` works indefinitely.
+
+## Commands
 
 ```
-nix develop                                   # toolchain + libs
+nix develop                                   # toolchain and libraries
 zig build test --summary all [-Dvertex_layout=aos4|soa]
 zig build run-viewer                          # terminal 1
-zig build run-sketch --watch [-Dsketch=NAME]  # terminal 2 (socket mode)
+zig build run-sketch --watch [-Dsketch=NAME]  # terminal 2, socket mode
 zig build step -Dsketch=smooth --watch        # dylib mode library
 zig build shaders                             # regenerate shader bindings
+zig build docs                                # HTML documentation in zig-out/docs
 zig build bench                               # ReleaseFast benchmarks
-nix develop -c scripts/smoke.sh               # headless end-to-end (Linux)
+nix develop -c scripts/smoke.sh               # headless end-to-end tests
 ```
-
-## 7. Suggested opening prompt for the macOS session
-
-> We're porting vertex to macOS. Read CLAUDE.md, DESIGN.md, STYLE.md and
-> HANDOFF-macos.md, then start with Step 0 of the handoff: get
-> `nix develop -c zig build test` green on this Mac, fixing the flake and
-> the Linux-only tests as described. Commit logical chunks as you go; keep
-> the pure core untouched unless a real gap forces it, and record every
-> macOS fact you establish in the portability table.
