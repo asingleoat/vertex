@@ -3,6 +3,7 @@
 //! Stepping runs in the viewer process, so an algorithm crash also crashes the
 //! viewer; this mode intentionally gives up the socket mode's crash isolation.
 const std = @import("std");
+const builtin = @import("builtin");
 const vertex = @import("vertex");
 const server = @import("server.zig");
 
@@ -448,7 +449,9 @@ pub const Stepper = struct {
         self.next_generation +|= 1;
         const copied_slice = std.fmt.bufPrint(
             &copied_buffer,
-            "{s}/vertex-step-{d}-{d}.so",
+            // `dlopen` does not care about the suffix, but everything a
+            // developer points at these copies does.
+            "{s}/vertex-step-{d}-{d}" ++ builtin.target.os.tag.dynamicLibSuffix(),
             .{ self.copy_dir.slice(), std.c.getpid(), generation },
         ) catch {
             self.pushLog(.err, "stepper copied-library path is too long");
