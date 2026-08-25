@@ -32,12 +32,12 @@ pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddr
 
 /// A writable region mapped into both this process and the viewer, which is how
 /// a payload reaches the viewer without being copied.
-///
+/// ---
 /// `len` is the number of bytes that were asked for, while `map` covers the
 /// whole mapping and so may be longer, since a mapping is a whole number of
 /// pages. `huge` records whether the kernel actually provided huge pages, which
 /// is a request rather than a guarantee.
-///
+/// ---
 /// The connection owns this until the message that sends it succeeds, which
 /// consumes it.
 pub const Shared = struct {
@@ -60,7 +60,7 @@ const ConsumedRange = struct {
 };
 
 /// Tracks the shared buffers a connection has handed out but not yet sent.
-///
+/// ---
 /// A buffer must be recognised again when it comes back as a slice inside a
 /// message, so that the encoder can refer to it rather than copying it, which is
 /// what `findOutstanding` does by address range. Once a send consumes a buffer
@@ -161,7 +161,7 @@ fn sharedRegion(shared: Shared) platform.shm.Region {
 }
 
 /// A `Sink` that encodes each message and writes it to a Unix-domain socket.
-///
+/// ---
 /// This is the transport a socket-mode sketch uses. A message with no shared
 /// sections is written with one `writev` straight from the caller's slices; a
 /// message that refers to shared buffers is written with `sendmsg`, carrying

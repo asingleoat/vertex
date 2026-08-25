@@ -28,7 +28,7 @@ pub fn Fixtures(comptime l: layout.Layout) type {
 
         /// A generated mesh: a vertex stream and the triangles indexing it,
         /// owning both.
-        ///
+        /// ---
         /// `positions` is writable, so a caller can displace the vertices in
         /// place and send the result again rather than regenerating. `faces`
         /// holds three vertex indices per triangle, wound counter-clockwise.

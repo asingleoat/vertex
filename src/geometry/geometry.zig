@@ -31,7 +31,7 @@ pub fn Geometry(comptime l: layout.Layout) type {
 
         /// An axis-aligned bounding box, given by its minimum and maximum
         /// corners.
-        ///
+        /// ---
         /// Returned by `bounds` and used to frame a scene, normalise a model to
         /// a known size, or size a spatial structure. It is a value that owns
         /// nothing; `center`, `extent`, `radius` and `isEmpty` derive the

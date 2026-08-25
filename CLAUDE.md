@@ -24,7 +24,11 @@ Read before writing code:
 
 Comments and documentation are plain technical English: full sentences,
 established terminology, and a statement of behaviour, arguments, return value,
-intended use and ownership. They address "the caller" rather than the reader.
+intended use and ownership. They address "the caller" rather than the reader,
+and are as long as the subject requires and no longer. Documentation lives at
+the definition, and a doc comment on a value declaration separates paragraphs
+with `/// ---` rather than an empty `///` line, which autodoc treats as the end
+of the comment. See `STYLE.md` §8.
 
 The development environment is a nix flake dev shell. Use `nix develop` for zig,
 zls and the system libraries; nothing is installed globally.

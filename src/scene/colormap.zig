@@ -12,7 +12,7 @@
 const std = @import("std");
 
 /// Which color ramp to display a scalar quantity through.
-///
+/// ---
 /// `viridis` is the perceptually uniform default and reads correctly in
 /// greyscale and with the common forms of color blindness. `plasma` is a
 /// similar ramp with a warmer range. `turbo` spans more distinguishable hues,

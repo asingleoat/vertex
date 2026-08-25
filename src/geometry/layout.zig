@@ -19,7 +19,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 
 /// The memory layouts a vertex stream can have.
-///
+/// ---
 /// `.aos3` stores each vertex as three consecutive `f32`, twelve bytes, and is
 /// the default: it is the most compact, so the most vertices fit in a cache
 /// line, which suits straight-line scalar code. `.aos4` pads each vertex to
@@ -27,7 +27,7 @@ const build_options = @import("build_options");
 /// memory and wire bandwidth for vector loads. `.soa` stores the stream as
 /// three planar runs, all x, then all y, then all z, which suits component-wise
 /// arithmetic and lets `xs`, `ys` and `zs` hand a kernel whole `[]f32` runs.
-///
+/// ---
 /// The choice is made by `-Dvertex_layout` and applies to the entire build.
 /// `.aos3` is the default; the other two exist to be measured against it with
 /// `zig build bench` rather than assumed to be faster.
@@ -47,7 +47,7 @@ pub const blob_alignment: std.mem.Alignment = .@"64";
 
 /// A position or direction in three dimensions: three `f32`, twelve bytes,
 /// owning nothing and copied freely.
-///
+/// ---
 /// This is the value type the accessors speak in every layout, so kernel code
 /// deals in `Vec3` whether the underlying stream is packed, padded or planar.
 /// It also serves as the arithmetic type for geometry code, with `add`, `sub`,
@@ -102,7 +102,7 @@ pub const Vec3 = extern struct {
 };
 
 /// The storage element of the `.aos4` layout: a `Vec3` padded to sixteen bytes.
-///
+/// ---
 /// The padding buys alignment, so `toVector` and `fromVector` convert to and
 /// from `@Vector(4, f32)` as a bitcast rather than a shuffle. It is storage
 /// only: callers still read and write `Vec3` through the accessors. The padding
@@ -354,25 +354,25 @@ pub fn PositionsOf(comptime l: Layout) type {
 }
 
 /// The vertex stream type this build uses, being `PositionsOf(layout)`.
-///
+/// ---
 /// A `Positions` carries the coordinates of `n` vertices and nothing else: the
 /// vertices of a mesh, the locations of a point cloud, or the values of a
 /// vector quantity, which are stored the same way. Connectivity and attributes
 /// travel beside it as plain slices — triangles as `[]const [3]u32`, segments
 /// as `[]const [2]u32`, scalar quantities as `[]const f32`.
-///
+/// ---
 /// This is the type to use whenever vertex coordinates are passed anywhere. The
 /// geometry kernels take it, the client library sends it, the scene stores it
 /// and the renderer uploads it, and because every part of the program agrees on
 /// it the wire format and the GPU vertex layout are derived from it rather than
 /// converted to.
-///
+/// ---
 /// It is a view rather than a container. `Mut` and `Const` mirror `[]T` and
 /// `[]const T`: copying one copies the view and not the data, and the memory
 /// belongs to whoever allocated it. `alloc` and `free` cover the common case of
 /// owning that memory; `fromBytes` and `fromSlice` wrap memory that already
 /// exists, such as a blob, a shared buffer or a stack array.
-///
+/// ---
 /// The layout in memory is selected at build time and is invisible to callers,
 /// who address vertices through `get`, `set`, `x`, `y` and `z`. See `Layout`
 /// for the available choices and the reasons they exist.

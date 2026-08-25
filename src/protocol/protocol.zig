@@ -78,7 +78,7 @@ pub const max_name_len = 255;
 
 /// The alignment, relative to the start of a payload, at which every binary
 /// section begins.
-///
+/// ---
 /// Sections start at multiples of this so that a payload placed in memory
 /// aligned to it yields views a `@Vector` load can use directly. `decode`
 /// itself requires only `payload_alignment`; this larger figure is what makes
@@ -93,7 +93,7 @@ pub const payload_alignment = @max(@alignOf(u32), @alignOf(f32), @alignOf(layout
 
 /// The tag identifying what a frame carries, and the tag of the decoded
 /// `Message` union.
-///
+/// ---
 /// `hello` opens a connection and carries the version check. `begin_run` and
 /// `end_run` bracket one execution of a sketch; `begin_frame` and `end_frame`
 /// bracket one step within it. `mesh`, `points` and `lines` register a
@@ -101,7 +101,7 @@ pub const payload_alignment = @max(@alignOf(u32), @alignOf(f32), @alignOf(layout
 /// `mesh_positions` updates only the vertices of an existing mesh and reuses its
 /// triangles. `scalar_quantity` and `vector_quantity` attach a named field to a
 /// structure already registered. `log` carries a line for the viewer's console.
-///
+/// ---
 /// The enum is non-exhaustive: a tag this version does not define is rejected
 /// by `decode` rather than treated as corruption.
 pub const Kind = enum(u16) {
@@ -133,7 +133,7 @@ pub const Target = enum(u8) { vertex = 0, face = 1, point = 2 };
 pub const LogLevel = enum(u8) { info, warn, err };
 
 /// Where the bytes of one binary section come from.
-///
+/// ---
 /// An inline section is a slice the encoder writes into the frame, so its bytes
 /// travel through the socket and must outlive the write. An external section is
 /// a region of a shared mapping that the frame only refers to, by descriptor
@@ -260,7 +260,7 @@ pub const Header = extern struct {
 };
 
 /// The meaning of the bits in `Header.flags`.
-///
+/// ---
 /// `external` marks a frame whose binary sections are `SectionRef`s into shared
 /// mappings rather than inline bytes, and `fd_count` says how many descriptors
 /// accompany it. Conversion to and from the wire integer is a bit-cast.
@@ -386,12 +386,12 @@ pub const max_head_size = 12;
 const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(0);
 
 /// One encoded frame, as a list of slices to be written in order.
-///
+/// ---
 /// The frame header and the message's fixed head are stored inside this value;
 /// the variable parts, being names, positions, indices and values, remain the
 /// caller's slices and are only pointed at, which is what makes encoding
 /// copy-free. All of them must outlive the write.
-///
+/// ---
 /// `slices` and `writeTo` install views that point into this value's own
 /// storage, so an `Encoded` must not be moved or copied once either has been
 /// called. Build it, write it, and let it go.

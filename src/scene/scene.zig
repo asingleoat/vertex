@@ -53,7 +53,7 @@ pub const BlobIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 pub const MappingIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 /// Identifies an interned string, as a byte offset into one shared buffer.
-///
+/// ---
 /// Names are interned once, on first registration, so comparing two structures'
 /// names is comparing two integers. A `[]const u8` obtained from `string` is
 /// invalidated by interning anything else, because the buffer may move; hold
@@ -89,7 +89,7 @@ pub const MemoryStats = struct {
 
 /// How a structure is displayed, kept per name rather than per structure so
 /// that it survives a rebuild.
-///
+/// ---
 /// A new run replaces geometry but not these settings, which is the point: the
 /// visibility, colormap and sizes chosen while looking at a result are still in
 /// force when the algorithm is edited and run again.
@@ -105,7 +105,7 @@ pub const UiState = struct {
 
 /// One snapshot of a structure's geometry, tagged with the run and frame it
 /// arrived in.
-///
+/// ---
 /// It holds references rather than data: a positions blob, an optional topology
 /// blob, and a range of quantity references in the structure's side array. Two
 /// versions that differ only in vertex positions share one topology blob, which
@@ -136,7 +136,7 @@ pub const QuantityRef = struct {
 /// A named renderable and its history: the interned name, what kind it is, how
 /// many dimensions it claims, every version so far, and the side array those
 /// versions address for their quantities.
-///
+/// ---
 /// A structure with no versions has been discarded by a run that did not
 /// register it; its slot and `UiState` remain so that the name can come back.
 /// The arrays are owned by the scene and released by `Scene.deinit`.
@@ -152,7 +152,7 @@ pub const Structure = struct {
 
 /// A reference-counted run of bytes: the positions, topology or quantity values
 /// that versions point at.
-///
+/// ---
 /// Blobs are shared, which is the mechanism behind the timeline's memory
 /// behaviour: two versions referring to the same topology hold one blob between
 /// them, and it is freed when the last reference goes. The bytes are either
@@ -167,7 +167,7 @@ pub const Blob = struct {
 
 /// A shared memory region that the edge has mapped and the scene may point
 /// into.
-///
+/// ---
 /// This is how the zero-copy path reaches the scene: the socket thread maps a
 /// descriptor the client sent, registers the region here, and blobs then adopt
 /// slices of it as views instead of copying. The scene never unmaps or closes
@@ -187,7 +187,7 @@ pub const LogEntry = struct {
 };
 
 /// The ways applying a message can fail.
-///
+/// ---
 /// Out of memory is reported without leaving the scene inconsistent or leaking.
 /// Every other error describes a message that is well-formed but not applicable,
 /// such as a quantity naming a structure that does not exist or a positions
@@ -233,7 +233,7 @@ fn emptyMappingBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
 /// The scene itself: the structures, their versions, the blob store those
 /// versions point into, the registered mappings, the interned strings and the
 /// console log.
-///
+/// ---
 /// A viewer holds one. Messages go in through `apply`, which is the only way its
 /// contents change; the render edge then reads through `versionAt`,
 /// `positionsOf`, `facesOf` and their neighbours, and drains `new_blobs` and

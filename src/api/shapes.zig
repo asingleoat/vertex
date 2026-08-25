@@ -31,7 +31,7 @@ pub const Vec3 = layout.Vec3;
 /// The coordinates of `n` vertices: the type every geometry call and every
 /// message takes. It is a view rather than a container, so the caller owns the
 /// memory behind it.
-///
+/// ---
 /// ```zig
 /// const p = try Positions.alloc(gpa, 3);
 /// defer p.free(gpa);

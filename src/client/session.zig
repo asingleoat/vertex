@@ -43,13 +43,13 @@ pub const GeometryOptions = struct {
 
 /// Where a session sends its messages: a type-erased destination that accepts
 /// one `protocol.Message` at a time.
-///
+/// ---
 /// This is the seam that lets the same sketch code run over a socket or inside
 /// the viewer. `SocketSink` in `transport.zig` encodes each message and writes
 /// it; `DirectSink` in `dylib.zig` encodes it and hands the bytes to the viewer
 /// in-process. A test can supply a sink that merely records, which is how the
 /// message sequencing is tested without any I/O at all.
-///
+/// ---
 /// The implementation owns whatever `context` points at; `send` is synchronous
 /// and borrows the message and its slices for the duration of the call.
 pub const Sink = struct {
@@ -70,13 +70,13 @@ pub const Sink = struct {
 
 /// Sends messages to a sink in a valid order, and is the client API when the
 /// transport belongs to someone else.
-///
+/// ---
 /// A stepping sketch under `steps/` is handed one of these, because in that
 /// mode the viewer already owns the transport. A socket client instead holds a
 /// `Connection`, which wraps a `Session` around a socket it owns. The calls and
 /// the rules are identical, and what each message means to the viewer is
 /// documented on `Connection` in `api/sketch.zig`.
-///
+/// ---
 /// The session tracks the run and frame lifecycle, so that `step` and `finish`
 /// emit the right boundaries and a call after the run has ended is refused
 /// rather than sent. It borrows the sink for its lifetime and allocates
@@ -180,7 +180,7 @@ pub const Session = struct {
 
 /// The run and frame lifecycle a session enforces: which frame is open,
 /// whether one is open at all, and whether the run has finished.
-///
+/// ---
 /// Every message call goes through here, which is where the protocol's ordering
 /// rules are applied and where argument validation happens, so that a malformed
 /// call is refused before anything reaches the sink. `Connection` holds one of

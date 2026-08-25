@@ -79,7 +79,7 @@ pub const SharedError = transport.SharedError;
 pub const Shared = transport.Shared;
 
 /// Options for opening a connection.
-///
+/// ---
 /// `name` labels the run in the viewer and is the only required field. Setting
 /// `optional` makes a missing viewer produce a disconnected connection rather
 /// than an error, so that the sketch still runs without one; `isConnected`
@@ -96,14 +96,14 @@ pub const ConnectOptions = struct {
 
 /// A connection to the viewer, owning the socket and any shared buffers taken
 /// from it.
-///
+/// ---
 /// `connect` returns a `Connection` by value. The caller should store it in a
 /// `var` and defer `close`, so that an early error still releases the socket and
 /// any unsent shared buffers. `finish` ends the run and closes the connection,
 /// after which the deferred `close` has no further effect. A connection owns its
 /// socket and at most eight outstanding shared mappings, is not thread-safe, and
 /// should not be copied once in use.
-///
+/// ---
 /// Each message call encodes one message and writes it to the socket before
 /// returning. The calls are synchronous, allocate nothing, and borrow their
 /// arguments only for the duration of the call, so there is no queue to flush
@@ -111,7 +111,7 @@ pub const ConnectOptions = struct {
 /// existing name replaces its geometry and appends a version to the timeline;
 /// the viewer's display state for that name, such as visibility, colormap and
 /// sizes, is preserved.
-///
+/// ---
 /// A connection opened with `.optional` set when no viewer is listening is not
 /// connected. Every call on it succeeds and does nothing, so a sketch needs no
 /// separate code path.

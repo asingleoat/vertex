@@ -261,7 +261,19 @@ Neither is used yet, but the code is shaped so that both remain available.
 - Doc comments and code comments are written in plain technical English, in full
   sentences, using established terminology. They describe behaviour, arguments,
   return values, intended use and how the caller should hold the result, and
-  they address "the caller" rather than the reader.
+  they address "the caller" rather than the reader. Their length follows how
+  much there is to explain: a paragraph or several for a type or function a
+  reader must understand, a sentence for a mechanical accessor.
+- A doc comment on a value declaration must contain no empty `///` line.
+  Separate its paragraphs with `/// ---`, which renders as a horizontal rule.
+  Autodoc renders such a declaration with its "short" form, which stops at the
+  first zero-length doc line, so an empty line silently hides everything below
+  it; a separator of three or more `-`, `_` or `*` is a thematic break and does
+  not. Functions, containers and module headers are rendered in full and may use
+  empty lines as ordinary paragraph breaks.
+- The definition site carries the documentation. A re-export summarises what the
+  declaration is for and when to reach for it, because the generated docs follow
+  a linkified identifier to where it is defined.
 - `-Drelease` selects `ReleaseFast`, which is what a user writing sketches gets
   and what benchmarks always use. Build the viewer in Debug or `ReleaseSafe`
   when working on vertex itself.
