@@ -312,10 +312,12 @@ inspector tooltip.
   runs on a leak-checking `DebugAllocator`); `zig build -Drelease` is the
   ReleaseSafe daily driver; benches are always ReleaseFast.
 - Verification: `zig build test` (all layouts via `-Dvertex_layout`) plus
-  `nix develop -c scripts/smoke.sh`, which drives the viewer under Xvfb
-  through the socket sketches, the churn regression, the stepper autorun and
-  the shared-memory stress, asserting the deterministic stat lines and the
-  absence of sokol errors and allocator leak reports.
+  `nix develop -c scripts/smoke.sh`, which drives the viewer through the
+  socket sketches, the churn regression, the stepper autorun and the
+  shared-memory stress, asserting the deterministic stat lines and the
+  absence of sokol errors and allocator leak reports. Headless under Xvfb on
+  Linux; on macOS there is no Xvfb, so it runs on the real display (four
+  windows appear and close) — same assertions, ~46 s.
 - Terminal 1: `zig build run-viewer` — stays up for days.
 - Terminal 2: `zig build run-sketch --watch` (`-Dsketch=<name>`, default
   `current`) — verified: the run step re-executes on every save; the exe
@@ -359,8 +361,8 @@ inside a viewer edge module with a documented backend assumption. The
 touchpoints and their counterparts:
 
 macOS cells marked ✅ are facts established on aarch64-darwin (macOS 26.5.2,
-M1 Pro, 2026-08-24) while getting `zig build test` green, the viewer up on
-Metal and the zero-copy path restored; the rest are still the plan.
+M1 Pro, 2026-08-24) porting the viewer: toolchain, Metal, zero-copy, dylib
+stepping and the smokes all run there now. Only the ❌ row is outstanding.
 
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
@@ -372,6 +374,8 @@ Metal and the zero-copy path restored; the rest are still the plan.
 | Transport | Unix domain socket via `std.Io.net` | ✅ same; `std.Io.net` binds, connects and accepts on the kqueue `Threaded` backend | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
 | Abstract sockets | `"\0name"`, no file to clean up | ✅ none — Darwin has no abstract namespace; bind a real file | none |
 | Windowing / GPU | sokol_app X11 + GL 4.3 | ✅ sokol_app Cocoa + Metal, selected by passing `.gl = false` to sokol-zig (its `auto` resolves to Metal on darwin); frameworks `AppKit`, `QuartzCore`, `Metal`, `AudioToolbox`. Mesh, points, lines and ImGui all render | sokol_app Win32 + D3D11 |
+| Dylib stepping | `libstep-<name>.so`, `dlopen` of a copy | ✅ unchanged: `zig build step` names it `libstep-<name>.dylib`, `std.DynLib` is `dlopen`, and macOS raises no code-signing objection to `dlopen`ing the viewer's copy. Only the copied-path suffix was hardcoded | `.dll`; `LoadLibrary`, and the never-unload policy still applies |
+| Headless smokes | `xvfb-run` + llvmpipe | ✅ no Xvfb exists: run on the real display. Frame caps shrink because vsync paces frames where llvmpipe does not | no Xvfb either; a hidden window or WARP |
 | Shaders | `sokol-shdc -l glsl430` | ✅ `-l glsl430:metal_macos` — one checked-in file per shader carries both backends, byte-identical from either OS, and the GLCORE branch is unchanged by adding Metal. The `osx_arm64` sokol-shdc runs straight from the nix store (no Gatekeeper quarantine) | add `hlsl5` |
 | Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass — **to be deleted**: picking moves to a CPU ray cast (decision above), which needs no readback on any backend | ✅ picking is off meanwhile: `pick.Picker` comptime-selects a disabled picker — required, not merely tidy, because a Metal build does not link OpenGL, so the GL externs must not be analyzed at all. ✅ a synchronous Metal readback is impossible (sokol commits its only frame command buffer at `sg.commit()` and does not expose it, so a mid-frame `waitUntilCompleted` waits on a command buffer behind an uncommitted one) | same: no readback needed |
 | Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | ❌ blocked: `gl_PrimitiveID` in a fragment shader needs **MSL 2.2** and SPIRV-Cross refuses below it (`PrimitiveId on macOS requires MSL 2.2`) — sokol-shdc has no MSL version flag, in the pinned build *or* master (checked 2026-08-24). `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` stay GL-only; the renderer asks the generated desc whether the backend has a source and falls back to the plain mesh pipeline. Fixing it means a shdc that sets MSL 2.2, or dropping `primitive_id` for a per-vertex face index (which costs vertex duplication) | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |

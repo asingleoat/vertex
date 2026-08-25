@@ -189,20 +189,38 @@ feature, not a port step. Owes before/after numbers and a check that a CPU
 hit agrees with a GL hit on the same scene. The retina/dpi question below
 belongs to it.
 
-**Step 4 — dylib mode.** `std.DynLib` uses `dlopen` on macOS; the stepping
-library becomes `libstep-<name>.dylib` (`build.zig` names it; the viewer's
-copy-to-unique-path and never-`dlclose` policy apply unchanged). Done:
-`VERTEX_STEP_LIB=… VERTEX_STEP_AUTORUN=1` prints `stepper steps=60
-state=finished`, and a rebuild mid-session prints `reloads=1`.
+**Step 4 — dylib mode.** ✅ (2026-08-24) Worked essentially unchanged:
+`zig build step` already names the artifact `libstep-<name>.dylib`,
+`std.DynLib` is `dlopen`, and macOS raises no code-signing objection to
+`dlopen`ing the viewer's copy. Only the copied-library path's hardcoded
+`.so` needed fixing. `stepper steps=60 state=finished reloads=0 leaks=0`
+with `structures=1 frames=61 blobs=123`, and an edit + rebuild mid-session
+gives `reloads=1` with the previous run retained (`blobs=246`).
 
-**Step 5 — smokes on a Mac.** There is no Xvfb; `scripts/smoke.sh` needs a
-darwin branch that runs on the real display (the viewer already exits by
-frame count via `VERTEX_EXIT_AFTER_FRAMES`). Keep the leak assertions: a
-plain `zig build` is Debug and the viewer's allocator is the leak-checking
-`DebugAllocator`.
+If you test reload by hand: a rebuild with no source *content* change does
+not reload, on any platform. The stepper polls the installed artifact's
+mtime and zig's install step skips the copy when the artifact is
+byte-identical, so `touch` + rebuild leaves mtime alone. Edit something.
+
+**Step 5 — smokes on a Mac.** ✅ (2026-08-24) SMOKE OK in ~46 s, every
+scenario and every assertion, leak checks included. Four windows appear and
+close — there is no Xvfb. All platform differences are one block at the top
+of `scripts/smoke.sh`: the viewer wrapper, the step-library suffix, the
+frame caps (smaller here because vsync paces frames where llvmpipe does
+not), and the pick probe, which is asserted to *miss* while picking is
+disabled so the path is still exercised and the assertion must be revisited
+deliberately when the CPU ray cast lands. §5's worry about the build-summary
+wording was unfounded: `" debug native"` appears for darwin targets too.
 
 Fill in one row of DESIGN.md's portability table per step; update the
 table and this file as facts replace guesses.
+
+## 4b. What is left
+
+The port is done: Steps 0, 1, 2, 4 and 5 are all ✅ and the smokes pass. The
+one feature not working on macOS is **picking**, deliberately — see Step 3
+above. Face-target scalars are also off, blocked upstream on MSL 2.2
+(Step 1); they come back for free if sokol-shdc ever gains the flag.
 
 ## 5. Things that will bite
 
