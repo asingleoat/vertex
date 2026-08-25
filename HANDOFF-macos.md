@@ -114,7 +114,7 @@ SPIRV-Cross rejects anything below that, and sokol-shdc exposes no flag for the
 MSL version; this was checked against the pinned binary and against
 sokol-tools-bin master, so it is an upstream limitation rather than a stale pin.
 `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` are listed as GL-only in
-`build.zig`, through `isGlOnlyShader`, keeping `zig build shaders`
+`build.zig`, through `isGlOnlyShader`, so that `zig build shaders` remains
 reproducible. Face-target scalars fall back to the plain mesh pipeline, and the
 renderer decides by asking the generated descriptor whether this backend has a
 source, so a later shader compiler re-enables the feature without a code change.
@@ -192,8 +192,8 @@ windows appear and close; there is no Xvfb. Every platform difference is
 in one block at the top of `scripts/smoke.sh`: the viewer wrapper, the step
 library suffix, the frame caps, smaller here where vsync paces frames and
 llvmpipe does not, and the pick probe, which is asserted to miss while
-picking is disabled. The path is still exercised, and the assertion has to be
-revisited deliberately. The concern that the build summary might word
+picking is disabled, so that the path is still exercised and the assertion has
+to be revisited deliberately. The concern that the build summary might word
 Debug builds differently on Darwin was unfounded: `" debug native"` appears
 there too.
 

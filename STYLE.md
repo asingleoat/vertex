@@ -24,8 +24,8 @@ tested and benchmarked without a window or a socket.
 The approach follows Andrew Kelley's "Programming Without Pointers" and
 "Practical DOD".
 
-- Indices are non-exhaustive enums rather than bare integers. A `BlobIndex`
-  then cannot be passed where a `StructureIndex` is expected:
+- Indices are non-exhaustive enums rather than bare integers, so that a
+  `BlobIndex` cannot be passed where a `StructureIndex` is expected:
   ```zig
   pub const StructureIndex = enum(u32) { none = std.math.maxInt(u32), _ };
   pub const BlobIndex      = enum(u32) { none = std.math.maxInt(u32), _ };
@@ -83,8 +83,8 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
 - Out of memory is propagated as `error.OutOfMemory`, never a panic. `catch
   unreachable` is permitted only immediately after an `ensure*Capacity` that
   covers it, and the `assumeCapacity` variants are preferred to that.
-- Blob payloads are allocated with `alignedAlloc` at 64 bytes, aligning
-  `@Vector` loads over the flat `f32` view and later GPU staging.
+- Blob payloads are allocated with `alignedAlloc` at 64 bytes, so that
+  `@Vector` loads over the flat `f32` view and later GPU staging are aligned.
 
 ## 3. Data layout
 
@@ -108,8 +108,9 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   are `inline`, so the generated code matches hand-written indexing. Changing
   `build_options.vertex_layout` recompiles every kernel against the new offsets
   and stride and requires no other change. The default is `.aos3`, the most
-  compact, fitting the most vertices per cache line. `.aos4`, with a 16-byte stride that `@bitCast`s to
-  `@Vector(4, f32)`, and `.soa` exist to be measured rather than assumed.
+  compact, so the most vertices fit in a cache line. `.aos4`, with a 16-byte
+  stride that `@bitCast`s to `@Vector(4, f32)`, and `.soa` exist to be measured
+  rather than assumed.
 - Geometry kernels are layout-parameterized namespaces:
   `pub fn Geometry(comptime layout: Layout) type { return struct { ... }; }`,
   with the canonical instantiation
@@ -145,8 +146,8 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   appear in loop bodies.
 - Hot structs assert their size. Fields are ordered from largest to smallest and
   flags are collected into a `packed struct(u8)`. Every hot record has a test of
-  the form `try std.testing.expectEqual(24, @sizeOf(Version));`. A layout
-  regression then fails the build rather than passing unnoticed.
+  the form `try std.testing.expectEqual(24, @sizeOf(Version));`, so that a
+  layout regression fails the build rather than passing unnoticed.
 - Wire structs are `extern struct` with explicit little-endian fields, so header
   parsing is a `bytesAsValue` rather than a field-by-field read. They contain no
   padding holes, and a test asserts `@sizeOf` equals the documented byte count.
@@ -273,11 +274,16 @@ Neither is used yet. The code is shaped to keep both available.
   dashes, or a definition given as a list of parts. "A `Positions` value provides
   a stream of vertex coordinates. Any additional structure, such as connectivity
   information, must be carried alongside it" needs none of them.
-- Treat "so that", "because" and "since" as suspect. Each introduces a
-  justification, and a justification is usually either a fact that deserves its
-  own sentence or ornament that deserves deletion. Prefer a colon, a semicolon
-  or a full stop: "Mappings are never closed: unloading Zig or C TLS is
-  hazardous" states the same thing and stops explaining itself.
+- Treat "so that", "because" and "since" as suspect without banning them. Each
+  introduces a justification, which is worth keeping when the causal or
+  purposive link is itself the information the reader needs: "Indices are
+  non-exhaustive enums rather than bare integers, so that a `BlobIndex` cannot
+  be passed where a `StructureIndex` is expected" states why the rule exists,
+  and loses that if the clause is split off. Cut the clause when it justifies a
+  design decision to no one in particular, and replace it with a colon or a full
+  stop when it states a fact: "This function exists so that `bench/` can
+  instantiate all three layouts" becomes "`bench/` uses this to instantiate all
+  three".
 - A doc comment on a value declaration must contain no empty `///` line.
   Separate its paragraphs with `/// ---`, which renders as a horizontal rule.
   Autodoc renders such a declaration with its "short" form, which stops at the
