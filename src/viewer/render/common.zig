@@ -5,12 +5,114 @@ const sg = @import("sokol").gfx;
 
 const BlobIndex = vertex.scene.BlobIndex;
 const Colormap = vertex.colormap.Colormap;
+const Positions = vertex.layout.Positions;
 const QuantityRef = vertex.scene.QuantityRef;
 const Scene = vertex.scene.Scene;
 const StructureIndex = vertex.scene.StructureIndex;
 
 /// Resource kind used when lazily mirroring a scene blob into a GPU buffer.
 pub const BufferKind = enum { vertex, index, storage };
+
+/// Configures build-selected position attributes on `desc`. Position data is
+/// borrowed, no allocation occurs, and `instanced` selects the input step rate.
+pub fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
+    switch (vertex.layout.layout) {
+        .aos3, .aos4 => {
+            desc.layout.buffers[0] = .{
+                .stride = @intCast(Positions.stride),
+                .step_func = if (instanced) .PER_INSTANCE else .PER_VERTEX,
+            };
+            desc.layout.attrs[0] = .{
+                .buffer_index = 0,
+                .offset = @intCast(@offsetOf(Positions.Elem, "x")),
+                .format = .FLOAT3,
+            };
+        },
+        .soa => inline for (0..3) |i| {
+            desc.layout.buffers[i] = .{
+                .stride = @sizeOf(f32),
+                .step_func = if (instanced) .PER_INSTANCE else .PER_VERTEX,
+            };
+            desc.layout.attrs[i] = .{ .buffer_index = i, .format = .FLOAT };
+        },
+    }
+}
+
+/// Binds one borrowed build-selected position buffer and its planar offsets.
+/// The binding is updated in place without allocation or ownership transfer.
+pub fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void {
+    switch (vertex.layout.layout) {
+        .aos3, .aos4 => bindings.vertex_buffers[0] = buffer,
+        .soa => {
+            const component_bytes = @as(u64, count) * @sizeOf(f32);
+            std.debug.assert(component_bytes * 2 <= std.math.maxInt(i32));
+            inline for (0..3) |i| bindings.vertex_buffers[i] = buffer;
+            bindings.vertex_buffer_offsets[1] = @intCast(component_bytes);
+            bindings.vertex_buffer_offsets[2] = @intCast(component_bytes * 2);
+        },
+    }
+}
+
+/// Returns the build-selected scalar texture-view slot without allocation.
+pub fn scalarViewSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
+    return switch (vertex.layout.layout) {
+        .aos3, .aos4 => aos_shader.VIEW_cmap_tex,
+        .soa => soa_shader.VIEW_cmap_tex,
+    };
+}
+
+/// Returns the build-selected scalar sampler slot without allocation.
+pub fn scalarSamplerSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
+    return switch (vertex.layout.layout) {
+        .aos3, .aos4 => aos_shader.SMP_cmap_smp,
+        .soa => soa_shader.SMP_cmap_smp,
+    };
+}
+
+/// Multiplies the borrowed RGB color in place by the established stale factor.
+/// Alpha is unchanged and the operation allocates nothing.
+pub fn dim(color: *[4]f32) void {
+    color[0] *= 0.45;
+    color[1] *= 0.45;
+    color[2] *= 0.45;
+}
+
+/// Destroys and removes entries not used in `frame` once `map` exceeds `cap`.
+/// The map retains its allocation; each removed entry's GPU buffer is consumed.
+pub fn trimStale(
+    comptime Key: type,
+    comptime Entry: type,
+    map: *std.AutoHashMapUnmanaged(Key, Entry),
+    frame: u64,
+    cap: u32,
+) u32 {
+    comptime {
+        if (!@hasField(Entry, "buffer") or !@hasField(Entry, "last_used")) {
+            @compileError("trimStale Entry requires buffer and last_used fields");
+        }
+    }
+    if (map.count() <= cap) return 0;
+    var destroyed: u32 = 0;
+    while (findStale(Key, Entry, map, frame)) |key| {
+        const removed = map.fetchRemove(key).?;
+        sg.destroyBuffer(removed.value.buffer);
+        destroyed += 1;
+    }
+    return destroyed;
+}
+
+fn findStale(
+    comptime Key: type,
+    comptime Entry: type,
+    map: *std.AutoHashMapUnmanaged(Key, Entry),
+    frame: u64,
+) ?Key {
+    var iterator = map.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.last_used < frame) return entry.key_ptr.*;
+    }
+    return null;
+}
 
 const ColormapGpu = struct {
     image: sg.Image,

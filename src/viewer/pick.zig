@@ -10,6 +10,7 @@ const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;
 
+const common = @import("render/common.zig");
 const mesh_render = @import("render/mesh.zig");
 const pick_lines_shader = @import("shaders/pick_lines.zig");
 const pick_mesh_shader = @import("shaders/pick_mesh.zig");
@@ -17,7 +18,6 @@ const pick_mesh_soa_shader = @import("shaders/pick_mesh_soa.zig");
 const pick_points_shader = @import("shaders/pick_points.zig");
 const pick_points_soa_shader = @import("shaders/pick_points_soa.zig");
 const Mat4 = vertex.camera.Mat4;
-const Positions = vertex.layout.Positions;
 const Scene = vertex.scene.Scene;
 const StructureIndex = vertex.scene.StructureIndex;
 const Vec3 = vertex.layout.Vec3;
@@ -94,11 +94,11 @@ pub const Picker = struct {
 
         var mesh_desc = pickPipelineDesc(mesh_shader, "vertex pick mesh pipeline");
         mesh_desc.index_type = .UINT32;
-        configurePositions(&mesh_desc, false);
+        common.configurePositions(&mesh_desc, false);
 
         var points_desc = pickPipelineDesc(points_shader, "vertex pick points pipeline");
         points_desc.primitive_type = .TRIANGLE_STRIP;
-        configurePositions(&points_desc, true);
+        common.configurePositions(&points_desc, true);
 
         var lines_desc = pickPipelineDesc(lines_shader, "vertex pick lines pipeline");
         lines_desc.primitive_type = .TRIANGLE_STRIP;
@@ -254,7 +254,7 @@ pub const Picker = struct {
             var bindings: sg.Bindings = .{
                 .index_buffer = renderer.gpu.bufferFor(scene, version.topology, .index),
             };
-            bindPositions(&bindings, renderer.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
+            common.bindPositions(&bindings, renderer.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
             sg.applyPipeline(self.mesh_pipeline);
             sg.applyBindings(bindings);
             applyMeshUniforms(vp, shaderStructureId(i));
@@ -321,7 +321,7 @@ pub const Picker = struct {
             const positions = scene.positionsOf(version);
             if (positions.len() == 0) continue;
             var bindings: sg.Bindings = .{};
-            bindPositions(&bindings, renderer.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
+            common.bindPositions(&bindings, renderer.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
             sg.applyPipeline(self.points_pipeline);
             sg.applyBindings(bindings);
             applyPointUniforms(vp, viewport, ui_state.point_size, shaderStructureId(i));
@@ -356,42 +356,6 @@ fn pickPipelineDesc(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
         .sample_count = 1,
         .label = label,
     };
-}
-
-fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
-    switch (vertex.layout.layout) {
-        .aos3, .aos4 => {
-            desc.layout.buffers[0] = .{
-                .stride = @intCast(Positions.stride),
-                .step_func = if (instanced) .PER_INSTANCE else .PER_VERTEX,
-            };
-            desc.layout.attrs[0] = .{
-                .buffer_index = 0,
-                .offset = @intCast(@offsetOf(Positions.Elem, "x")),
-                .format = .FLOAT3,
-            };
-        },
-        .soa => inline for (0..3) |i| {
-            desc.layout.buffers[i] = .{
-                .stride = @sizeOf(f32),
-                .step_func = if (instanced) .PER_INSTANCE else .PER_VERTEX,
-            };
-            desc.layout.attrs[i] = .{ .buffer_index = i, .format = .FLOAT };
-        },
-    }
-}
-
-fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void {
-    switch (vertex.layout.layout) {
-        .aos3, .aos4 => bindings.vertex_buffers[0] = buffer,
-        .soa => {
-            const component_bytes = @as(u64, count) * @sizeOf(f32);
-            std.debug.assert(component_bytes * 2 <= std.math.maxInt(i32));
-            inline for (0..3) |i| bindings.vertex_buffers[i] = buffer;
-            bindings.vertex_buffer_offsets[1] = @intCast(component_bytes);
-            bindings.vertex_buffer_offsets[2] = @intCast(component_bytes * 2);
-        },
-    }
 }
 
 fn applyMeshUniforms(vp: Mat4, structure_id: i32) void {

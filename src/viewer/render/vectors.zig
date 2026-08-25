@@ -94,22 +94,7 @@ pub const Renderer = struct {
     /// Destroys cached arrow-instance buffers not drawn this frame once the
     /// cache holds more than `cap` entries (see common.Gpu.trimResidency).
     pub fn trim(self: *Renderer, cap: u32) u32 {
-        if (self.cache.count() <= cap) return 0;
-        var destroyed: u32 = 0;
-        while (self.findStale()) |key| {
-            const removed = self.cache.fetchRemove(key).?;
-            sg.destroyBuffer(removed.value.buffer);
-            destroyed += 1;
-        }
-        return destroyed;
-    }
-
-    fn findStale(self: *Renderer) ?Key {
-        var iterator = self.cache.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.value_ptr.last_used < self.frame) return entry.key_ptr.*;
-        }
-        return null;
+        return common.trimStale(Key, Entry, &self.cache, self.frame, cap);
     }
 
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
@@ -150,7 +135,7 @@ pub const Renderer = struct {
         if (!(scale > 0) or !std.math.isFinite(scale)) return;
 
         var draw_color = color;
-        if (structures.items(.stale)[structure_i]) dim(&draw_color);
+        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
         const vs: vector_shader.VsParams = .{
             .mvp = vp.m,
             .scale_factor_pad = .{ scale, 0, 0, 0 },
@@ -254,10 +239,4 @@ fn makeArrowVertices() [96]Vec3 {
     }
     std.debug.assert(write == vertices.len);
     return vertices;
-}
-
-fn dim(color: *[4]f32) void {
-    color[0] *= 0.45;
-    color[1] *= 0.45;
-    color[2] *= 0.45;
 }

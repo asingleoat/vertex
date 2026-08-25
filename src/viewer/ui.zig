@@ -521,92 +521,116 @@ fn drawTimeline(
 ) bool {
     var fit_requested = false;
     if (ig.igBegin("Timeline", null, ig.ImGuiWindowFlags_None)) {
-        _ = ig.igCheckbox("Follow latest", follow_latest);
-        _ = ig.igCheckbox("Compare previous run", compare_previous_run);
-        const frame_count = scene.frameCount();
-        const maximum_u32 = frame_count -| 1;
-        const maximum: c_int = @intCast(@min(maximum_u32, @as(u32, std.math.maxInt(c_int))));
-        var selected: c_int = @intCast(@min(scrub.*, @as(u32, @intCast(maximum))));
-        if (ig.igSliderInt("Frame", &selected, 0, maximum)) {
-            scrub.* = @intCast(selected);
-            follow_latest.* = false;
-        }
-        var frame_buffer: [128]u8 = undefined;
-        const kept_line = std.fmt.bufPrint(
-            &frame_buffer,
-            "kept {d}/{d} frames",
-            .{ keptFrameCount(scene), frame_count },
-        ) catch "frame retention unavailable";
-        text(kept_line);
-        if (scene.run > 1) {
-            const previous_line = std.fmt.bufPrint(
-                &frame_buffer,
-                "prev run: {d} frames",
-                .{scene.frameCountOfRun(scene.run - 1)},
-            ) catch "previous run frame count unavailable";
-            text(previous_line);
-        }
-
-        const mebibyte: f32 = 1024 * 1024;
-        const old_budget = scene.retention.budget_bytes;
-        var budget_mb = @as(f32, @floatFromInt(old_budget)) / mebibyte;
-        if (ig.igDragFloatEx(
-            "Memory budget (MB)",
-            &budget_mb,
-            1.0,
-            1.0,
-            65536.0,
-            "%.0f",
-            ig.ImGuiSliderFlags_AlwaysClamp,
-        )) {
-            scene.retention.budget_bytes = @intFromFloat(budget_mb * mebibyte);
-            if (scene.retention.budget_bytes < old_budget) scene.enforceBudget();
-        }
-
-        ig.igSeparator();
-        if (ig.igRadioButton("Orbit", camera_mode.* == .orbit)) camera_mode.* = .orbit;
-        ig.igSameLine();
-        if (ig.igRadioButton("Ortho2D", camera_mode.* == .ortho_2d)) camera_mode.* = .ortho_2d;
-        ig.igSameLine();
-        fit_requested = ig.igButton("Fit");
-
-        ig.igSeparator();
-        var buffer: [512]u8 = undefined;
-        const memory = scene.memoryStats();
-        const status = if (memory.evicted_versions == 0)
-            std.fmt.bufPrint(
-                &buffer,
-                "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB",
-                .{
-                    socket_path,
-                    if (connected) "yes" else "no",
-                    scene.run,
-                    frame_count,
-                    fps,
-                    @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
-                    @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
-                },
-            )
-        else
-            std.fmt.bufPrint(
-                &buffer,
-                "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB  evicted {d}",
-                .{
-                    socket_path,
-                    if (connected) "yes" else "no",
-                    scene.run,
-                    frame_count,
-                    fps,
-                    @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
-                    @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
-                    memory.evicted_versions,
-                },
-            );
-        const status_line = status catch "status line too long";
-        text(status_line);
+        const frame_count = drawTimelineFrames(scene, scrub, follow_latest, compare_previous_run);
+        drawTimelineRetention(scene);
+        fit_requested = drawTimelineCamera(camera_mode);
+        drawTimelineStatus(scene, socket_path, connected, fps, frame_count);
     }
     ig.igEnd();
     return fit_requested;
+}
+
+fn drawTimelineFrames(
+    scene: *const Scene,
+    scrub: *u32,
+    follow_latest: *bool,
+    compare_previous_run: *bool,
+) u32 {
+    _ = ig.igCheckbox("Follow latest", follow_latest);
+    _ = ig.igCheckbox("Compare previous run", compare_previous_run);
+    const frame_count = scene.frameCount();
+    const maximum_u32 = frame_count -| 1;
+    const maximum: c_int = @intCast(@min(maximum_u32, @as(u32, std.math.maxInt(c_int))));
+    var selected: c_int = @intCast(@min(scrub.*, @as(u32, @intCast(maximum))));
+    if (ig.igSliderInt("Frame", &selected, 0, maximum)) {
+        scrub.* = @intCast(selected);
+        follow_latest.* = false;
+    }
+    var frame_buffer: [128]u8 = undefined;
+    const kept_line = std.fmt.bufPrint(
+        &frame_buffer,
+        "kept {d}/{d} frames",
+        .{ keptFrameCount(scene), frame_count },
+    ) catch "frame retention unavailable";
+    text(kept_line);
+    if (scene.run > 1) {
+        const previous_line = std.fmt.bufPrint(
+            &frame_buffer,
+            "prev run: {d} frames",
+            .{scene.frameCountOfRun(scene.run - 1)},
+        ) catch "previous run frame count unavailable";
+        text(previous_line);
+    }
+    return frame_count;
+}
+
+fn drawTimelineRetention(scene: *Scene) void {
+    const mebibyte: f32 = 1024 * 1024;
+    const old_budget = scene.retention.budget_bytes;
+    var budget_mb = @as(f32, @floatFromInt(old_budget)) / mebibyte;
+    if (ig.igDragFloatEx(
+        "Memory budget (MB)",
+        &budget_mb,
+        1.0,
+        1.0,
+        65536.0,
+        "%.0f",
+        ig.ImGuiSliderFlags_AlwaysClamp,
+    )) {
+        scene.retention.budget_bytes = @intFromFloat(budget_mb * mebibyte);
+        if (scene.retention.budget_bytes < old_budget) scene.enforceBudget();
+    }
+}
+
+fn drawTimelineCamera(camera_mode: *CameraMode) bool {
+    ig.igSeparator();
+    if (ig.igRadioButton("Orbit", camera_mode.* == .orbit)) camera_mode.* = .orbit;
+    ig.igSameLine();
+    if (ig.igRadioButton("Ortho2D", camera_mode.* == .ortho_2d)) camera_mode.* = .ortho_2d;
+    ig.igSameLine();
+    return ig.igButton("Fit");
+}
+
+fn drawTimelineStatus(
+    scene: *const Scene,
+    socket_path: []const u8,
+    connected: bool,
+    fps: f64,
+    frame_count: u32,
+) void {
+    ig.igSeparator();
+    var buffer: [512]u8 = undefined;
+    const memory = scene.memoryStats();
+    const status = if (memory.evicted_versions == 0)
+        std.fmt.bufPrint(
+            &buffer,
+            "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB",
+            .{
+                socket_path,
+                if (connected) "yes" else "no",
+                scene.run,
+                frame_count,
+                fps,
+                @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
+                @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
+            },
+        )
+    else
+        std.fmt.bufPrint(
+            &buffer,
+            "socket={s}  connected={s}  run #{d}  frames={d}  fps={d:.1}  memory {d:.1} MB / {d:.1} MB  evicted {d}",
+            .{
+                socket_path,
+                if (connected) "yes" else "no",
+                scene.run,
+                frame_count,
+                fps,
+                @as(f64, @floatFromInt(memory.blob_bytes)) / (1024.0 * 1024.0),
+                @as(f64, @floatFromInt(scene.retention.budget_bytes)) / (1024.0 * 1024.0),
+                memory.evicted_versions,
+            },
+        );
+    text(status catch "status line too long");
 }
 
 fn keptFrameCount(scene: *const Scene) u32 {

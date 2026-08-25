@@ -1,6 +1,7 @@
 //! Linux memfd-backed shared-memory regions with optional hugetlb pages.
 const std = @import("std");
 const platform = @import("platform.zig");
+const procfs = @import("procfs_linux.zig");
 
 const linux = std.os.linux;
 const mfd_hugetlb: u32 = if (@hasDecl(linux.MFD, "HUGETLB")) linux.MFD.HUGETLB else 0x4;
@@ -67,8 +68,8 @@ pub fn create(len: usize, options: CreateOptions) Error!Region {
 pub fn hugePagesConfigured() bool {
     var buffer: [64]u8 = undefined;
     inline for (.{ "/proc/sys/vm/nr_overcommit_hugepages", "/proc/sys/vm/nr_hugepages" }) |path| {
-        if (readProc(path, &buffer)) |bytes| {
-            if ((parseUnsigned(bytes) orelse 0) > 0) return true;
+        if (procfs.readProc(path, &buffer)) |bytes| {
+            if ((procfs.parseUnsigned(bytes) orelse 0) > 0) return true;
         }
     }
     return false;
@@ -133,15 +134,15 @@ pub fn warnIfHugeUnavailable(context: []const u8) void {
 
 pub fn hugePagesAvailable() bool {
     var overcommit_buffer: [64]u8 = undefined;
-    if (readProc("/proc/sys/vm/nr_overcommit_hugepages", &overcommit_buffer)) |bytes| {
-        if (parseUnsigned(bytes)) |count| {
+    if (procfs.readProc("/proc/sys/vm/nr_overcommit_hugepages", &overcommit_buffer)) |bytes| {
+        if (procfs.parseUnsigned(bytes)) |count| {
             if (count > 0) return true;
         }
     }
 
     var meminfo_buffer: [16 * 1024]u8 = undefined;
-    const meminfo = readProc("/proc/meminfo", &meminfo_buffer) orelse return false;
-    return (parseLabeledUnsigned(meminfo, "HugePages_Free:") orelse 0) > 0;
+    const meminfo = procfs.readProc("/proc/meminfo", &meminfo_buffer) orelse return false;
+    return (procfs.parseLabeledUnsigned(meminfo, "HugePages_Free:") orelse 0) > 0;
 }
 
 fn createHuge(len: usize) Error!?Region {
@@ -219,30 +220,4 @@ fn callFstatfs(comptime fstatfs: anytype, handle: platform.Handle) bool {
     else
         return false;
     return @as(usize, @intCast(filesystem_type)) == hugetlbfs_magic;
-}
-
-fn readProc(path: []const u8, buffer: []u8) ?[]const u8 {
-    const handle = std.posix.openat(std.posix.AT.FDCWD, path, .{ .CLOEXEC = true }, 0) catch return null;
-    defer close(handle);
-    var len: usize = 0;
-    while (len < buffer.len) {
-        const read_len = std.posix.read(handle, buffer[len..]) catch return null;
-        if (read_len == 0) break;
-        len += read_len;
-    }
-    return buffer[0..len];
-}
-
-fn parseLabeledUnsigned(bytes: []const u8, label: []const u8) ?u64 {
-    const start = std.mem.indexOf(u8, bytes, label) orelse return null;
-    return parseUnsigned(bytes[start + label.len ..]);
-}
-
-fn parseUnsigned(bytes: []const u8) ?u64 {
-    var start: usize = 0;
-    while (start < bytes.len and std.ascii.isWhitespace(bytes[start])) : (start += 1) {}
-    var end = start;
-    while (end < bytes.len and std.ascii.isDigit(bytes[end])) : (end += 1) {}
-    if (end == start) return null;
-    return std.fmt.parseInt(u64, bytes[start..end], 10) catch null;
 }

@@ -75,7 +75,8 @@ pub const Renderer = struct {
     /// Destroys cached instance buffers not drawn this frame once a cache
     /// holds more than `cap` entries (see common.Gpu.trimResidency).
     pub fn trim(self: *Renderer, cap: u32) u32 {
-        return trimMap(&self.line_cache, self.frame, cap) + trimMap(&self.wire_cache, self.frame, cap);
+        return common.trimStale(Key, Entry, &self.line_cache, self.frame, cap) +
+            common.trimStale(Key, Entry, &self.wire_cache, self.frame, cap);
     }
 
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
@@ -101,7 +102,7 @@ pub const Renderer = struct {
         const key: Key = .{ .positions = version.positions, .topology = version.topology };
         const entry = try self.lineEntry(scene, key, version) orelse return;
         var draw_color = color;
-        if (structures.items(.stale)[structure_i]) dim(&draw_color);
+        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
         self.drawEntry(entry, vp, viewport, structures.items(.ui)[structure_i].line_width, draw_color, false);
     }
 
@@ -164,7 +165,7 @@ pub const Renderer = struct {
         const key: Key = .{ .positions = version.positions, .topology = version.topology };
         const entry = try self.wireEntry(scene, key, version) orelse return;
         var draw_color = color;
-        if (structures.items(.stale)[structure_i]) dim(&draw_color);
+        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
         self.drawEntry(entry, vp, viewport, ui_state.line_width, draw_color, true);
     }
 
@@ -317,32 +318,7 @@ fn findMatching(map: *std.AutoHashMapUnmanaged(Key, Entry), blob_index: BlobInde
     return null;
 }
 
-fn trimMap(map: *std.AutoHashMapUnmanaged(Key, Entry), frame: u64, cap: u32) u32 {
-    if (map.count() <= cap) return 0;
-    var destroyed: u32 = 0;
-    while (findStale(map, frame)) |key| {
-        const removed = map.fetchRemove(key).?;
-        sg.destroyBuffer(removed.value.buffer);
-        destroyed += 1;
-    }
-    return destroyed;
-}
-
-fn findStale(map: *std.AutoHashMapUnmanaged(Key, Entry), frame: u64) ?Key {
-    var iterator = map.iterator();
-    while (iterator.next()) |entry| {
-        if (entry.value_ptr.last_used < frame) return entry.key_ptr.*;
-    }
-    return null;
-}
-
 fn destroyEntries(map: *std.AutoHashMapUnmanaged(Key, Entry)) void {
     var iterator = map.valueIterator();
     while (iterator.next()) |entry| sg.destroyBuffer(entry.buffer);
-}
-
-fn dim(color: *[4]f32) void {
-    color[0] *= 0.45;
-    color[1] *= 0.45;
-    color[2] *= 0.45;
 }

@@ -14,7 +14,6 @@ const scalar_soa_shader = @import("../shaders/mesh_scalar_soa.zig");
 const face_scalar_shader = @import("../shaders/mesh_face_scalar.zig");
 const face_scalar_soa_shader = @import("../shaders/mesh_face_scalar_soa.zig");
 const Mat4 = vertex.camera.Mat4;
-const Positions = vertex.layout.Positions;
 const Scene = vertex.scene.Scene;
 const StructureIndex = vertex.scene.StructureIndex;
 
@@ -50,9 +49,9 @@ pub const Renderer = struct {
         var mesh_desc = baseMeshPipeline(shader, "vertex mesh pipeline");
         var scalar_desc = baseMeshPipeline(scalar, "vertex scalar mesh pipeline");
         var face_scalar_desc = baseMeshPipeline(face_scalar, "vertex face scalar mesh pipeline");
-        configurePositions(&mesh_desc);
-        configurePositions(&scalar_desc);
-        configurePositions(&face_scalar_desc);
+        common.configurePositions(&mesh_desc, false);
+        common.configurePositions(&scalar_desc, false);
+        common.configurePositions(&face_scalar_desc, false);
         const value_buffer = switch (vertex.layout.layout) {
             .aos3, .aos4 => 1,
             .soa => 3,
@@ -135,9 +134,9 @@ pub const Renderer = struct {
         var bindings: sg.Bindings = .{
             .index_buffer = self.gpu.bufferFor(scene, version.topology, .index),
         };
-        bindPositions(&bindings, self.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
+        common.bindPositions(&bindings, self.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
         var draw_color = color;
-        if (structures.items(.stale)[structure_i]) dim(&draw_color);
+        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
 
         const active = common.activeQuantity(scene, structure_index, version);
         const use_vertex_scalar = if (active) |quantity|
@@ -157,8 +156,8 @@ pub const Renderer = struct {
                 .soa => 3,
             };
             bindings.vertex_buffers[value_buffer] = self.gpu.bufferFor(scene, quantity.blob, .vertex);
-            bindings.views[scalarViewSlot()] = self.gpu.colormapView(structures.items(.ui)[structure_i].colormap);
-            bindings.samplers[scalarSamplerSlot()] = self.gpu.sampler;
+            bindings.views[common.scalarViewSlot(scalar_shader, scalar_soa_shader)] = self.gpu.colormapView(structures.items(.ui)[structure_i].colormap);
+            bindings.samplers[common.scalarSamplerSlot(scalar_shader, scalar_soa_shader)] = self.gpu.sampler;
             sg.applyPipeline(self.mesh_scalar_pipeline);
             sg.applyBindings(bindings);
             applyScalarUniforms(vp, draw_color, try self.gpu.scalarRange(scene, quantity.blob));
@@ -303,36 +302,6 @@ fn baseMeshPipeline(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
     };
 }
 
-fn configurePositions(desc: *sg.PipelineDesc) void {
-    switch (vertex.layout.layout) {
-        .aos3, .aos4 => {
-            desc.layout.buffers[0].stride = @intCast(Positions.stride);
-            desc.layout.attrs[0] = .{
-                .buffer_index = 0,
-                .offset = @intCast(@offsetOf(Positions.Elem, "x")),
-                .format = .FLOAT3,
-            };
-        },
-        .soa => inline for (0..3) |i| {
-            desc.layout.buffers[i].stride = @sizeOf(f32);
-            desc.layout.attrs[i] = .{ .buffer_index = i, .format = .FLOAT };
-        },
-    }
-}
-
-fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void {
-    switch (vertex.layout.layout) {
-        .aos3, .aos4 => bindings.vertex_buffers[0] = buffer,
-        .soa => {
-            const component_bytes = @as(u64, count) * @sizeOf(f32);
-            std.debug.assert(component_bytes * 2 <= std.math.maxInt(i32));
-            inline for (0..3) |i| bindings.vertex_buffers[i] = buffer;
-            bindings.vertex_buffer_offsets[1] = @intCast(component_bytes);
-            bindings.vertex_buffer_offsets[2] = @intCast(component_bytes * 2);
-        },
-    }
-}
-
 fn applyPlainUniforms(vp: Mat4, color: [4]f32) void {
     switch (vertex.layout.layout) {
         .aos3, .aos4 => {
@@ -400,20 +369,6 @@ fn applyFaceScalarUniforms(vp: Mat4, color: [4]f32, value_range: [2]f32) void {
     }
 }
 
-fn scalarViewSlot() usize {
-    return switch (vertex.layout.layout) {
-        .aos3, .aos4 => scalar_shader.VIEW_cmap_tex,
-        .soa => scalar_soa_shader.VIEW_cmap_tex,
-    };
-}
-
-fn scalarSamplerSlot() usize {
-    return switch (vertex.layout.layout) {
-        .aos3, .aos4 => scalar_shader.SMP_cmap_smp,
-        .soa => scalar_soa_shader.SMP_cmap_smp,
-    };
-}
-
 fn faceScalarStorageSlot() usize {
     return switch (vertex.layout.layout) {
         .aos3, .aos4 => face_scalar_shader.VIEW_face_values,
@@ -433,12 +388,6 @@ fn faceScalarSamplerSlot() usize {
         .aos3, .aos4 => face_scalar_shader.SMP_cmap_smp,
         .soa => face_scalar_soa_shader.SMP_cmap_smp,
     };
-}
-
-fn dim(color: *[4]f32) void {
-    color[0] *= 0.45;
-    color[1] *= 0.45;
-    color[2] *= 0.45;
 }
 
 comptime {

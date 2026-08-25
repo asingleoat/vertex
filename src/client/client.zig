@@ -152,7 +152,7 @@ fn sharedRegion(shared: Shared) platform.shm.Region {
 /// Errors from resolving and opening the Unix-domain socket plus starting a
 /// run. Connection setup allocates nothing and owns no error payload.
 pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddress.InitError ||
-    std.Io.net.UnixAddress.ConnectError || error{MissingRuntimeDir};
+    std.Io.net.UnixAddress.ConnectError;
 
 /// Options for a new client run. All slices are borrowed only during
 /// `connect`; no option is retained and connection setup allocates nothing.
@@ -886,32 +886,41 @@ fn validateCount(count: usize) Error!void {
     if (count > std.math.maxInt(u32)) return error.TooManyElements;
 }
 
-fn resolveSocketPath(
+/// Resolves explicit, `VERTEX_SOCK`, runtime-dir, then `/tmp` precedence into
+/// caller-owned storage. The returned slice borrows `storage` and no allocation occurs.
+pub fn resolveSocketPath(
     environ: std.process.Environ,
     explicit_path: ?[]const u8,
     storage: *[std.Io.Dir.max_path_bytes]u8,
-) (std.Io.net.UnixAddress.InitError || error{MissingRuntimeDir})![]const u8 {
+) error{NameTooLong}![]const u8 {
     // Length against sockaddr_un is enforced at connect time by
     // platform.sockpath, which can rebase long paths; only the storage
     // buffer bounds the path here.
     if (explicit_path) |path| {
-        if (path.len > storage.len) return error.NameTooLong;
-        return path;
+        return copySocketPath(path, storage);
     }
     if (std.process.Environ.getPosix(environ, "VERTEX_SOCK")) |path| {
         if (path.len != 0) {
-            if (path.len > storage.len) return error.NameTooLong;
-            return path;
+            return copySocketPath(path, storage);
         }
     }
 
-    const runtime_dir = std.process.Environ.getPosix(environ, "XDG_RUNTIME_DIR") orelse
-        return error.MissingRuntimeDir;
-    const suffix = "/vertex.sock";
-    if (runtime_dir.len + suffix.len > storage.len) return error.NameTooLong;
-    @memcpy(storage[0..runtime_dir.len], runtime_dir);
-    @memcpy(storage[runtime_dir.len..][0..suffix.len], suffix);
-    return storage[0 .. runtime_dir.len + suffix.len];
+    if (std.process.Environ.getPosix(environ, "XDG_RUNTIME_DIR")) |runtime_dir| {
+        if (runtime_dir.len != 0) {
+            const suffix = "/vertex.sock";
+            if (runtime_dir.len + suffix.len > storage.len) return error.NameTooLong;
+            @memcpy(storage[0..runtime_dir.len], runtime_dir);
+            @memcpy(storage[runtime_dir.len..][0..suffix.len], suffix);
+            return storage[0 .. runtime_dir.len + suffix.len];
+        }
+    }
+    return copySocketPath("/tmp/vertex.sock", storage);
+}
+
+fn copySocketPath(path: []const u8, storage: *[std.Io.Dir.max_path_bytes]u8) error{NameTooLong}![]const u8 {
+    if (path.len > storage.len) return error.NameTooLong;
+    @memcpy(storage[0..path.len], path);
+    return storage[0..path.len];
 }
 
 fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
@@ -1073,6 +1082,10 @@ test "socket path precedence and optional disconnected sessions" {
     try testing.expectEqualStrings(
         "/run/user/1000/vertex.sock",
         try resolveSocketPath(runtime_environ, null, &storage),
+    );
+    try testing.expectEqualStrings(
+        "/tmp/vertex.sock",
+        try resolveSocketPath(.empty, null, &storage),
     );
 
     var connection = try connectWith(testing.io, .empty, .{

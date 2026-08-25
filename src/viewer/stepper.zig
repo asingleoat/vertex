@@ -619,10 +619,9 @@ fn hostLog(ctx: ?*anyopaque, level: u8, text_ptr: [*]const u8, len: usize) callc
 fn enqueueSlices(self: *Stepper, slices: []const []const u8) u8 {
     std.debug.assert(slices.len != 0);
     std.debug.assert(slices[0].len == @sizeOf(protocol.Header));
-    const header = protocol.decodeHeader(slices[0]) catch return 1;
-    if (header.len > 256 * 1024 * 1024) return 1;
-    if (protocol.Flags.fromInt(header.flags).external) return 1;
-    const payload = self.gpa.alignedAlloc(u8, .@"16", header.len) catch return 1;
+    const allocated = server.Inbox.allocatePayload(self.gpa, slices[0], false) catch return 1;
+    const header = allocated.header;
+    const payload = allocated.payload;
     var offset: usize = 0;
     for (slices[1..]) |slice| {
         if (slice.len > payload.len -| offset) {

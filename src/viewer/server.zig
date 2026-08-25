@@ -22,6 +22,36 @@ pub const Inbox = struct {
     /// mapping prefix entry, and must unmap/close them after scene adoption.
     pub const Item = InboxItem;
 
+    /// Parsed header plus one newly allocated 16-aligned payload buffer. The
+    /// caller owns `payload` and must free it with the allocator passed below.
+    pub const Payload = struct {
+        header: protocol.Header,
+        payload: []align(protocol.section_alignment) u8,
+    };
+
+    /// Header validation, payload cap, or allocation errors. Failures transfer
+    /// no ownership and retain no borrowed header bytes.
+    pub const PayloadError = protocol.DecodeError || std.mem.Allocator.Error || error{
+        PayloadTooLarge,
+        ExternalPayload,
+    };
+
+    /// Parses `header_bytes`, enforces the 256 MiB cap, optionally rejects
+    /// external sections, and allocates the caller-owned 16-aligned payload.
+    pub fn allocatePayload(
+        gpa: std.mem.Allocator,
+        header_bytes: []const u8,
+        allow_external: bool,
+    ) PayloadError!Payload {
+        const header = try protocol.decodeHeader(header_bytes);
+        if (header.len > 256 * 1024 * 1024) return error.PayloadTooLarge;
+        if (!allow_external and protocol.Flags.fromInt(header.flags).external) return error.ExternalPayload;
+        return .{
+            .header = header,
+            .payload = try gpa.alignedAlloc(u8, .@"16", header.len),
+        };
+    }
+
     mutex: std.Io.Mutex = .init,
     front: std.ArrayList(Item) = .empty,
     back: std.ArrayList(Item) = .empty,
@@ -97,7 +127,7 @@ pub const Server = struct {
     /// and spawns the accept thread. The environment is borrowed for this call.
     pub fn start(self: *Server, environ: std.process.Environ) StartError!void {
         std.debug.assert(self.thread == null and self.listener == null);
-        self.path_len = try resolvePath(environ, &self.path_storage);
+        self.path_len = (try vertex.client.resolveSocketPath(environ, null, &self.path_storage)).len;
         const path = self.socketPath();
         var shortened: vertex.platform.sockpath.Shortened = .{};
         vertex.platform.sockpath.shorten(self.io, path, &shortened) catch |err| {
@@ -236,12 +266,9 @@ pub const Server = struct {
                     cursor += copied;
                     if (header_len != header_bytes.len) continue;
 
-                    const decoded_header = try protocol.decodeHeader(&header_bytes);
-                    // A corrupt header must not drive allocation size; 256 MiB
-                    // is far beyond any real payload (1M vertices is ~12 MB).
-                    if (decoded_header.len > 256 * 1024 * 1024) return error.PayloadTooLarge;
-                    payload = try self.gpa.alignedAlloc(u8, .@"16", decoded_header.len);
-                    header = decoded_header;
+                    const allocated = try Inbox.allocatePayload(self.gpa, &header_bytes, true);
+                    payload = allocated.payload;
+                    header = allocated.header;
                     payload_len = 0;
                 }
 
@@ -325,28 +352,6 @@ fn closeFds(fds: []const platform.Handle) void {
 
 fn threadMain(server: *Server) void {
     server.run();
-}
-
-fn resolvePath(environ: std.process.Environ, storage: *[std.Io.Dir.max_path_bytes]u8) error{NameTooLong}!usize {
-    if (std.process.Environ.getPosix(environ, "VERTEX_SOCK")) |path| {
-        if (path.len != 0) {
-            if (path.len > storage.len) return error.NameTooLong;
-            @memcpy(storage[0..path.len], path);
-            return path.len;
-        }
-    }
-    if (std.process.Environ.getPosix(environ, "XDG_RUNTIME_DIR")) |runtime_dir| {
-        if (runtime_dir.len != 0) {
-            const suffix = "/vertex.sock";
-            if (runtime_dir.len + suffix.len > storage.len) return error.NameTooLong;
-            @memcpy(storage[0..runtime_dir.len], runtime_dir);
-            @memcpy(storage[runtime_dir.len..][0..suffix.len], suffix);
-            return runtime_dir.len + suffix.len;
-        }
-    }
-    const fallback = "/tmp/vertex.sock";
-    @memcpy(storage[0..fallback.len], fallback);
-    return fallback.len;
 }
 
 fn deleteIfPresent(io: std.Io, path: []const u8) std.Io.Dir.DeleteFileError!void {
