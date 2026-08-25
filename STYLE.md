@@ -278,7 +278,9 @@ Neither is used yet. The code is shaped to keep both available.
   read, not carried, ridden or travelled; a module does not know, speak or
   surrender anything, and state does not hang off or live in a structure. An
   evaluative adjective such as cheap, clever or convenient states an opinion
-  where a measurement or a mechanism belongs.
+  where a measurement or a mechanism belongs. A term of art from outside this
+  project, such as "walking skeleton", is ornament unless the reader is certain
+  to know it; name the thing instead.
 - Prefer a word to a punctuation mark. A colon or a semicolon standing in for
   "because", "so that", "and" or "which" reads worse than the word it replaced,
   and reads as terse for its own sake. Keep the colon for a genuine list or

@@ -524,7 +524,7 @@ starts it running. The exit statistics line gains
 
 ## Milestones
 
-- M1, the walking skeleton, completed 2026-08-23: flake and `build.zig`; a
+- M1, the first end-to-end path, completed 2026-08-23: flake and `build.zig`; a
   viewer with imgui, orbit and orthographic cameras, a socket server and mesh
   rendering in all layouts, with a timeline and the run lifecycle; a client
   streaming an animated icosphere. Verified end to end headless under Xvfb with
