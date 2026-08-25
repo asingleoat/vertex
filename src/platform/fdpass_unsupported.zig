@@ -1,6 +1,11 @@
 //! Descriptor-passing stubs for targets without a vertex implementation.
 const platform = @import("platform.zig");
 
+/// Whether this build can pass handles over a socket: never here. Receivers
+/// read the bytes plainly instead; senders have nothing to send handles for,
+/// because the shared-memory path that produces them is off too.
+pub const supported = false;
+
 /// Errors matching the supported descriptor-passing implementation. Stub calls
 /// return only `error.Unsupported` and never transfer ownership.
 pub const Error = error{

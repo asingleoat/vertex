@@ -9,6 +9,11 @@ const mfd_huge_shift: u5 = if (@hasDecl(linux.MFD, "HUGE_SHIFT")) linux.MFD.HUGE
 const mfd_huge_2mb: u32 = if (@hasDecl(linux.MFD, "HUGE_2MB")) linux.MFD.HUGE_2MB else @as(u32, 21) << mfd_huge_shift;
 const hugetlbfs_magic: usize = 0x958458f6;
 
+/// Whether this build can create shared regions at all. Callers gate the
+/// zero-copy path on it rather than on `builtin.os.tag`, so a port turns the
+/// path on by flipping one constant.
+pub const supported = true;
+
 /// Errors from creating or mapping a region. Failed calls leave no mapping or
 /// handle owned by the caller.
 pub const Error = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||

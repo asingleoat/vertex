@@ -2,6 +2,10 @@
 const std = @import("std");
 const platform = @import("platform.zig");
 
+/// Whether this build can create shared regions at all: never here, so every
+/// caller falls back to the inline payload path.
+pub const supported = false;
+
 /// Errors from unsupported shared-memory operations. Failed calls never
 /// transfer ownership to the caller.
 pub const Error = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||

@@ -4,7 +4,6 @@
 //! `Connection` is the convenient socket-owning variant returned by `connect`.
 //! Calls borrow all slices only for their duration and allocate nothing.
 const std = @import("std");
-const builtin = @import("builtin");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -506,7 +505,7 @@ pub const Connection = struct {
     /// `finish`/`close`. Request a fresh buffer for every message because the
     /// viewer retains versions, so reuse is impossible by construction.
     pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
-        if (builtin.os.tag != .linux) return error.Unsupported;
+        if (!platform.shm.supported) return error.Unsupported;
         if (self.state.finished) return error.Finished;
         if (self.socket == null) return error.NotConnected;
         return self.shared_tracker.create(len);
@@ -1100,7 +1099,7 @@ const LiveServer = struct {
     len: u32 = 0,
     mesh_vertex_count: u32 = 0,
     saw_external_positions: bool = false,
-    external_positions_match: bool = false,
+    positions_match: bool = false,
     failed: bool = false,
 
     /// Accepts one connection and decodes frames until EOF, recording kinds.
@@ -1122,11 +1121,20 @@ const LiveServer = struct {
 
         while (true) {
             var received_handles: [16]platform.Handle = undefined;
-            const received = try platform.fdpass.recvWithHandles(
+            const received = if (platform.fdpass.supported) try platform.fdpass.recvWithHandles(
                 stream.socket.handle,
                 pending[pending_len..],
                 &received_handles,
-            );
+            ) else read: {
+                // No handle passing means no shared sections to receive, so a
+                // plain readv sees the whole stream.
+                var data: [1][]u8 = .{pending[pending_len..]};
+                break :read platform.fdpass.Received{
+                    .bytes = try stream.read(io, &data),
+                    .handle_count = 0,
+                    .control_truncated = false,
+                };
+            };
             if (received.bytes == 0) {
                 if (pending_len != 0 or fd_len != 0) return error.Truncated;
                 return;
@@ -1191,12 +1199,12 @@ const LiveServer = struct {
         self.kinds[self.len] = std.meta.activeTag(message);
         self.len += 1;
         if (message == .mesh) self.mesh_vertex_count = message.mesh.positions.len();
-        if (message == .mesh_positions and protocol.Flags.fromInt(header.flags).external) {
-            self.saw_external_positions = true;
+        if (message == .mesh_positions) {
+            if (protocol.Flags.fromInt(header.flags).external) self.saw_external_positions = true;
             var expected_storage: [layout.Positions.byteSize(3)]u8 align(64) = undefined;
             const expected = layout.Positions.fromBytes(&expected_storage);
             expected.setAll(&.{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) });
-            self.external_positions_match = std.mem.eql(
+            self.positions_match = std.mem.eql(
                 u8,
                 expected.toConst().bytes(),
                 message.mesh_positions.positions.bytes(),
@@ -1210,8 +1218,17 @@ fn closeHandleSlice(handles: []const platform.Handle) void {
 }
 
 test "live unix socket round-trip delivers the frame sequence" {
-    // Linux abstract socket: no filesystem path to create or clean up.
-    const path = "\x00vertex-client-test-" ++ @tagName(layout.layout);
+    // A real socket file, not a Linux abstract name: macOS has no abstract
+    // namespace. The path is relative to the test runner's cwd so it stays far
+    // inside the `sockaddr_un` limit (107 bytes on Linux, 104 on Darwin).
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [64]u8 = undefined;
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/live-{s}.sock",
+        .{ &tmp.sub_path, @tagName(layout.layout) },
+    );
     const address = try std.Io.net.UnixAddress.init(path);
     var server = try address.listen(testing.io, .{});
     defer server.deinit(testing.io);
@@ -1225,12 +1242,24 @@ test "live unix socket round-trip delivers the frame sequence" {
     const positions = layout.Positions.fromSlice(&position_data);
     positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
     try connection.mesh("tri", positions.toConst(), &.{.{ 0, 1, 2 }}, .{});
-    const shared = try connection.sharedPositions(3);
-    shared.setAll(&.{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) });
-    try connection.meshPositions("tri", shared.toConst());
-    try testing.expectError(error.SharedConsumed, connection.meshPositions("tri", shared.toConst()));
-    const scalars = try connection.sharedScalars(4);
-    try testing.expectError(error.MisalignedShared, connection.scalar("tri", "bad", .vertex, scalars[1..]));
+    // The positions update travels zero-copy where shared memory exists and
+    // inline from caller memory where it does not; the frame sequence the
+    // server sees is the same either way.
+    const updated: [3]layout.Vec3 = .{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) };
+    if (platform.shm.supported) {
+        const shared = try connection.sharedPositions(3);
+        shared.setAll(&updated);
+        try connection.meshPositions("tri", shared.toConst());
+        try testing.expectError(error.SharedConsumed, connection.meshPositions("tri", shared.toConst()));
+        const scalars = try connection.sharedScalars(4);
+        try testing.expectError(error.MisalignedShared, connection.scalar("tri", "bad", .vertex, scalars[1..]));
+    } else {
+        try testing.expectError(error.Unsupported, connection.sharedPositions(3));
+        var update_data: [elem_count]layout.Positions.Elem = undefined;
+        const update = layout.Positions.fromSlice(&update_data);
+        update.setAll(&updated);
+        try connection.meshPositions("tri", update.toConst());
+    }
     try connection.step();
     try connection.log(.info, "hi");
     try connection.finish();
@@ -1240,11 +1269,14 @@ test "live unix socket round-trip delivers the frame sequence" {
     const expected = [_]protocol.Kind{ .hello, .begin_run, .mesh, .mesh_positions, .end_frame, .begin_frame, .log, .end_frame, .end_run };
     try testing.expectEqualSlices(protocol.Kind, &expected, live.kinds[0..live.len]);
     try testing.expectEqual(@as(u32, 3), live.mesh_vertex_count);
-    try testing.expect(live.saw_external_positions);
-    try testing.expect(live.external_positions_match);
+    // A ratchet, not a tolerance: the day a platform gains shared memory the
+    // zero-copy flag must appear on the frame without touching this test.
+    try testing.expectEqual(platform.shm.supported, live.saw_external_positions);
+    try testing.expect(live.positions_match);
 }
 
 test "connection shared buffer tracker rejects more than eight outstanding" {
+    if (!platform.shm.supported) return error.SkipZigTest;
     var tracker: SharedTracker = .{};
     defer tracker.releaseAll();
     for (0..max_outstanding_shared) |_| _ = try tracker.create(64);

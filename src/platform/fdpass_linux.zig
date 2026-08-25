@@ -5,6 +5,10 @@ const platform = @import("platform.zig");
 const max_parts = 64;
 const max_handles = 64;
 
+/// Whether this build can pass handles over a socket. Callers that only need
+/// the bytes read plainly when it is false; ownership rules are unaffected.
+pub const supported = true;
+
 /// Errors from one allocation-free sendmsg or recvmsg operation. On receive
 /// errors, the implementation closes any handles it already extracted.
 pub const Error = error{
