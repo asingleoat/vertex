@@ -41,8 +41,8 @@ dcimgui are on their master branches. Everything comes from nix: use
   Known quirks of master: `@bitCast` to or from an extern struct is rejected, so
   build the value field by field or read it through `*align(1) const T`;
   `OptimizeMode` is lowercase; fetched packages live in `zig-pkg/`; the
-  configure phase is cached, and `build.zig` poisons that cache so that new
-  sketches are discovered; `-Drelease` selects ReleaseFast and a plain
+  configure phase is cached, and `build.zig` poisons that cache to discover new
+  sketches; `-Drelease` selects ReleaseFast and a plain
   `zig build` is Debug.
 - Optimize paths that are known to be wasteful even when they are not the
   bottleneck. Measure to decide priority and to verify the result, never to
@@ -50,7 +50,7 @@ dcimgui are on their master branches. Everything comes from nix: use
 - Tests must earn their place. Keep contracts, regressions, ABI and format
   pins, and checks of out-of-memory behaviour, leaks and steady-state
   allocation; remove scaffolding. Pin measured quantities exactly, as a ratchet
-  rather than a ceiling, so that the cost of a change is visible when it is made
+  rather than a ceiling. The cost of a change is then visible when it is made,
   and the pin moves deliberately.
 - Keep the core pure and the effects at the edges, per `STYLE.md` §4: no
   operating-system or sokol call outside `src/platform/` and the viewer edge
@@ -114,7 +114,7 @@ SPIRV-Cross rejects anything below that, and sokol-shdc exposes no flag for the
 MSL version; this was checked against the pinned binary and against
 sokol-tools-bin master, so it is an upstream limitation rather than a stale pin.
 `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` are listed as GL-only in
-`build.zig`, through `isGlOnlyShader`, so that `zig build shaders` remains
+`build.zig`, through `isGlOnlyShader`, keeping `zig build shaders`
 reproducible. Face-target scalars fall back to the plain mesh pipeline, and the
 renderer decides by asking the generated descriptor whether this backend has a
 source, so a later shader compiler re-enables the feature without a code change.
@@ -142,13 +142,13 @@ descriptor is marked individually. `std.c` declares `recvmsg` without exporting
 it, so the module declares its own extern.
 
 `shm_darwin.zig` names each object and unlinks it immediately, leaving the
-descriptor as its only reference so that a crash leaves nothing behind.
+descriptor as its only reference; a crash leaves nothing behind.
 `O_EXCL` turns a name collision into a retry.
 
 `getrusage` alone was sufficient for `stats`, so `task_info` was not needed.
-`sockpath` keeps the rejection path, since there is no `/proc` to rebase on and
-no demand for an alternative. Huge pages became the compile-time
-`shm.huge_supported`, because the viewer, the client and the stress sketch were
+`sockpath` keeps the rejection path: there is no `/proc` to rebase on and no
+demand for an alternative. Huge pages became the compile-time
+`shm.huge_supported`. The viewer, the client and the stress sketch were
 otherwise reporting `huge=on` on a platform with no huge-page class.
 
 **Step 3, picking.** Superseded. Do not write a Metal readback. As decided on
@@ -168,8 +168,8 @@ brute force may already be competitive. Implement it first, measure, and add a
 per-blob BVH, cached as the derived edge lists are, if the measurements require
 it.
 
-The step is sequenced after steps 2, 4 and 5 because it is a redesign of a
-working feature rather than a port step. It requires before and after numbers
+The step is sequenced after steps 2, 4 and 5, being a redesign of a working
+feature rather than a port step. It requires before and after numbers
 and a check that a CPU hit agrees with a GL hit on the same scene. The retina
 and dpi question below belongs to it.
 
@@ -188,12 +188,12 @@ touching a source and rebuilding leaves the mtime alone. Edit something.
 
 **Step 5, the smoke tests.** Completed 2026-08-24. The suite passes in about 46
 seconds, with every scenario and assertion including the leak checks. Four
-windows appear and close, since there is no Xvfb. Every platform difference is
+windows appear and close; there is no Xvfb. Every platform difference is
 in one block at the top of `scripts/smoke.sh`: the viewer wrapper, the step
-library suffix, the frame caps, which are smaller because vsync paces frames
-where llvmpipe does not, and the pick probe, which is asserted to miss while
-picking is disabled, so that the path is still exercised and the assertion has
-to be revisited deliberately. The concern that the build summary might word
+library suffix, the frame caps, smaller here where vsync paces frames and
+llvmpipe does not, and the pick probe, which is asserted to miss while
+picking is disabled. The path is still exercised, and the assertion has to be
+revisited deliberately. The concern that the build summary might word
 Debug builds differently on Darwin was unfounded: `" debug native"` appears
 there too.
 

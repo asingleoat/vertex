@@ -39,9 +39,9 @@ pub const Layout = enum { aos3, aos4, soa };
 pub const layout: Layout = @field(Layout, @tagName(build_options.vertex_layout));
 
 /// The alignment of every positions blob, in bytes. Large enough for any
-/// `@Vector` load over the stream and for GPU staging later. `alloc` applies it,
-/// and the viewer's blob store maintains it, so a stream that arrives over the
-/// wire is aligned without being copied again. See `STYLE.md` §2.
+/// `@Vector` load over the stream and for GPU staging. `alloc` applies it and
+/// the viewer's blob store maintains it, so a stream arriving over the wire
+/// needs no realignment. See `STYLE.md` §2.
 pub const blob_alignment: std.mem.Alignment = .@"64";
 
 /// A position or direction in three dimensions: three `f32`, twelve bytes,
@@ -127,17 +127,13 @@ pub const Vec3Padded = extern struct {
     }
 };
 
-/// Constructs the vertex stream type for layout `l`.
+/// Constructs the vertex stream type for layout `l`. Ordinary code uses
+/// `Positions`, the instantiation for this build; `bench/` and layout tests use
+/// this to instantiate all three.
 ///
-/// Ordinary code uses `Positions`, the instantiation for this build. This
-/// function exists so that `bench/` can instantiate all three layouts side by
-/// side on the same inputs, and so that a test can pin the properties of a
-/// layout the build did not select.
-///
-/// The returned type is a view over memory rather than a container, mirroring
-/// slice semantics: `Mut` is the writable view and `Const` the read-only one,
-/// both over the same bytes, and `fromBytes` and `bytes` are casts rather than
-/// copies.
+/// The returned type is a view over memory, not a container. `Mut` is the
+/// writable view and `Const` the read-only one, over the same bytes;
+/// `fromBytes` and `bytes` are casts, not copies.
 pub fn PositionsOf(comptime l: Layout) type {
     return struct {
         pub const Layout_ = l;
@@ -146,9 +142,8 @@ pub fn PositionsOf(comptime l: Layout) type {
 
         /// The element the stream is stored as: `Vec3` for `.aos3`,
         /// `Vec3Padded` for `.aos4`, and `f32` for `.soa`, where one slice holds
-        /// three planar runs, all x followed by all y followed by all z.
-        /// Callers rarely name this type, because the accessors take and return
-        /// `Vec3` in every layout.
+        /// three planar runs, all x followed by all y followed by all z. The
+        /// accessors take and return `Vec3` in every layout.
         pub const Elem = switch (l) {
             .aos3 => Vec3,
             .aos4 => Vec3Padded,
@@ -327,11 +322,9 @@ pub fn PositionsOf(comptime l: Layout) type {
             }
             /// The x components of every vertex as one contiguous run.
             ///
-            /// Only the `.soa` layout stores the stream this way, so this and
-            /// its `ys` and `zs` counterparts are available only there and are
-            /// reached from inside a compile-time switch on the layout. They
-            /// exist so that a kernel written for planar data can take whole
-            /// `[]f32` runs rather than reading component by component.
+            /// Available only in the `.soa` layout, with `ys` and `zs`, and
+            /// reached from inside a compile-time switch on the layout. A kernel
+            /// written for planar data takes these runs directly.
             pub inline fn xs(self: Const) []const f32 {
                 comptime std.debug.assert(l == .soa);
                 return self.data[0 .. self.data.len / 3];

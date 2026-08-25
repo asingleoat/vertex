@@ -1,11 +1,11 @@
 //! Process-instrumentation stubs for unsupported targets.
 
-/// Returns zero without allocation because minor-fault sampling is unsupported.
+/// Always zero: minor-fault sampling is unsupported here.
 pub fn minorFaults() u64 {
     return 0;
 }
 
-/// Returns zero without allocation because hugetlb accounting is unsupported.
+/// Always zero: hugetlb accounting is unsupported here.
 pub fn hugetlbKb() u64 {
     return 0;
 }

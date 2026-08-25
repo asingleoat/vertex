@@ -18,10 +18,9 @@ const Vec3 = layout.Vec3;
 
 /// Returns the geometry kernels specialized for vertex layout `l`.
 ///
-/// Ordinary code uses `current`, the instantiation for this build. This
-/// function exists so that `bench/` can run all three layouts against the same
-/// inputs, which is how a layout is chosen. A kernel may switch on `l` at
-/// compile time to take a planar fast path, with the accessor path as the
+/// Ordinary code uses `current`, the instantiation for this build; `bench/` uses
+/// this to run all three layouts against the same inputs. A kernel may switch on
+/// `l` at compile time to take a planar fast path, with the accessor path as the
 /// always-correct fallback.
 pub fn Geometry(comptime l: layout.Layout) type {
     return struct {
@@ -40,9 +39,9 @@ pub fn Geometry(comptime l: layout.Layout) type {
             min: Vec3,
             max: Vec3,
 
-            /// Bounds containing no points, with the corners inverted so that
-            /// expanding them by any point yields that point. This is the identity
-            /// for accumulation and what `bounds` returns for an empty stream.
+            /// Bounds containing no points. The corners are inverted, so
+            /// expanding by any point yields that point. `bounds` returns this
+            /// for an empty stream.
             pub const empty: Aabb = .{
                 .min = .init(std.math.inf(f32), std.math.inf(f32), std.math.inf(f32)),
                 .max = .init(-std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32)),

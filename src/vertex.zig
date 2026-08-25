@@ -6,8 +6,8 @@
 //! `icosphere`, `grid` and `randomPoints`. `sketch` is the effectful edge that
 //! talks to the viewer: `connect`, the `Connection` a sketch holds, and the
 //! messages it can send. Both are documented in full in their own files, which
-//! are the ones to read; the names below are re-exported only so that a sketch
-//! can write `vertex.connect` and `vertex.Positions` unqualified.
+//! are the ones to read. The names below are re-exported for use unqualified,
+//! as `vertex.connect` and `vertex.Positions`.
 //!
 //! The remaining modules are reachable through `internal`. They are ordinary
 //! library code and may be read and modified freely; the namespace exists only

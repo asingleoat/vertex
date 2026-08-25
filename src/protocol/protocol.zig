@@ -8,15 +8,14 @@
 //! of the result. Declarations below repeat this only where the lifetime is
 //! unobvious.
 //!
-//! Frames are native-endian, because both peers are the same build; `magic`
-//! doubles as the endianness check and `version` as the entire compatibility
-//! contract.
+//! Frames are native-endian: both peers are the same build. `magic` doubles as
+//! the endianness check and `version` as the compatibility check.
 //!
 //! `len` counts the payload bytes after the eight-byte frame header. String
 //! fields are contiguous after their fixed head. Each binary section that
 //! follows begins at a payload-relative multiple of 16, and the gap before it
-//! is zero-filled, so that a payload placed in aligned memory yields views a
-//! kernel can read directly.
+//! is zero-filled. A payload placed in aligned memory therefore yields views a
+//! kernel reads directly.
 //!
 //! A frame with any external section instead places one `SectionRef` per binary
 //! section after the strings, at a 16-byte boundary, followed only by whichever
@@ -79,10 +78,9 @@ pub const max_name_len = 255;
 /// The alignment, relative to the start of a payload, at which every binary
 /// section begins.
 /// ---
-/// Sections start at multiples of this so that a payload placed in memory
-/// aligned to it yields views a `@Vector` load can use directly. `decode`
-/// itself requires only `payload_alignment`; this larger figure is what makes
-/// the decoded views useful without a copy.
+/// A payload placed in memory aligned to this yields views a `@Vector` load can
+/// use directly. `decode` itself requires only `payload_alignment`; this larger
+/// figure makes the decoded views usable without a copy.
 pub const section_alignment = 16;
 
 /// The minimum alignment `decode` requires of the payload buffer it borrows,
@@ -379,8 +377,8 @@ pub const LogHead = extern struct {
 /// caller's slices, and sizes the fixed array `Encoded` holds.
 pub const max_parts = 12;
 
-/// The size of the largest fixed head, which is the storage `Encoded` reserves
-/// inline so that a head never needs an allocation.
+/// The size of the largest fixed head. `Encoded` reserves this much inline, so
+/// a head never needs an allocation.
 pub const max_head_size = 12;
 
 const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(0);

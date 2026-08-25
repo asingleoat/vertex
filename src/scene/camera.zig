@@ -1,21 +1,15 @@
 //! Cameras and the matrix arithmetic behind them.
 //!
-//! Two cameras are provided, because the project addresses two kinds of work.
-//! `Orbit` is a turntable for three-dimensional geometry: it looks at a target
-//! from a distance and an orientation, which is the model that matches
-//! inspecting an object. `Ortho2D` is a plane view for two-dimensional
-//! geometry, panning and zooming without perspective, which is the model that
-//! matches inspecting a diagram. The viewer selects between them and either can
-//! be driven directly.
+//! `Orbit` is a turntable for three-dimensional geometry, looking at a target
+//! from a distance and an orientation. `Ortho2D` is a plane view for
+//! two-dimensional geometry, panning and zooming without perspective. The viewer
+//! selects between them; either can be driven directly.
 //!
-//! Both are values: they hold a pose and nothing else, allocate nothing, and
-//! produce matrices on demand. That makes the pose trivially persistable, which
-//! is what lets the viewer keep the camera where the user left it across a
-//! rebuild.
+//! Both are values. Each holds a pose, allocates nothing, and produces matrices
+//! on demand. The viewer stores the pose across a rebuild to restore the view.
 //!
-//! Matrices are column-major `[16]f32`, matching what the shaders expect as a
-//! uniform, and the projections produce OpenGL-style clip space with depth in
-//! [-1, 1].
+//! Matrices are column-major `[16]f32`, as the shaders take them as a uniform.
+//! The projections produce OpenGL-style clip space with depth in [-1, 1].
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const layout = @import("../geometry/layout.zig");
@@ -162,14 +156,13 @@ pub const Orbit = struct {
 
     /// Returns the near and far clip distances for the current pose.
     ///
-    /// Both derive from `distance`, so that dollying cannot move the scene
-    /// outside the frustum. Planes computed once at fit time clip the scene as
-    /// soon as the camera leaves that pose: the near plane removes the model as
-    /// the camera approaches, and the far plane removes it as the camera
-    /// retreats. The near distance is a thousandth of the orbit distance, which
-    /// allows the camera to approach a surface closely, and the far distance
-    /// always exceeds the extent of the scene, exceeding the target distance by
-    /// at least the orbit distance when the scene is small.
+    /// Both derive from `distance`, so dollying cannot move the scene outside
+    /// the frustum. Planes computed once at fit time clip the scene as soon as
+    /// the camera leaves that pose: the near plane removes the model on
+    /// approach, the far plane on retreat. The near distance is a thousandth of
+    /// the orbit distance, permitting a close approach to a surface. The far
+    /// distance always exceeds the extent of the scene, and exceeds the target
+    /// distance by at least the orbit distance when the scene is small.
     fn clipPlanes(self: Orbit) struct { near: f32, far: f32 } {
         return .{
             .near = @max(self.distance * 1e-3, 1e-5),

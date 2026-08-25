@@ -8,9 +8,9 @@
 //! index is the only link.
 //!
 //! It also holds what is derived from a blob rather than uploaded from it, such
-//! as the unique edge list a wireframe needs, cached per blob so that two
-//! versions sharing topology also share the derived data, and evicted under the
-//! same residency policy as the buffers themselves.
+//! as the unique edge list a wireframe needs. Derived data is cached per blob,
+//! so two versions sharing topology share it, and is evicted under the same
+//! residency policy as the buffers.
 const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;

@@ -73,8 +73,8 @@ pub const supported = build_options.gl_backend;
 /// raw GL externs above are present only in a GL build.
 pub const Picker = if (supported) GlPicker else DisabledPicker;
 
-/// Stands in for a backend without a readback path. It holds nothing, costs
-/// nothing and reports no hit, so that main.zig needs only one code path.
+/// Stands in for a backend without a readback path. It holds nothing and
+/// reports no hit, giving main.zig one code path.
 const DisabledPicker = struct {
     pub fn init() DisabledPicker {
         return .{};

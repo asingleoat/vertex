@@ -46,9 +46,8 @@ pub const CreateOptions = struct {
     huge_pages: bool,
 };
 
-/// The size of the huge-page class the Linux implementation requests. It is
-/// retained so that both implementations expose the same API, but no allocation
-/// here can use it.
+/// The size of the huge-page class the Linux implementation requests, retained
+/// for API parity. No allocation here uses it.
 pub const huge_page_size: usize = 2 * 1024 * 1024;
 
 /// `PSHMNAMLEN` is 31 on Darwin, which bounds the generated name.
@@ -130,8 +129,8 @@ pub fn hugePagesAvailable() bool {
     return false;
 }
 
-/// Opens a new shared-memory object and unlinks its name, so that the returned
-/// descriptor is its only reference. The caller owns the descriptor.
+/// Opens a new shared-memory object and unlinks its name, leaving the returned
+/// descriptor as its only reference. The caller owns the descriptor.
 fn openExclusive() Error!platform.Handle {
     const pid: u32 = @bitCast(std.c.getpid());
     var attempt: u32 = 0;

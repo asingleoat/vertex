@@ -38,10 +38,9 @@ const resolveHugePages = transport.resolveHugePages;
 const validateName = session_mod.validateName;
 
 /// Sequences messages to a borrowed sink, independent of the transport
-/// underneath it. A `Connection` is a `Session` wrapped around a socket. A
-/// stepping sketch in `steps/*.zig` receives a `Session` directly, because the
-/// viewer owns the transport in that mode. The calls and the ordering rules are
-/// the same in both cases.
+/// underneath. A `Connection` is a `Session` wrapped around a socket. A stepping
+/// sketch in `steps/*.zig` receives a `Session` directly; the viewer owns the
+/// transport in that mode. The calls and the ordering rules are identical.
 pub const Session = session_mod.Session;
 
 /// Selects what a quantity attaches to: `.vertex` for one value per vertex,
@@ -82,11 +81,10 @@ pub const Shared = transport.Shared;
 /// ---
 /// `name` labels the run in the viewer and is the only required field. Setting
 /// `optional` makes a missing viewer produce a disconnected connection rather
-/// than an error, so that the sketch still runs without one; `isConnected`
-/// reports which occurred. `socket_path` overrides the socket location, taking
-/// precedence over `$VERTEX_SOCK` and the default path, and `huge_pages`
-/// overrides the page-size preference for shared buffers. Every slice is
-/// borrowed for the duration of `connect`.
+/// than an error; `isConnected` reports which occurred. `socket_path` overrides
+/// the socket location, taking precedence over `$VERTEX_SOCK` and the default
+/// path. `huge_pages` overrides the page-size preference for shared buffers.
+/// Every slice is borrowed for the duration of `connect`.
 pub const ConnectOptions = struct {
     name: []const u8,
     optional: bool = false,
@@ -97,12 +95,12 @@ pub const ConnectOptions = struct {
 /// A connection to the viewer, owning the socket and any shared buffers taken
 /// from it.
 /// ---
-/// `connect` returns a `Connection` by value. The caller should store it in a
-/// `var` and defer `close`, so that an early error still releases the socket and
-/// any unsent shared buffers. `finish` ends the run and closes the connection,
-/// after which the deferred `close` has no further effect. A connection owns its
-/// socket and at most eight outstanding shared mappings, is not thread-safe, and
-/// should not be copied once in use.
+/// `connect` returns a `Connection` by value. Store it in a `var` and defer
+/// `close`; an early error then still releases the socket and any unsent shared
+/// buffers. `finish` ends the run and closes the connection, after which the
+/// deferred `close` has no effect. A connection owns its socket and at most
+/// eight outstanding shared mappings. It is not thread-safe and must not be
+/// copied once in use.
 /// ---
 /// Each message call encodes one message and writes it to the socket before
 /// returning. The calls are synchronous, allocate nothing, and borrow their
@@ -140,9 +138,9 @@ pub const Connection = struct {
     ///
     /// The connection owns the buffer until the message that sends it succeeds,
     /// which consumes it; unsent buffers are released by `finish` and `close`. A
-    /// buffer must not be reused after it has been sent, because the viewer
-    /// retains the version that refers to it. The caller should request one
-    /// buffer per message, and at most eight may be outstanding at a time.
+    /// sent buffer must not be reused: the viewer retains the version that
+    /// refers to it. Request one buffer per message. At most eight may be
+    /// outstanding at a time.
     ///
     /// Returns `error.Unsupported` on platforms without shared memory. The
     /// caller should then fill an ordinary slice and send it as usual, which
@@ -168,9 +166,9 @@ pub const Connection = struct {
 
     /// Returns a shared buffer sized for `n` `f32` scalars.
     ///
-    /// The caller fills the slice and passes it to `scalar`. The whole slice
-    /// must be passed, because a subslice is not 64-byte aligned and is rejected
-    /// with `error.MisalignedShared`. The slice becomes invalid once the send
+    /// The caller fills the slice and passes it to `scalar`. Pass the whole
+    /// slice: a subslice is not 64-byte aligned and is rejected with
+    /// `error.MisalignedShared`. The slice becomes invalid once the send
     /// succeeds; see `sharedBytes`.
     pub fn sharedScalars(self: *Connection, n: u32) SharedError![]f32 {
         const shared = try self.sharedBytes(@as(usize, n) * @sizeOf(f32));
@@ -184,8 +182,8 @@ pub const Connection = struct {
     /// `vector`.
     ///
     /// Vectors use the same layout as positions, so this is equivalent to
-    /// `sharedPositions`. It exists under its own name so that call sites state
-    /// which of the two they mean.
+    /// `sharedPositions`. The separate name states which of the two a call site
+    /// means.
     pub fn sharedVectors(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         return self.sharedPositions(n);
     }
@@ -316,11 +314,10 @@ pub const Connection = struct {
 
     /// Ends the current frame and opens the next one.
     ///
-    /// Frames divide a run into the states the viewer's timeline moves between:
-    /// everything sent since the previous `step` belongs to one frame. A sketch
-    /// normally calls this at the end of each iteration. Structures that are not
-    /// sent again persist into the following frame, so a structure that does not
-    /// change costs nothing per step.
+    /// Everything sent since the previous `step` belongs to one frame, and the
+    /// viewer's timeline moves between frames. A sketch normally calls this at
+    /// the end of each iteration. A structure that is not sent again persists
+    /// into the following frame at no per-step cost.
     pub fn step(self: *Connection) Error!void {
         return self.state.step(self.currentSink(), "");
     }

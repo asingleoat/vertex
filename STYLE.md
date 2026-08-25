@@ -24,8 +24,8 @@ tested and benchmarked without a window or a socket.
 The approach follows Andrew Kelley's "Programming Without Pointers" and
 "Practical DOD".
 
-- Indices are non-exhaustive enums rather than bare integers, so that a
-  `BlobIndex` cannot be passed where a `StructureIndex` is expected:
+- Indices are non-exhaustive enums rather than bare integers. A `BlobIndex`
+  then cannot be passed where a `StructureIndex` is expected:
   ```zig
   pub const StructureIndex = enum(u32) { none = std.math.maxInt(u32), _ };
   pub const BlobIndex      = enum(u32) { none = std.math.maxInt(u32), _ };
@@ -76,15 +76,15 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   that runs a hot path twice and asserts the allocator saw no calls on the
   second run; see §5.
 - The viewer owns one arena per frame and the decoder one per message;
-  benchmarks and tests own their own. `scratch` is passed explicitly, so that a
-  function needing temporaries says so in its signature.
+  benchmarks and tests own their own. `scratch` is passed explicitly: a function
+  needing temporaries says so in its signature.
 - No allocation occurs inside a loop over vertices, faces, messages or
   structures. Hoist the buffer to the owner instead.
 - Out of memory is propagated as `error.OutOfMemory`, never a panic. `catch
   unreachable` is permitted only immediately after an `ensure*Capacity` that
   covers it, and the `assumeCapacity` variants are preferred to that.
-- Blob payloads are allocated with `alignedAlloc` at 64 bytes, so that
-  `@Vector` loads over the flat `f32` view and later GPU staging are aligned.
+- Blob payloads are allocated with `alignedAlloc` at 64 bytes, aligning
+  `@Vector` loads over the flat `f32` view and later GPU staging.
 
 ## 3. Data layout
 
@@ -108,8 +108,7 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   are `inline`, so the generated code matches hand-written indexing. Changing
   `build_options.vertex_layout` recompiles every kernel against the new offsets
   and stride and requires no other change. The default is `.aos3`, the most
-  compact, which suits straight-line scalar code because more vertices fit in a
-  cache line. `.aos4`, with a 16-byte stride that `@bitCast`s to
+  compact, fitting the most vertices per cache line. `.aos4`, with a 16-byte stride that `@bitCast`s to
   `@Vector(4, f32)`, and `.soa` exist to be measured rather than assumed.
 - Geometry kernels are layout-parameterized namespaces:
   `pub fn Geometry(comptime layout: Layout) type { return struct { ... }; }`,
@@ -138,16 +137,16 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   vertex buffer per component. The render edge is the only place that switches
   on the layout.
 - Other streams are plain slices: triangles are `[]const [3]u32` and segments
-  `[]const [2]u32`, since topology is consumed positionally and has no layout
-  variant, and scalar quantities are `[]const f32`.
+  `[]const [2]u32`; topology is consumed positionally and has no layout
+  variant. Scalar quantities are `[]const f32`.
 - Indices are `u32` rather than `usize`. This halves the memory spent on
   indices, and four billion elements is the ceiling in any case. Conversion
-  happens at the slice-indexing site through a small helper, so that `@intCast`
-  does not appear in loop bodies.
+  happens at the slice-indexing site through a small helper; `@intCast` does not
+  appear in loop bodies.
 - Hot structs assert their size. Fields are ordered from largest to smallest and
   flags are collected into a `packed struct(u8)`. Every hot record has a test of
-  the form `try std.testing.expectEqual(24, @sizeOf(Version));`, so that a
-  layout regression fails the build rather than passing unnoticed.
+  the form `try std.testing.expectEqual(24, @sizeOf(Version));`. A layout
+  regression then fails the build rather than passing unnoticed.
 - Wire structs are `extern struct` with explicit little-endian fields, so header
   parsing is a `bytesAsValue` rather than a field-by-field read. They contain no
   padding holes, and a test asserts `@sizeOf` equals the documented byte count.
@@ -190,9 +189,8 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   byte fails the test.
 - `std.testing.checkAllAllocationFailures` is required for every core function
   that allocates. It re-runs the function with each allocation failing in turn
-  and verifies that no path leaks. Allocating code is structured so that its
-  work is a single function taking `(allocator, args...)`, which makes this
-  straightforward.
+  and verifies that no path leaks. Allocating code is structured with its work
+  in a single function taking `(allocator, args...)`.
 - Steady-state allocation is tested by wrapping `std.testing.allocator` in a
   counting allocator, either a `std.mem.Allocator` vtable shim or
   `std.heap.DebugAllocator` statistics, running a hot path twice and asserting
@@ -209,8 +207,8 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   ensured, refcounts non-zero. These vanish in `ReleaseFast`, which is what a
   user gets from `-Drelease`, so they are a development instrument rather than a
   runtime guarantee. Develop and verify in Debug or `ReleaseSafe`, where the
-  asserts and the bounds and overflow checks are live, because in the released
-  mode a bad index is undefined behaviour rather than a panic.
+  asserts and the bounds and overflow checks are live. In the released mode a
+  bad index is undefined behaviour rather than a panic.
 
 ## 6. Benchmarkability
 
@@ -227,7 +225,7 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
 
 ## 7. SIMD and GPU
 
-Neither is used yet, but the code is shaped so that both remain available.
+Neither is used yet. The code is shaped to keep both available.
 
 - Write scalar loops over flat slices, with no early exits and no per-element
   callbacks. That shape vectorizes with `@Vector` as a local change later, and
@@ -275,6 +273,11 @@ Neither is used yet, but the code is shaped so that both remain available.
   dashes, or a definition given as a list of parts. "A `Positions` value provides
   a stream of vertex coordinates. Any additional structure, such as connectivity
   information, must be carried alongside it" needs none of them.
+- Treat "so that", "because" and "since" as suspect. Each introduces a
+  justification, and a justification is usually either a fact that deserves its
+  own sentence or ornament that deserves deletion. Prefer a colon, a semicolon
+  or a full stop: "Mappings are never closed: unloading Zig or C TLS is
+  hazardous" states the same thing and stops explaining itself.
 - A doc comment on a value declaration must contain no empty `///` line.
   Separate its paragraphs with `/// ---`, which renders as a horizontal rule.
   Autodoc renders such a declaration with its "short" form, which stops at the
@@ -286,8 +289,8 @@ Neither is used yet, but the code is shaped so that both remain available.
   lose half of every comment the next time anyone formatted the file. Functions, containers and module headers are rendered in full and may use
   empty lines as ordinary paragraph breaks.
 - The definition site carries the documentation. A re-export summarises what the
-  declaration is for and when to reach for it, because the generated docs follow
-  a linkified identifier to where it is defined.
+  declaration is for and when to reach for it. The generated docs follow a
+  linkified identifier to where it is defined.
 - `-Drelease` selects `ReleaseFast`, which is what a user writing sketches gets
   and what benchmarks always use. Build the viewer in Debug or `ReleaseSafe`
   when working on vertex itself.

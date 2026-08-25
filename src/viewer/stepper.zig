@@ -83,7 +83,7 @@ pub const Snapshot = struct {
 pub const Error = std.Thread.SpawnError || error{ PathTooLong, MailboxFull };
 
 /// Owns one worker, every copied library file, and every intentionally retained
-/// `DynLib` mapping. Mappings are never closed because unloading Zig or C TLS,
+/// `DynLib` mapping. Mappings are never closed: unloading Zig or C TLS,
 /// atexit handlers, and global state is unsafe; their demand-paged resident
 /// cost is small relative to scene data. `deinit` unlinks all owned copies after
 /// the worker joins, while process exit eventually reclaims the mappings.

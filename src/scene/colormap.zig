@@ -5,10 +5,9 @@
 //! module provides the ramps and the range computation; the mapping itself
 //! happens in the shader, which samples the ramp as a texture.
 //!
-//! The ramps are perceptually uniform where possible, so that equal steps in
-//! value look like equal steps in color and the eye is not misled by artefacts
-//! of the palette. They are computed at compile time and cost no runtime work
-//! and no allocation.
+//! The ramps are perceptually uniform where possible: equal steps in value
+//! appear as equal steps in color. They are computed at compile time and cost
+//! no runtime work and no allocation.
 const std = @import("std");
 
 /// Which color ramp to display a scalar quantity through.

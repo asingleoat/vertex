@@ -1,11 +1,10 @@
 //! Procedural geometry: meshes and point sets generated from a few parameters
 //! rather than loaded from a file.
 //!
-//! These exist so that a sketch, a test or a benchmark can obtain a surface of
-//! a known shape and size in one call, with no asset to check in and no I/O.
-//! Every generator is deterministic: the same arguments always produce the same
-//! geometry, down to the vertex order, so a test can assert against exact
-//! counts and a sketch produces the same scene on every run.
+//! One call yields a surface of a known shape and size, with no asset to check
+//! in and no I/O. Every generator is deterministic: the same arguments produce
+//! the same geometry down to the vertex order, so a test can assert exact counts
+//! and a sketch produces the same scene on every run.
 //!
 //! Each generator allocates from an explicit allocator and transfers ownership
 //! to the caller, which releases a `Mesh` with `deinit` and a bare stream with
@@ -17,9 +16,9 @@ const Vec3 = layout.Vec3;
 
 /// Returns the fixture generators specialized for vertex layout `l`.
 ///
-/// Ordinary code uses `current`, the instantiation for this build. This
-/// function exists so that a benchmark can build the same fixture in every
-/// layout. Everything returned is owned by the caller.
+/// Ordinary code uses `current`, the instantiation for this build; a benchmark
+/// uses this to build the same fixture in every layout. Everything returned is
+/// owned by the caller.
 pub fn Fixtures(comptime l: layout.Layout) type {
     return struct {
         /// The vertex stream type these generators produce, which is
@@ -114,13 +113,13 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// The result has `20·4^subdivisions` triangles: 1,280 at three
         /// subdivisions and 81,920 at six. It has no poles and no seam, unlike a
         /// latitude-longitude sphere, and its triangles are close to equilateral
-        /// everywhere. It is the default test surface because a kernel that
-        /// misbehaves on degenerate or uneven triangles will still fail on it.
+        /// everywhere, so a kernel that misbehaves on degenerate or uneven
+        /// triangles still fails on it. It is the default test surface.
         ///
         /// Allocates the positions and the faces from `gpa`; the caller owns the
-        /// returned mesh and releases it with `deinit`. Subdivision uses a
-        /// midpoint table so that an edge shared by two faces yields one vertex
-        /// rather than two; the table is freed before returning.
+        /// returned mesh and releases it with `deinit`. A midpoint table gives
+        /// an edge shared by two faces one vertex rather than two; the table is
+        /// freed before returning.
         pub fn icosphere(
             gpa: std.mem.Allocator,
             subdivisions: u32,

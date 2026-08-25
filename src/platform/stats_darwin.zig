@@ -7,8 +7,7 @@ pub fn minorFaults() u64 {
     return if (faults > 0) @intCast(faults) else 0;
 }
 
-/// Always returns zero, because macOS has no hugetlbfs and therefore no
-/// huge-page residency to report. Allocates nothing.
+/// Always zero: macOS has no hugetlbfs and no huge-page residency to report.
 pub fn hugetlbKb() u64 {
     return 0;
 }

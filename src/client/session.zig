@@ -72,16 +72,15 @@ pub const Sink = struct {
 /// Sends messages to a sink in a valid order, and is the client API when the
 /// transport belongs to someone else.
 /// ---
-/// A stepping sketch under `steps/` is handed one of these, because in that
-/// mode the viewer already owns the transport. A socket client instead holds a
-/// `Connection`, which wraps a `Session` around a socket it owns. The calls and
-/// the rules are identical, and what each message means to the viewer is
-/// documented on `Connection` in `api/sketch.zig`.
+/// A stepping sketch under `steps/` is handed one of these; the viewer owns the
+/// transport in that mode. A socket client instead holds a `Connection`, which
+/// wraps a `Session` around a socket it owns. The calls and the rules are
+/// identical. What each message means to the viewer is documented on
+/// `Connection` in `api/sketch.zig`.
 /// ---
-/// The session tracks the run and frame lifecycle, so that `step` and `finish`
-/// emit the right boundaries and a call after the run has ended is refused
-/// rather than sent. It borrows the sink for its lifetime and allocates
-/// nothing.
+/// The session tracks the run and frame lifecycle. `step` and `finish` emit the
+/// correct boundaries, and a call after the run has ended is refused rather than
+/// sent. It borrows the sink for its lifetime and allocates nothing.
 pub const Session = struct {
     destination: Sink,
     state: State,
@@ -182,11 +181,10 @@ pub const Session = struct {
 /// The run and frame lifecycle a session enforces: which frame is open,
 /// whether one is open at all, and whether the run has finished.
 /// ---
-/// Every message call goes through here, which is where the protocol's ordering
-/// rules are applied and where argument validation happens, so that a malformed
-/// call is refused before anything reaches the sink. `Connection` holds one of
-/// these too, which is how the two client shapes share exactly one
-/// implementation of the rules.
+/// Every message call goes through here. The protocol's ordering rules and the
+/// argument validation are applied at this point, and a malformed call is
+/// refused before anything reaches the sink. `Connection` holds one of these
+/// too, so both client shapes share one implementation of the rules.
 pub const State = struct {
     frame_index: u32 = 0,
     frame_open: bool = true,
@@ -341,9 +339,9 @@ pub const State = struct {
 /// encoder.
 ///
 /// This is the inline path: every section is written as bytes rather than
-/// referred to. `SocketSink` uses it for messages with no shared sections, and
-/// `DirectSink` uses it for all of them, since the in-process path has no
-/// descriptors to pass.
+/// referred to. `SocketSink` uses it for messages with no shared sections.
+/// `DirectSink` uses it for all of them; the in-process path passes no
+/// descriptors.
 pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     switch (message) {
         .hello => |value| protocol.encodeHello(out, value.name),

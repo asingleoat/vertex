@@ -11,7 +11,7 @@ preserved across rebuilds.
 |---|---|
 | Language | Zig, for the viewer, the client library and the protocol |
 | Dependencies | A nix flake dev shell for system dependencies; `build.zig.zon` for Zig packages |
-| Process model | Separate processes communicating over a Unix domain socket, behind an internal `Sink` interface so that a hot-loaded dylib mode can be added later |
+| Process model | Separate processes communicating over a Unix domain socket, behind an internal `Sink` interface, allowing a hot-loaded dylib mode to be added later |
 | Renderer | sokol-gfx through sokol-zig, with sokol_app for windowing |
 | Domain | Three-dimensional geometry processing with an orbit camera and two-dimensional computational geometry with an orthographic camera, both from the start |
 | Renderables | Triangle meshes, point clouds, polylines and edge sets, colormapped scalar fields, and vector fields drawn as instanced arrows |
@@ -81,7 +81,7 @@ through it.
 
 A frame is `[u32 len][u16 kind][u16 flags][payload]`, an eight-byte header in
 native endianness. Variable sections within a payload begin at 16-byte offsets,
-so that a decoded payload's slices are usable directly. The handshake is the
+making a decoded payload's slices usable directly. The handshake is the
 magic `VTXP`, which doubles as an endianness check, followed by a `u16`
 protocol version, currently 2. The viewer accepts only a client reporting the
 identical version.
@@ -137,7 +137,7 @@ the structure with its previous viewer settings.
 
 Protocol version 2 has two payload modes.
 
-In the inline mode the client-to-kernel path is already free of copies, since
+In the inline mode the client-to-kernel path is already free of copies:
 `writev` reads the caller's slices directly. The viewer's socket thread reads
 each payload into one 16-byte-aligned allocation, `protocol.decode` returns
 views into it, and `Scene.apply` copies the sections into 64-byte-aligned
@@ -154,8 +154,8 @@ and `Scene.apply` adopts sections inside a registered mapping as views rather
 than copies, so nothing is copied between the sketch's write and the GPU
 upload. Mappings are reference-counted by the blobs that view them, and only the
 edge unmaps and closes them, through `released_mappings`. A shared buffer is
-consumed by the send that carries it, because the viewer retains versions and
-reuse is therefore impossible; a fresh buffer is requested per message.
+consumed by the send that carries it. The viewer retains versions, so reuse is
+impossible; a fresh buffer is requested per message.
 
 On Linux, shared buffers of 2 MiB or more are created with
 `MFD_HUGETLB | MFD_HUGE_2MB`. hugetlbfs reserves or fails at `mmap`, which makes
@@ -165,7 +165,7 @@ cooldown of eight buffers. This is enabled by default and disabled by
 `vm.nr_overcommit_hugepages`, which reserves nothing while idle, or
 `vm.nr_hugepages`; when neither is set, both the sketch and the viewer print a
 single notice naming the sysctl. Transparent huge pages for shmem were
-considered and rejected, because they require the equally non-default
+considered and rejected: they require the equally non-default
 `shmem_enabled=advise` and are best-effort rather than reserve-or-fail.
 
 Measured on Linux (2026-08-24, `sketches/stress.zig`, 40 updates of 1M vertices
@@ -215,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
 The API takes slices and writes them synchronously with `writev` from caller
 memory, so nothing is copied and no lifetime is coupled: the call returns once
 the kernel holds the bytes. `connect` fails loudly by default, and
-`.optional = true` degrades it to a no-op connection so that a sketch still runs
+`.optional = true` degrades it to a no-op connection, and the sketch runs
 without a viewer.
 
 The API is defined against a `Sink` vtable carrying `protocol.Message` values.
@@ -236,7 +236,7 @@ imposing a restriction.
 sokol_app owns the render thread. One socket thread per connection performs
 blocking reads, decodes complete structure updates and pushes them onto a
 mutex-protected staging queue. The frame callback drains the queue, coalesces
-multiple updates to the same structure, since sokol permits only one
+multiple updates to the same structure, sokol permitting only one
 `sg_update_buffer` per buffer per frame, and uploads them.
 
 ### Scene store
@@ -266,7 +266,7 @@ proportional to what changed per step, and derived data such as unique edge
 lists and arrow instances is cached per blob rather than per version. The fixed
 cost of a version beyond its blob bytes is 68 bytes, measured 2026-08-24 and
 comprising the `Version` record, its blob record and list slack; a test pins it
-below 128, so that a per-version container cannot be introduced unnoticed.
+below 128; a per-version container cannot be introduced unnoticed.
 
 ### GPU residency
 
@@ -302,8 +302,8 @@ before the policy existed.
 
 ### Picking: a CPU ray cast rather than an ID buffer
 
-Decided 2026-08-24, while porting, because the readback escape hatch would
-otherwise cost one implementation per backend.
+Decided 2026-08-24, while porting. The readback escape hatch would otherwise
+cost one implementation per backend.
 
 The synchronous form does not port. sokol's Metal backend creates one
 `MTLCommandBuffer` per frame, enqueues it at the first `beginPass` and commits
@@ -319,8 +319,7 @@ ray cast covers every case: ray-triangle intersection for meshes, the distance
 from the cursor to a projected point against `point_size` for points, the
 distance from the cursor to a projected segment against `line_width` for lines,
 and the nearest `t` across kinds, which is what the depth test was computing. It
-is more precise than an ID buffer rather than less, because it does not quantize
-to pixels.
+is more precise than an ID buffer, not less: it does not quantize to pixels.
 
 It is also core code, so it can be tested: `geometry/` with
 `checkAllAllocationFailures` and a `bench/` entry, per `STYLE.md` §5 and §6,
@@ -336,10 +335,10 @@ The plan is to implement brute force first and measure, then add the per-blob
 BVH when the measurements require it; `sketches/stress.zig` is roughly two
 million triangles, far beyond what brute force can serve for hover. Landing it
 removes the GL externs in `pick.zig`, the four `pick_*` shaders and the `RG32UI`
-target. It is sequenced after the platform layer and the smoke tests, because it
-is a redesign of a working feature rather than a port step, and it owes before
-and after numbers together with a check that a CPU hit agrees with a GL hit on
-the same scene.
+target. It is sequenced after the platform layer and the smoke tests, being a
+redesign of a working feature rather than a port step. It requires before and
+after numbers and a check that a CPU hit agrees with a GL hit on the same
+scene.
 
 ### Camera
 
@@ -359,8 +358,8 @@ console; and a pick inspector tooltip.
 ## Hot-recompile loop
 
 Build modes are divided by who is building. Writing sketches and running the
-viewer uses `zig build -Drelease`, which selects ReleaseFast, because sketch
-geometry is real computation and the surrounding tool must not slow it. Working
+viewer uses `zig build -Drelease`, which selects ReleaseFast. Sketch geometry is
+real computation and the surrounding tool must not slow it. Working
 on vertex itself uses Debug or ReleaseSafe. On zig master a plain `zig build` is
 Debug, in which the viewer runs on a leak-checking `DebugAllocator`, and
 `-Doptimize=ReleaseSafe` retains the bounds, overflow and assertion checks that
@@ -385,7 +384,7 @@ one rebuild. `watchexec` is in the dev shell as a fallback.
 Sketches and benchmarks are discovered by listing `sketches/` and `bench/`. Zig
 master caches the configure phase; `build.zig` declares the directories through
 `dependOnDirectory` and poisons that cache until the maker implements directory
-mode, which is an upstream TODO, so that new files are always picked up.
+mode, which is an upstream TODO. New files are therefore always picked up.
 
 `zig build docs` emits zig's autodoc for the `vertex` module into
 `zig-out/docs`. The page fetches `sources.tar`, so it generally needs serving
@@ -413,8 +412,8 @@ as `packages.sokol-shdc`, pinned to the commit sokol-zig references; the
 generated shader `.zig` files under `src/viewer/shaders/` are checked in and
 `zig build shaders` regenerates them. For system libraries and libc headers, zig
 reads `NIX_CFLAGS_COMPILE` and `NIX_LDFLAGS` from the dev shell, and `glibc.dev`
-is listed explicitly because the external translate-c implementation that
-dcimgui uses does not go through the cc wrapper. sokol_app's Linux backend is
+is listed explicitly: the external translate-c implementation that dcimgui uses
+does not go through the cc wrapper. sokol_app's Linux backend is
 X11 and GLX, so the viewer runs under XWayland on a Wayland session, which is
 acceptable for a development tool. Zig master packages are fetched into a
 project-local `zig-pkg/`, which is gitignored.
@@ -423,7 +422,7 @@ project-local `zig-pkg/`, which is gitignored.
 
 Everything platform-specific lives behind `vertex.platform`, selected at compile
 time on `builtin.os.tag`, with `*_unsupported.zig` stubs that compile everywhere
-and return `error.Unsupported` so that the inline path remains the fallback. The
+and return `error.Unsupported`, leaving the inline path as the fallback. The
 remainder lives in a viewer edge module with a documented backend assumption.
 
 The macOS cells marked ✅ are facts established on aarch64-darwin, macOS 26.5.2,
@@ -433,22 +432,22 @@ the zero-copy path, dylib stepping and the smoke tests all run there. Only the
 
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
-| Toolchain | zig from `zig-overlay`, glibc pinned to the shell's through `ZIG_DYNAMIC_LINKER` | ✅ the same zig with no pin. The pin must be gated on Linux, because the nixpkgs Darwin cc wrapper also ships `nix-support/dynamic-linker`, holding `/usr/lib/dyld`, which otherwise forces `abi=gnu` | — |
+| Toolchain | zig from `zig-overlay`, glibc pinned to the shell's through `ZIG_DYNAMIC_LINKER` | ✅ the same zig with no pin. The pin must be gated on Linux: the nixpkgs Darwin cc wrapper also ships `nix-support/dynamic-linker`, holding `/usr/lib/dyld`, which otherwise forces `abi=gnu` | — |
 | SDK and frameworks | n/a | ✅ zig 0.17.0-dev.1857 skips its Darwin SDK detection, `xcrun --sdk macosx --show-sdk-path`, whenever `NIX_CFLAGS_COMPILE` or `NIX_LDFLAGS` is set, and then finds no framework at all, reporting `searched paths:  none`. The dev shell unsets both, leaving `DEVELOPER_DIR` and `SDKROOT`, from nixpkgs `apple-sdk` 14.4, to pin the SDK | Windows SDK through zig's own headers |
-| Shared memory (`platform.shm`) | `memfd_create` and `mmap`, with hugetlbfs through `MFD_HUGETLB` and a fallback | ✅ `shm_open` under an exclusive single-use name, unlinked immediately so that the descriptor is the only reference, then `ftruncate` and `mmap`. There is no `MAP_POPULATE` and no huge-page class, so `huge` is always false and the notice never prints. About 1.2 ms per 12 MB buffer, covering open, truncate, map and first touch | `CreateFileMapping` and `MapViewOfFile`; large pages require `SeLockMemoryPrivilege` |
+| Shared memory (`platform.shm`) | `memfd_create` and `mmap`, with hugetlbfs through `MFD_HUGETLB` and a fallback | ✅ `shm_open` under an exclusive single-use name, unlinked immediately, leaving the descriptor as the only reference, then `ftruncate` and `mmap`. There is no `MAP_POPULATE` and no huge-page class, so `huge` is always false and the notice never prints. About 1.2 ms per 12 MB buffer, covering open, truncate, map and first touch | `CreateFileMapping` and `MapViewOfFile`; large pages require `SeLockMemoryPrivilege` |
 | Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | ✅ `SCM_RIGHTS` through `std.c` `sendmsg` and `recvmsg`, but not a copy of the Linux implementation: `CMSG_ALIGN` is `__DARWIN_ALIGN32`, four bytes rather than `sizeof(size_t)`, and `cmsghdr` is 12 bytes rather than 16. There is no `MSG_NOSIGNAL`, so the socket takes `SO_NOSIGPIPE`, and no `MSG_CMSG_CLOEXEC`, so each received descriptor is marked individually | no descriptor passing: `DuplicateHandle` into the viewer process, which requires its pid, or a named mapping |
-| Receiving without handle passing | `recvmsg` always | ✅ no longer required here, since fdpass landed, but the `platform.fdpass.supported` branch remains: without it a receiver cannot read the socket at all, the inline path included, because `recvWithHandles` returns `error.Unsupported` | required permanently, since Windows never passes handles this way |
+| Receiving without handle passing | `recvmsg` always | ✅ no longer required here, fdpass having landed, but the `platform.fdpass.supported` branch remains. Without it `recvWithHandles` returns `error.Unsupported` and a receiver cannot read the socket at all, the inline path included | required permanently: Windows never passes handles this way |
 | Transport | Unix domain socket through `std.Io.net` | ✅ the same; `std.Io.net` binds, connects and accepts on the kqueue `Threaded` backend | `AF_UNIX` has existed since Windows 10 1803; `std.Io.net` support is unverified |
-| Abstract sockets | `"\0name"`, with no file to clean up | ✅ none, since Darwin has no abstract namespace; a real file is bound instead | none |
+| Abstract sockets | `"\0name"`, with no file to clean up | ✅ none: Darwin has no abstract namespace, and a real file is bound instead | none |
 | Windowing and GPU | sokol_app with X11 and GL 4.3 | ✅ sokol_app with Cocoa and Metal, selected by passing `.gl = false` to sokol-zig, whose `auto` resolves to Metal on Darwin. The frameworks are `AppKit`, `QuartzCore`, `Metal` and `AudioToolbox`. Meshes, points, lines and ImGui all render | sokol_app with Win32 and D3D11 |
 | Dylib stepping | `libstep-<name>.so`, `dlopen` of a copy | ✅ unchanged: `zig build step` names the artifact `libstep-<name>.dylib`, `std.DynLib` is `dlopen`, and macOS raises no code-signing objection to `dlopen`ing the viewer's copy. Only the copied path's suffix was hardcoded | `.dll` through `LoadLibrary`; the never-unload policy still applies |
-| Headless smoke tests | `xvfb-run` with llvmpipe | ✅ no Xvfb exists, so they run on the real display. The frame caps are smaller because vsync paces frames where llvmpipe does not | no Xvfb either; a hidden window or WARP |
+| Headless smoke tests | `xvfb-run` with llvmpipe | ✅ no Xvfb exists, so they run on the real display. The frame caps are smaller: vsync paces frames where llvmpipe does not | no Xvfb either; a hidden window or WARP |
 | Shaders | `sokol-shdc -l glsl430` | ✅ `-l glsl430:metal_macos`. One checked-in file per shader carries both backends, is identical from either operating system, and its GLCORE branch is unchanged by the addition of Metal. The `osx_arm64` sokol-shdc runs directly from the nix store, with no Gatekeeper quarantine | add `hlsl5` |
-| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass, to be removed once picking moves to a CPU ray cast | ✅ picking is disabled meanwhile: `pick.Picker` selects a disabled implementation at compile time, which is required rather than tidy, because a Metal build does not link OpenGL and the GL externs must therefore not be analyzed. ✅ a synchronous Metal readback is impossible, since sokol commits its only frame command buffer at `sg.commit()` and does not expose it, so a mid-frame `waitUntilCompleted` waits on a command buffer queued behind an uncommitted one | the same: no readback needed |
+| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass, to be removed once picking moves to a CPU ray cast | ✅ picking is disabled meanwhile: `pick.Picker` selects a disabled implementation at compile time. This is required, not tidiness: a Metal build does not link OpenGL, so the GL externs must not be analyzed. ✅ a synchronous Metal readback is impossible. sokol commits its only frame command buffer at `sg.commit()` and does not expose it, so a mid-frame `waitUntilCompleted` waits on a command buffer queued behind an uncommitted one | the same: no readback needed |
 | Face scalars | GL 4.3 SSBO indexed by `gl_PrimitiveID` | ❌ blocked: `gl_PrimitiveID` in a fragment shader requires MSL 2.2 and SPIRV-Cross rejects anything below it, reporting `PrimitiveId on macOS requires MSL 2.2`. sokol-shdc exposes no MSL version flag, in the pinned build or in master, as checked on 2026-08-24. `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` remain GL-only, and the renderer tests the generated descriptor for a source and falls back to the plain mesh pipeline. Resolving it requires a shader compiler that sets MSL 2.2, or replacing `primitive_id` with a per-vertex face index at the cost of vertex duplication | D3D11 `StructuredBuffer` with `SV_PrimitiveID` |
-| Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock`, the existing fallback, because `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is per `nix develop` shell, of the form `/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`, which would place viewer and sketch on different sockets | `\\.\pipe` or an `AF_UNIX` path in a temporary directory |
+| Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock`, the existing fallback. `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is per `nix develop` shell, of the form `/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`, which would place viewer and sketch on different sockets | `\\.\pipe` or an `AF_UNIX` path in a temporary directory |
 | `sun_path` limit | 107 usable bytes; longer paths rebased through `/proc/self/fd/<fd>` | ✅ `sun_path` is `char[104]` in the SDK's `sys/un.h`, so 103 are usable, and there is no `/proc` to rebase on, so longer paths are rejected with the limit named | 107 usable, no rebasing |
-| Measurement (`platform.stats`) | `getrusage` and `/proc/self/status` | ✅ `getrusage` alone. `task_info` is unnecessary, because `stats` exposes only minor faults and hugetlb kilobytes, and the latter is always zero here. Whether a huge-page class exists is the compile-time `shm.huge_supported`, so the viewer, the client and the sketch all report `huge=off` rather than a preference that cannot be honoured | `GetProcessMemoryInfo` |
+| Measurement (`platform.stats`) | `getrusage` and `/proc/self/status` | ✅ `getrusage` alone. `task_info` is unnecessary: `stats` exposes only minor faults and hugetlb kilobytes, and the latter is always zero here. Whether a huge-page class exists is the compile-time `shm.huge_supported`, so the viewer, the client and the sketch all report `huge=off` rather than a preference that cannot be honoured | `GetProcessMemoryInfo` |
 
 Three rules keep this inexpensive. No `std.os.linux` call and no raw GL call
 appears outside `src/platform/*` and `pick.zig`. The scene and the protocol see
@@ -477,39 +476,39 @@ comptime { vertex.dylib.exportSketch(@This()); }
 
 `zig build step -Dsketch=<name> --watch` builds `zig-out/lib/libstep-<name>.so`,
 or `.dylib` on macOS. `exportSketch` generates the C ABI surface —
-`vertex_abi_version`, `vertex_init`, `vertex_step` and `vertex_deinit` — and
-since the viewer and the library are always built from the same tree, that ABI
-need only be self-consistent and version-checked.
+`vertex_abi_version`, `vertex_init`, `vertex_step` and `vertex_deinit`. The
+viewer and the library are always built from the same tree, so that ABI need
+only be self-consistent and version-checked.
 
 The data path reuses everything else. A `DirectSink` encodes with the wire
 protocol and hands the byte parts to a host callback; the viewer copies them into
 the same `Inbox` the socket server feeds. Decoding, the scene, the timeline,
-retention and picking are unchanged. Shared buffers are socket-mode only, since
-they belong to `Connection`, so the in-process path copies inline.
+retention and picking are unchanged. Shared buffers belong to `Connection` and
+are socket-mode only; the in-process path copies inline.
 
 A worker thread owns the library and runs `vertex_step`, and each viewer-driven
 step is one timeline frame. The controls are Load, Reload, Unload, Step, Run,
 Pause and Reset. Run has three paces: Frame, the default, which runs one step per
-rendered frame so that every step is seen; Rate, which runs N steps per second;
+rendered frame, showing every step; Rate, which runs N steps per second;
 and Max, which runs freely until the sketch's own stop condition, an error or
 Pause, and suits generating frames quickly and scrubbing them afterwards. Step
 runs exactly one step, unpaced. The render thread never calls into the library;
 frame pacing is a credit the render thread grants once per frame.
 `VERTEX_STEP_PACE=frame|rate|max` selects the pace for headless use.
 
-Every Reset or reload starts a new run, since `init` sends hello and begin_run,
-which releases the previous run's versions, so the viewer shows the algorithm
-that was just built.
+Every Reset or reload starts a new run: `init` sends hello and begin_run, which
+releases the previous run's versions. The viewer shows the algorithm that was
+just built.
 
 The viewer polls the library's mtime about four times a second, copies a new
-build to a unique path and `dlopen`s it. Libraries are never `dlclose`d, because
-unloading risks problems with thread-local storage, atexit handlers and global
+build to a unique path and `dlopen`s it. Libraries are never `dlclose`d.
+Unloading risks problems with thread-local storage, atexit handlers and global
 state, and the leaked mapping is small. A mismatched `vertex_abi_version` refuses
 the load. A sketch that was running, or that had finished, runs again after a
 reload, on the assumption that the change was saved in order to watch it; one
 that was never started or is paused stays idle. Note that a rebuild which
-produces an identical artifact does not reload, because the poll compares mtime
-and the install step skips an unchanged copy.
+produces an identical artifact does not reload: the poll compares mtime, and the
+install step skips an unchanged copy.
 
 Each instance receives its own leak-checking `DebugAllocator`. `vertex_deinit`
 reports leaks and the viewer logs them, and a failing step pauses with the error

@@ -33,10 +33,10 @@ pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddr
 /// A writable region mapped into both this process and the viewer, which is how
 /// a payload reaches the viewer without being copied.
 /// ---
-/// `len` is the number of bytes that were asked for, while `map` covers the
-/// whole mapping and so may be longer, since a mapping is a whole number of
-/// pages. `huge` records whether the kernel provided huge pages; requesting
-/// them is not a guarantee.
+/// `len` is the number of bytes requested. `map` covers the whole mapping and
+/// may be longer, a mapping being a whole number of pages. `huge` records
+/// whether the kernel provided huge pages; requesting them is not a
+/// guarantee.
 /// ---
 /// The connection owns this until the message that sends it succeeds, which
 /// consumes it.
@@ -47,9 +47,9 @@ pub const Shared = struct {
     huge: bool,
 };
 
-/// How many shared buffers one connection may hold at a time. The bound exists
-/// because each is a descriptor and a mapping, and a sketch that leaks them
-/// would otherwise exhaust both silently.
+/// How many shared buffers one connection may hold at a time. Each is a
+/// descriptor and a mapping; without the bound, a sketch that leaked them would
+/// exhaust both silently.
 pub const max_outstanding_shared = 8;
 
 const max_consumed_ranges = 8;
@@ -61,12 +61,11 @@ const ConsumedRange = struct {
 
 /// Tracks the shared buffers a connection has handed out but not yet sent.
 /// ---
-/// A buffer must be recognised again when it comes back as a slice inside a
-/// message, so that the encoder can refer to it rather than copying it, which is
-/// what `findOutstanding` does by address range. Once a send consumes a buffer
-/// the tracker also remembers the range briefly, so that a second attempt to
-/// send the same buffer is reported as `SharedConsumed` rather than silently
-/// referring to memory that has been unmapped.
+/// A buffer must be recognised when it returns as a slice inside a message, so
+/// the encoder can refer to it rather than copy it; `findOutstanding` matches by
+/// address range. The tracker also remembers the range of a consumed buffer
+/// briefly, and reports a second send of it as `SharedConsumed` rather than
+/// referring to unmapped memory.
 pub const SharedTracker = struct {
     outstanding: [max_outstanding_shared]Shared = undefined,
     outstanding_len: u8 = 0,
@@ -402,8 +401,8 @@ fn copySocketPath(path: []const u8, storage: *[std.Io.Dir.max_path_bytes]u8) err
 
 /// Decides whether shared buffers should ask for huge pages: an explicit choice
 /// if one was made, otherwise `VERTEX_SHARED_HUGE`, otherwise enabled. Always
-/// false on a platform with no huge-page class, since the preference could not
-/// be honoured.
+/// false on a platform with no huge-page class, where the preference cannot be
+/// honoured.
 pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
     // Not a preference anyone can hold on a platform with no huge-page class.
     if (!platform.shm.huge_supported) return false;

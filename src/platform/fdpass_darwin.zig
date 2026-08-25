@@ -200,5 +200,5 @@ fn suppressSigpipe(socket: platform.Handle) void {
     );
 }
 
-/// Declared here because `std.c` declares `recvmsg` without exporting it.
+/// `std.c` declares `recvmsg` without exporting it.
 extern "c" fn recvmsg(socket: platform.Handle, msg: *std.c.msghdr, flags: u32) isize;

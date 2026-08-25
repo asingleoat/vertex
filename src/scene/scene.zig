@@ -1,30 +1,28 @@
 //! The scene: everything the viewer knows about the geometry it is displaying.
 //!
 //! A scene holds named structures. A structure is a mesh, a point cloud or a
-//! line set, identified by the name a sketch registered it under and holding a
-//! chronological list of versions. A version is one snapshot of that structure's
-//! geometry, tagged with the run and frame it arrived in, and holds references
-//! into a reference-counted blob store rather than copies. Registering a mesh
-//! under an existing name appends a version, and a positions-only update
-//! appends a version sharing the previous one's topology blob. The timeline
-//! therefore costs memory in proportion to what changed per frame, and scrubbing
-//! it rebinds existing GPU buffers without uploading.
+//! line set, identified by the name a sketch registered it under, holding a
+//! chronological list of versions. A version is one snapshot of that
+//! structure's geometry, tagged with the run and frame it arrived in, holding
+//! references into a reference-counted blob store rather than copies.
+//! Registering a mesh under an existing name appends a version. A
+//! positions-only update appends a version sharing the previous one's topology
+//! blob. The timeline costs memory in proportion to what changed per frame, and
+//! scrubbing it rebinds existing GPU buffers without uploading.
 //!
 //! Identity is the interned name. Viewer state is keyed by the same name, so
 //! the display settings for "surface" are untouched when a new run replaces the
 //! geometry behind it.
 //!
-//! The module is pure. It performs no I/O, holds no globals, and touches
-//! neither sokol nor the socket; the only memory it uses comes from the
-//! allocator passed to `init`. Its inputs are decoded `protocol.Message` values
-//! and its outputs are mutations to its own storage plus lists of blob indices
-//! the render edge drains. Blob bytes are either copied into scene-owned
-//! storage or, on the zero-copy path, adopted as views into a mapping the edge
-//! owns; `Blob` and `Mapping` describe how those two cases differ.
+//! The module is pure: no I/O, no globals, no sokol and no socket. Its only
+//! memory comes from the allocator passed to `init`. Its inputs are decoded
+//! `protocol.Message` values; its outputs are mutations to its own storage and
+//! lists of blob indices the render edge drains. Blob bytes are either copied
+//! into scene-owned storage or, on the zero-copy path, adopted as views into a
+//! mapping the edge owns; see `Blob` and `Mapping`.
 //!
-//! Nothing here allocates except where an allocator appears in the signature,
-//! so the per-declaration notes below concern ownership and lifetime rather
-//! than allocation.
+//! Nothing allocates except where an allocator appears in the signature. The
+//! notes below therefore concern ownership and lifetime.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -55,8 +53,8 @@ pub const MappingIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 /// ---
 /// Names are interned once, on first registration, so comparing two structures'
 /// names is comparing two integers. A `[]const u8` obtained from `string` is
-/// invalidated by interning anything else, because the buffer may move; hold
-/// the index, not the slice.
+/// invalidated by interning anything else, which may move the buffer. Hold the
+/// index, not the slice.
 pub const StringIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 /// What a structure is: a triangle mesh, a point cloud or a set of line
@@ -86,12 +84,9 @@ pub const MemoryStats = struct {
     evicted_versions: u32,
 };
 
-/// How a structure is displayed, kept per name rather than per structure so
-/// that it survives a rebuild.
-/// ---
-/// A new run replaces geometry but not these settings, which is the point: the
-/// visibility, colormap and sizes chosen while looking at a result are still in
-/// force when the algorithm is edited and run again.
+/// How a structure is displayed, keyed by name rather than by structure. A new
+/// run replaces geometry and leaves these settings in force, so visibility,
+/// colormap and sizes survive a rebuild.
 pub const UiState = struct {
     visible: bool = true,
     wireframe: bool = false,
@@ -137,7 +132,8 @@ pub const QuantityRef = struct {
 /// versions address for their quantities.
 /// ---
 /// A structure with no versions has been discarded by a run that did not
-/// register it; its slot and `UiState` remain so that the name can come back.
+/// register it. Its slot and `UiState` remain, and registering the name again
+/// restores it.
 /// The arrays are owned by the scene and released by `Scene.deinit`.
 pub const Structure = struct {
     versions: std.ArrayList(Version) = .empty,
@@ -152,12 +148,11 @@ pub const Structure = struct {
 /// A reference-counted run of bytes: the positions, topology or quantity values
 /// that versions point at.
 /// ---
-/// Blobs are shared, which is the mechanism behind the timeline's memory
-/// behaviour: two versions referring to the same topology hold one blob between
-/// them, and it is freed when the last reference goes. The bytes are either
-/// scene-owned, allocated 64-byte aligned, with `mapping` set to `.none`, or a
-/// view into a registered mapping, in which case the blob holds a reference on
-/// that mapping until its own last release.
+/// Two versions referring to the same topology hold one blob between them, which
+/// is freed when the last reference goes. The bytes are either scene-owned,
+/// allocated 64-byte aligned, with `mapping` set to `.none`, or a view into a
+/// registered mapping, in which case the blob holds a reference on that mapping
+/// until its own last release.
 pub const Blob = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     refcount: u32,
@@ -167,12 +162,11 @@ pub const Blob = struct {
 /// A shared memory region that the edge has mapped and the scene may point
 /// into.
 /// ---
-/// This is how the zero-copy path reaches the scene: the socket thread maps a
-/// descriptor the client sent, registers the region here, and blobs then adopt
-/// slices of it as views instead of copying. The scene never unmaps or closes
-/// anything; it counts references and, when a mapping reaches zero, queues its
-/// index in `released_mappings` for the edge to clean up. Ownership stays with
-/// the edge throughout.
+/// The socket thread maps a descriptor the client sent and registers the region
+/// here; blobs then adopt slices of it as views instead of copying. The scene
+/// never unmaps or closes anything. It counts references and, when a mapping
+/// reaches zero, queues its index in `released_mappings` for the edge. Ownership
+/// remains with the edge.
 pub const Mapping = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     fd: i32,
@@ -201,7 +195,7 @@ pub const ApplyError = std.mem.Allocator.Error || error{
 
 /// How many console lines the scene retains. Beyond this the oldest entry is
 /// dropped and the array does not grow further. The interned text of a dropped
-/// entry stays in the string buffer, since interning is append-only.
+/// entry stays in the string buffer; interning is append-only.
 pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
@@ -277,9 +271,8 @@ pub const Scene = struct {
     /// Frees everything the scene owns.
     ///
     /// The edge must first call `takeAllMappings` and unmap and close what it
-    /// receives, because the scene borrows those regions and cannot release
-    /// them. Every view and index obtained from the scene is invalid
-    /// afterwards.
+    /// receives; the scene borrows those regions and cannot release them. Every
+    /// view and index obtained from the scene is invalid afterwards.
     pub fn deinit(self: *Scene) void {
         std.debug.assert(self.live_mappings == 0);
         var structures = self.structures.slice();
@@ -1005,8 +998,8 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // mappings
 
-    /// Registers a shared region the edge has mapped, so that blobs may adopt
-    /// slices of it instead of copying.
+    /// Registers a shared region the edge has mapped, for blobs to adopt slices
+    /// of instead of copying.
     ///
     /// The scene borrows the bytes and the descriptor and never closes either;
     /// it starts the mapping at zero references, which rise as blobs adopt it.
@@ -1108,8 +1101,8 @@ pub const Scene = struct {
         self.live_mappings -= 1;
     }
 
-    /// Hands back every mapping still registered, so that the edge can unmap
-    /// and close them.
+    /// Hands back every mapping still registered, for the edge to unmap and
+    /// close.
     ///
     /// This is the required step before `deinit`: the scene cannot release these
     /// regions itself, so it surrenders them first. `out` is caller-owned and

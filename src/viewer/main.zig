@@ -8,8 +8,8 @@
 //! changed, draw, then draw the UI over it.
 //!
 //! Everything with a lifetime longer than a frame lives in one file-scope
-//! `state`, because sokol_app's callbacks are C function pointers with no
-//! context argument. That is the only global in the program.
+//! `state`, the only global in the program. sokol_app's callbacks are C
+//! function pointers with no context argument.
 //!
 //! Several environment variables exist for headless use, and the smoke tests
 //! depend on them: `VERTEX_EXIT_AFTER_FRAMES` stops the viewer after a fixed
