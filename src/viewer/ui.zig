@@ -26,7 +26,6 @@ pub fn draw(
     scene: *Scene,
     scrub: *u32,
     follow_latest: *bool,
-    compare_previous_run: *bool,
     camera_mode: *CameraMode,
     socket_path: []const u8,
     connected: bool,
@@ -46,7 +45,6 @@ pub fn draw(
         scene,
         scrub,
         follow_latest,
-        compare_previous_run,
         camera_mode,
         socket_path,
         connected,
@@ -150,9 +148,11 @@ fn drawStructures(
         const names = structures.items(.name);
         const kinds = structures.items(.kind);
         const ui_states = structures.items(.ui);
-        const stale = structures.items(.stale);
         const versions = structures.items(.versions);
-        for (names, kinds, ui_states, stale, versions, 0..) |name_index, kind, *ui_state, is_stale, version_list, i| {
+        for (names, kinds, ui_states, versions, 0..) |name_index, kind, *ui_state, version_list, i| {
+            // A run that never registered this structure discarded its
+            // versions; there is nothing left to list.
+            if (version_list.items.len == 0) continue;
             ig.igPushIDInt(@intCast(i));
             defer ig.igPopID();
             const name = scene.string(name_index);
@@ -184,18 +184,18 @@ fn drawStructures(
             const detail = switch (kind) {
                 .mesh => std.fmt.bufPrint(
                     &buffer,
-                    "mesh  vertices={d} faces={d}{s}{s}",
-                    .{ vertex_count, face_count, if (is_stale) "  [stale]" else "", frame_note },
+                    "mesh  vertices={d} faces={d}{s}",
+                    .{ vertex_count, face_count, frame_note },
                 ),
                 .points => std.fmt.bufPrint(
                     &buffer,
-                    "points  vertices={d}{s}{s}",
-                    .{ vertex_count, if (is_stale) "  [stale]" else "", frame_note },
+                    "points  vertices={d}{s}",
+                    .{ vertex_count, frame_note },
                 ),
                 .lines => std.fmt.bufPrint(
                     &buffer,
-                    "lines  vertices={d} segments={d}{s}{s}",
-                    .{ vertex_count, segment_count, if (is_stale) "  [stale]" else "", frame_note },
+                    "lines  vertices={d} segments={d}{s}",
+                    .{ vertex_count, segment_count, frame_note },
                 ),
             } catch "structure summary too long";
             text(detail);
@@ -212,7 +212,6 @@ fn drawStructures(
                 .points => _ = ig.igSliderFloat("Point size", &ui_state.point_size, 1.0, 16.0),
                 .lines => _ = ig.igSliderFloat("Line width", &ui_state.line_width, 0.5, 8.0),
             }
-            _ = ig.igCheckbox("Ghost", &ui_state.ghost);
             ig.igUnindent();
             ig.igSeparator();
         }
@@ -513,7 +512,6 @@ fn drawTimeline(
     scene: *Scene,
     scrub: *u32,
     follow_latest: *bool,
-    compare_previous_run: *bool,
     camera_mode: *CameraMode,
     socket_path: []const u8,
     connected: bool,
@@ -521,7 +519,7 @@ fn drawTimeline(
 ) bool {
     var fit_requested = false;
     if (ig.igBegin("Timeline", null, ig.ImGuiWindowFlags_None)) {
-        const frame_count = drawTimelineFrames(scene, scrub, follow_latest, compare_previous_run);
+        const frame_count = drawTimelineFrames(scene, scrub, follow_latest);
         drawTimelineRetention(scene);
         fit_requested = drawTimelineCamera(camera_mode);
         drawTimelineStatus(scene, socket_path, connected, fps, frame_count);
@@ -534,10 +532,8 @@ fn drawTimelineFrames(
     scene: *const Scene,
     scrub: *u32,
     follow_latest: *bool,
-    compare_previous_run: *bool,
 ) u32 {
     _ = ig.igCheckbox("Follow latest", follow_latest);
-    _ = ig.igCheckbox("Compare previous run", compare_previous_run);
     const frame_count = scene.frameCount();
     const maximum_u32 = frame_count -| 1;
     const maximum: c_int = @intCast(@min(maximum_u32, @as(u32, std.math.maxInt(c_int))));
@@ -553,14 +549,6 @@ fn drawTimelineFrames(
         .{ keptFrameCount(scene), frame_count },
     ) catch "frame retention unavailable";
     text(kept_line);
-    if (scene.run > 1) {
-        const previous_line = std.fmt.bufPrint(
-            &frame_buffer,
-            "prev run: {d} frames",
-            .{scene.frameCountOfRun(scene.run - 1)},
-        ) catch "previous run frame count unavailable";
-        text(previous_line);
-    }
     return frame_count;
 }
 

@@ -69,14 +69,6 @@ pub fn scalarSamplerSlot(comptime aos_shader: type, comptime soa_shader: type) u
     };
 }
 
-/// Multiplies the borrowed RGB color in place by the established stale factor.
-/// Alpha is unchanged and the operation allocates nothing.
-pub fn dim(color: *[4]f32) void {
-    color[0] *= 0.45;
-    color[1] *= 0.45;
-    color[2] *= 0.45;
-}
-
 /// Destroys and removes entries not used in `frame` once `map` exceeds `cap`.
 /// The map retains its allocation; each removed entry's GPU buffer is consumed.
 pub fn trimStale(

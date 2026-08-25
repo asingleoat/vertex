@@ -134,8 +134,7 @@ pub const Renderer = struct {
             0.15 * bounds.radius() / @max(density, 1.0);
         if (!(scale > 0) or !std.math.isFinite(scale)) return;
 
-        var draw_color = color;
-        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
+        const draw_color = color;
         const vs: vector_shader.VsParams = .{
             .mvp = vp.m,
             .scale_factor_pad = .{ scale, 0, 0, 0 },

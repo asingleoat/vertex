@@ -41,7 +41,6 @@ const State = struct {
     picker: pick.Picker = undefined,
     scrub: u32 = 0,
     follow_latest: bool = true,
-    compare_previous_run: bool = false,
     rendered_frames: u64 = 0,
     exit_after_frames: ?u64 = null,
     probe: ?Probe = null,
@@ -242,7 +241,6 @@ fn frameCallback() callconv(.c) void {
         &state.renderer,
         &state.scene,
         state.scrub,
-        state.compare_previous_run,
         vp,
         .{ width, height },
     ) catch |err| std.log.err("renderer draw failed: {s}", .{@errorName(err)});
@@ -258,7 +256,6 @@ fn frameCallback() callconv(.c) void {
         &state.scene,
         &state.scrub,
         &state.follow_latest,
-        &state.compare_previous_run,
         &state.input.camera_mode,
         state.server.socketPath(),
         state.server.connected.load(.acquire),

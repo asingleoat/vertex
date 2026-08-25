@@ -76,8 +76,7 @@ pub const Renderer = struct {
         const positions = scene.positionsOf(version);
         if (positions.len() == 0) return;
 
-        var draw_color = color;
-        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
+        const draw_color = color;
         const ui_state = structures.items(.ui)[structure_i];
         var bindings: sg.Bindings = .{};
         common.bindPositions(&bindings, gpu.bufferFor(scene, version.positions, .vertex), positions.len());
@@ -106,38 +105,6 @@ pub const Renderer = struct {
             sg.applyBindings(bindings);
             applyPlainUniforms(vp, viewport, ui_state.point_size, draw_color);
         }
-        sg.draw(0, 4, @intCast(positions.len()));
-    }
-
-    /// Draws one previous-run point version with the plain pipeline at a
-    /// reduced size. It borrows all state and performs no CPU allocation.
-    pub fn drawGhost(
-        self: *Renderer,
-        gpu: *common.Gpu,
-        scene: *const Scene,
-        structure_index: StructureIndex,
-        version_index: u32,
-        vp: Mat4,
-        viewport: [2]f32,
-        color: [4]f32,
-    ) void {
-        const structure_i = common.indexOf(structure_index);
-        const structures = scene.structures.slice();
-        std.debug.assert(structures.items(.kind)[structure_i] == .points);
-        const version = structures.items(.versions)[structure_i].items[version_index];
-        const positions = scene.positionsOf(version);
-        if (positions.len() == 0) return;
-
-        var bindings: sg.Bindings = .{};
-        common.bindPositions(&bindings, gpu.bufferFor(scene, version.positions, .vertex), positions.len());
-        sg.applyPipeline(self.pipeline);
-        sg.applyBindings(bindings);
-        applyPlainUniforms(
-            vp,
-            viewport,
-            structures.items(.ui)[structure_i].point_size * 0.65,
-            color,
-        );
         sg.draw(0, 4, @intCast(positions.len()));
     }
 

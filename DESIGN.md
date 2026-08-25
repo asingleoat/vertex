@@ -14,7 +14,7 @@ viewer → immediately rendered with full camera control and UI state intact.
 | Renderer | sokol-gfx via sokol-zig (sokol_app for windowing) |
 | Domain | Both 3D geometry processing (orbit camera) and 2D computational geometry (ortho pan/zoom) from day one |
 | Renderables | Triangle meshes, point clouds, polylines/edge sets, scalar fields (colormapped), vector fields (instanced arrows) |
-| Scene model | Named structures, upsert-by-name across runs; per-structure viewer state (visibility, colormap, sizes) survives recompiles; untouched structures marked stale |
+| Scene model | Named structures, upsert-by-name across runs; per-structure viewer state (visibility, colormap, sizes) survives recompiles; a run discards what it does not re-register |
 | Timeline | Step capture in v1 — client calls `step()` between iterations, viewer gets a frame scrubber |
 | UI | Dear ImGui via sokol_imgui + cimgui |
 | Picking | v1 — ID-buffer pass, click to inspect element index + quantity values |
@@ -86,7 +86,7 @@ layout-agnostic.
 Messages (v1):
 
 - `Hello { version, source_name }`
-- `BeginRun` — new generation; existing structures become stale-pending
+- `BeginRun` — new generation; the previous run's versions are released
 - `BeginFrame { index, label? }` — frame 0 is implicit after `BeginRun`; the
   client's `step()` sends `EndFrame` + `BeginFrame(n+1)`
 - `Mesh { name, dim: 2|3, positions: Positions bytes, indices: [u32×3] }`
@@ -114,8 +114,13 @@ Semantics:
   3. *Topology evolves* (edge collapses, remeshing, booleans) — full `Mesh`
      per frame; inherently O(steps × mesh size), bounded by an eviction policy
      (see M5).
-- **Staleness.** At `EndRun`, structures not touched during the run are marked
-  stale (dimmed in UI, toggleable auto-remove).
+- **A run owns the scene.** At `EndRun`, every structure the run never
+  registered is discarded: its versions are released and it stops drawing and
+  listing. Its slot and per-name `UiState` remain, so registering the name
+  again later restores the structure with its viewer settings. Nothing is kept
+  dimmed — a leftover from the last run in the corner of the viewport is
+  noise, not information. (Superseded 2026-08-25 the retain-and-dim rule and
+  the A/B ghost that justified keeping the previous run at all.)
 - **Copies on the path.** Two payload modes, protocol version 2:
   - *Inline*: client → kernel is zero-copy (`writev` from the caller's
     slices); the viewer's socket thread reads each payload into one
@@ -208,7 +213,7 @@ coalesces multiple updates to the same structure (sokol allows only one
 store, not owned copies:
 
 ```
-Structure { name, kind, dim, versions: []Version, stale: bool }
+Structure { name, kind, dim, versions: []Version }   // no versions ⇒ discarded, slot and UiState kept
 Version   { run: u32, frame: u32,
             positions: BlobRef, topology: ?BlobRef, quantities: {name: BlobRef} }
 Blob      { refcount, bytes: []align(64) u8 }        // pure; positions stored in the build-selected Positions layout
@@ -419,7 +424,7 @@ self-consistent plus a version check.
 - **Data path reuses everything.** A `DirectSink` encodes with the wire
   protocol and hands byte parts to a host callback; the viewer copies them
   into the same `Inbox` the socket server feeds. Decode, scene, timeline,
-  retention, ghosting and picking are untouched. Shared (memfd) buffers are
+  retention and picking are untouched. Shared (memfd) buffers are
   socket-mode only (`Connection`); the in-process path is inline-copy.
 - **Stepping.** A worker thread owns the library and runs `vertex_step`;
   each viewer-driven step is one timeline frame. Controls: Load / Reload /
@@ -431,9 +436,8 @@ self-consistent plus a version check.
   never calls into the library; frame pacing is a credit the render thread
   grants once per frame. `VERTEX_STEP_PACE=frame|rate|max` for headless use.
 - **Runs.** Every Reset or reload starts a new run (`init` sends hello +
-  begin_run), so the previous run is retained and "Compare previous run"
-  ghosts the old algorithm against the new one — the code-change A/B loop
-  is: save → auto-reload → compare.
+  begin_run), which releases the previous run's versions: the viewer shows
+  the algorithm you just built, not a palimpsest of the ones before it.
 - **Hot reload.** The viewer polls the library's mtime (~4 Hz), copies the
   new build to a unique path and `dlopen`s it; libraries are never
   `dlclose`d (TLS/atexit/global-state hazards on unload — the leaked mapping
@@ -453,7 +457,7 @@ self-consistent plus a version check.
 
 - **M1 — walking skeleton.** ✅ (2026-08-23) Flake + build.zig; viewer with
   imgui, orbit/ortho cameras, socket server, mesh rendering (all layouts,
-  timeline, staleness); client streams an animated icosphere sketch.
+  timeline, run lifecycle); client streams an animated icosphere sketch.
   Verified end-to-end headless (Xvfb/llvmpipe) and via `--watch`.
   Not in M1: points/lines draw as UI entries only.
 - **M2 — all renderables + scalar colormaps.** ✅ (2026-08-23) Points (instanced round
@@ -466,12 +470,16 @@ self-consistent plus a version check.
 - **M3 — picking + inspection.** ✅ (2026-08-23) ID-buffer pass, GL readback, inspector
   tooltip with element index and quantity values; face-target scalar
   rendering (needs the same per-primitive plumbing).
-- **M4 — retention + budget.** ✅ (2026-08-24) Previous run retained
-  (`Retention.max_runs`, default 2) with `versionAtRun` and a "Compare
-  previous run" ghost pass (wireframe/dimmed); memory budget
-  (`VERTEX_MEMORY_BUDGET_MB`, UI drag) enforced by evicting old-run versions
-  first, then decimating current-run frames (odd frames, then every 4th,
-  …), never a structure's latest or frame 0; memory/eviction readouts;
-  ingest statistics on exit; `sketches/stress.zig`. memfd zero-copy path landed the
-  same day (see "Copies on the path"). Dylib mode: design note above,
-  awaiting a decision.
+- **M4 — retention + budget.** ✅ (2026-08-24) Memory budget
+  (`VERTEX_MEMORY_BUDGET_MB`, UI drag) enforced by decimating current-run
+  frames (odd frames, then every 4th, …), never a structure's latest or
+  frame 0; memory/eviction readouts; ingest statistics on exit;
+  `sketches/stress.zig`. memfd zero-copy path landed the same day (see
+  "Copies on the path"). Dylib mode: design note above, awaiting a decision.
+  - *Retracted 2026-08-25.* This milestone also retained the previous run
+    (`Retention.max_runs` = 2, `versionAtRun`, `frameCountOfRun`) behind a
+    "Compare previous run" ghost pass, and dimmed structures a new run had
+    not re-registered. In use the A/B compare was not reached for and the
+    dimmed leftovers were a distraction, so both are gone: one run is
+    retained, untouched structures are discarded, and the budget lost its
+    evict-old-runs-first stage because there are no old runs to evict.

@@ -148,8 +148,7 @@ pub const Renderer = struct {
             .index_buffer = self.gpu.bufferFor(scene, version.topology, .index),
         };
         common.bindPositions(&bindings, self.gpu.bufferFor(scene, version.positions, .vertex), positions.len());
-        var draw_color = color;
-        if (structures.items(.stale)[structure_i]) common.dim(&draw_color);
+        const draw_color = color;
 
         const active = common.activeQuantity(scene, structure_index, version);
         const use_vertex_scalar = if (active) |quantity|
@@ -205,20 +204,6 @@ pub const Renderer = struct {
         return self.lines.drawWireframe(scene, structure_index, version_index, vp, viewport, color);
     }
 
-    /// Draws a previous-run mesh through the biased wireframe cache regardless
-    /// of current solid/wireframe settings. Cache growth may allocate.
-    pub fn drawGhostWireframe(
-        self: *Renderer,
-        scene: *const Scene,
-        structure_index: StructureIndex,
-        version_index: u32,
-        vp: Mat4,
-        viewport: [2]f32,
-        color: [4]f32,
-    ) std.mem.Allocator.Error!void {
-        return self.lines.drawGhostWireframe(scene, structure_index, version_index, vp, viewport, color);
-    }
-
     /// Draws one line structure. A derived-cache miss may allocate through the
     /// renderer allocator; all returned GPU state remains renderer-owned.
     pub fn drawLines(
@@ -231,20 +216,6 @@ pub const Renderer = struct {
         color: [4]f32,
     ) std.mem.Allocator.Error!void {
         return self.lines.drawLines(scene, structure_index, version_index, vp, viewport, color);
-    }
-
-    /// Draws one previous-run line version with the existing derived endpoint
-    /// cache. A cache miss may allocate through the renderer allocator.
-    pub fn drawGhostLines(
-        self: *Renderer,
-        scene: *const Scene,
-        structure_index: StructureIndex,
-        version_index: u32,
-        vp: Mat4,
-        viewport: [2]f32,
-        color: [4]f32,
-    ) std.mem.Allocator.Error!void {
-        return self.lines.drawGhostLines(scene, structure_index, version_index, vp, viewport, color);
     }
 
     /// Draws the active vector quantity for a structure. A derived-cache miss
@@ -272,20 +243,6 @@ pub const Renderer = struct {
         color: [4]f32,
     ) std.mem.Allocator.Error!void {
         return self.points.draw(&self.gpu, scene, structure_index, version_index, vp, viewport, color);
-    }
-
-    /// Draws one previous-run point version smaller and without quantity
-    /// coloring. It borrows scene state and performs no CPU allocation.
-    pub fn drawGhostPoints(
-        self: *Renderer,
-        scene: *const Scene,
-        structure_index: StructureIndex,
-        version_index: u32,
-        vp: Mat4,
-        viewport: [2]f32,
-        color: [4]f32,
-    ) void {
-        self.points.drawGhost(&self.gpu, scene, structure_index, version_index, vp, viewport, color);
     }
 
     /// Destroys every owned renderer and shared GPU resource, then frees all

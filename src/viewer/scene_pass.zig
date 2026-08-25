@@ -1,17 +1,16 @@
-//! Ordered scene rendering passes over the current and previous run.
+//! Ordered scene rendering passes over the displayed scene.
 const std = @import("std");
 const vertex = @import("vertex");
 
 const mesh_render = @import("render/mesh.zig");
 const Scene = vertex.scene.Scene;
 
-/// Draws the displayed scene in the established solid, ghost, wire, line,
-/// vector, then point order. Inputs are borrowed; renderer cache misses may allocate.
+/// Draws the displayed scene in the established solid, wire, line, vector,
+/// then point order. Inputs are borrowed; renderer cache misses may allocate.
 pub fn drawScene(
     renderer: *mesh_render.Renderer,
     scene: *const Scene,
     scrub: u32,
-    compare_previous_run: bool,
     vp: vertex.camera.Mat4,
     viewport: [2]f32,
 ) std.mem.Allocator.Error!void {
@@ -27,43 +26,6 @@ pub fn drawScene(
         const version_index = scene.versionAt(structure_index, scrub) orelse continue;
         std.debug.assert(version_index < version_list.items.len);
         try renderer.draw(scene, structure_index, version_index, vp, .{ 0.72, 0.78, 0.86, 1.0 });
-    }
-    // Previous-run ghosts are depth-tested overlays: meshes use only the
-    // biased wire cache, while lines and smaller points use their plain paths.
-    if (compare_previous_run and scene.run > 1) {
-        const previous_run = scene.run - 1;
-        for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
-            if (!ui_state.visible or !ui_state.ghost) continue;
-            const structure_index: vertex.scene.StructureIndex = @fromBackingInt(@intCast(i));
-            const version_index = scene.versionAtRun(structure_index, previous_run, scrub) orelse continue;
-            std.debug.assert(version_index < version_list.items.len);
-            switch (kind) {
-                .mesh => try renderer.drawGhostWireframe(
-                    scene,
-                    structure_index,
-                    version_index,
-                    vp,
-                    viewport,
-                    .{ 0.92, 0.18, 0.72, 1.0 },
-                ),
-                .lines => try renderer.drawGhostLines(
-                    scene,
-                    structure_index,
-                    version_index,
-                    vp,
-                    viewport,
-                    .{ 0.55, 0.14, 0.43, 1.0 },
-                ),
-                .points => renderer.drawGhostPoints(
-                    scene,
-                    structure_index,
-                    version_index,
-                    vp,
-                    viewport,
-                    .{ 0.55, 0.14, 0.43, 1.0 },
-                ),
-            }
-        }
     }
     for (ui_states, kinds, versions, 0..) |ui_state, kind, version_list, i| {
         if (!ui_state.visible or kind != .mesh or !ui_state.wireframe) continue;
