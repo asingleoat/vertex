@@ -182,8 +182,37 @@ pub fn build(b: *Build) !void {
     // open zig-out/docs/index.html; the page fetches sources.tar, so it may
     // need serving over HTTP rather than opening from the file system.
     const docs_obj = b.addObject(.{ .name = "vertex", .root_module = mod_vertex });
+    // zig's autodoc renders a container's own doc comment in full, but shows
+    // only the first paragraph for a plain declaration: `renderGlobal` asks for
+    // the "short" form while `renderTopLevelDocs` asks for the full one, so
+    // everything below the first paragraph of, say, `layout.Positions` is
+    // invisible on its page. Copy the emitted site, add the full-text renderer
+    // and point `renderGlobal` at it. The grep fails the build if a zig update
+    // changes the call, rather than silently producing an unpatched site.
+    const patch_docs = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        \\set -e
+        \\src="$1"; out="$2"
+        \\mkdir -p "$out"
+        \\cp -R "$src"/. "$out"/
+        \\chmod -R u+w "$out"
+        \\js="$out/main.js"
+        \\grep -q 'declDocsHtmlShort(decl_index)' "$js" || {
+        \\  echo "autodoc: expected call not found; update the patch in build.zig" >&2
+        \\  exit 1
+        \\}
+        \\sed -i 's|    function declDocsHtmlShort(decl_index) {|    function declDocsHtmlFull(decl_index) {\n      return unwrapString(wasm_exports.decl_docs_html(decl_index, false));\n    }\n    function declDocsHtmlShort(decl_index) {|' "$js"
+        \\sed -i 's|const docs_html = declDocsHtmlShort(decl_index);|const docs_html = declDocsHtmlFull(decl_index);|' "$js"
+        \\grep -q 'function declDocsHtmlShort(decl_index)' "$js"
+        \\grep -q 'function declDocsHtmlFull(decl_index)' "$js"
+        ,
+        "patch-autodoc",
+    });
+    patch_docs.addDirectoryArg(docs_obj.getEmittedDocs());
+    const patched_docs = patch_docs.addOutputDirectoryArg("docs");
     const install_docs = b.addInstallDirectory(.{
-        .source_dir = docs_obj.getEmittedDocs(),
+        .source_dir = patched_docs,
         .install_dir = .prefix,
         .install_subdir = "docs",
     });
