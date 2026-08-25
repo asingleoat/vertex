@@ -15,11 +15,13 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, value, "1")
     else
         false;
-    // Mirrors the connection's resolution: absent means on (with fallback).
-    const huge_pages = if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_SHARED_HUGE")) |value|
-        !std.mem.eql(u8, value, "0")
-    else
-        true;
+    // Mirrors the connection's resolution: off where the platform has no
+    // huge-page class, otherwise absent means on (with fallback).
+    const huge_pages = vertex.platform.shm.huge_supported and
+        if (std.process.Environ.getPosix(init.minimal.environ, "VERTEX_SHARED_HUGE")) |value|
+            !std.mem.eql(u8, value, "0")
+        else
+            true;
 
     const step_count: u32 = 40;
     var send_ns: i96 = 0;

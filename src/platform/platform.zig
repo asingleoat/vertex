@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 /// always owned by the caller according to the selected implementation's docs.
 pub const shm = switch (builtin.os.tag) {
     .linux => @import("shm_linux.zig"),
+    .macos => @import("shm_darwin.zig"),
     else => @import("shm_unsupported.zig"),
 };
 
@@ -13,6 +14,7 @@ pub const shm = switch (builtin.os.tag) {
 /// no memory and borrow all input/output buffers for their duration only.
 pub const fdpass = switch (builtin.os.tag) {
     .linux => @import("fdpass_linux.zig"),
+    .macos => @import("fdpass_darwin.zig"),
     else => @import("fdpass_unsupported.zig"),
 };
 
@@ -20,6 +22,7 @@ pub const fdpass = switch (builtin.os.tag) {
 /// no memory and unsupported targets report zero.
 pub const stats = switch (builtin.os.tag) {
     .linux => @import("stats_linux.zig"),
+    .macos => @import("stats_darwin.zig"),
     else => @import("stats_unsupported.zig"),
 };
 
@@ -47,11 +50,14 @@ fn assertSameDecls(comptime supported: type, comptime unsupported: type) void {
     }
 }
 
-test "supported and unsupported platform declarations stay in sync" {
+test "every platform implementation exposes the same declarations" {
     comptime {
         assertSameDecls(@import("shm_linux.zig"), @import("shm_unsupported.zig"));
+        assertSameDecls(@import("shm_linux.zig"), @import("shm_darwin.zig"));
         assertSameDecls(@import("fdpass_linux.zig"), @import("fdpass_unsupported.zig"));
+        assertSameDecls(@import("fdpass_linux.zig"), @import("fdpass_darwin.zig"));
         assertSameDecls(@import("stats_linux.zig"), @import("stats_unsupported.zig"));
+        assertSameDecls(@import("stats_linux.zig"), @import("stats_darwin.zig"));
         assertSameDecls(@import("sockpath_linux.zig"), @import("sockpath_unsupported.zig"));
     }
 }
@@ -61,7 +67,7 @@ test {
 }
 
 test "shared regions round trip with ordinary and requested huge pages" {
-    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (!shm.supported) return error.SkipZigTest;
 
     const cases = [_]struct { len: usize, huge_pages: bool }{
         .{ .len = std.heap.page_size_min + 17, .huge_pages = false },

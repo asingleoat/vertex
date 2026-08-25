@@ -923,6 +923,8 @@ fn copySocketPath(path: []const u8, storage: *[std.Io.Dir.max_path_bytes]u8) err
 }
 
 fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
+    // Not a preference anyone can hold on a platform with no huge-page class.
+    if (!platform.shm.huge_supported) return false;
     if (explicit) |enabled| return enabled;
     // Default on: hugetlbfs is tried and silently falls back (with a one-time
     // notice) when the kernel has no huge pages configured.

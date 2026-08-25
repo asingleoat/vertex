@@ -6,6 +6,12 @@ const platform = @import("platform.zig");
 /// caller falls back to the inline payload path.
 pub const supported = false;
 
+/// Whether a huge-page class exists on this platform at all: there is no shared memory here at all.
+/// Comptime, unlike `hugePagesConfigured`, which asks how the running kernel
+/// is set up. Callers use it to avoid advertising a preference that cannot
+/// apply.
+pub const huge_supported = false;
+
 /// Errors from unsupported shared-memory operations. Failed calls never
 /// transfer ownership to the caller.
 pub const Error = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||

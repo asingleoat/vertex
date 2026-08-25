@@ -14,6 +14,12 @@ const hugetlbfs_magic: usize = 0x958458f6;
 /// path on by flipping one constant.
 pub const supported = true;
 
+/// Whether a huge-page class exists on this platform at all: hugetlbfs supplies 2 MiB pages when the kernel is configured for them.
+/// Comptime, unlike `hugePagesConfigured`, which asks how the running kernel
+/// is set up. Callers use it to avoid advertising a preference that cannot
+/// apply.
+pub const huge_supported = true;
+
 /// Errors from creating or mapping a region. Failed calls leave no mapping or
 /// handle owned by the caller.
 pub const Error = std.posix.MemFdCreateError || std.Io.File.SetLengthError ||
