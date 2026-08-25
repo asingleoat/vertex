@@ -108,17 +108,38 @@ nix store, so the Gatekeeper worry in §5 is a non-issue, and the default
 socket path resolves to `/tmp/vertex.sock` — do **not** switch it to
 `$TMPDIR`, which `nix develop` makes per-shell.
 
-**Step 1 — viewer on Metal, inline path.** sokol-zig's `auto` backend is
-Metal on macOS. Shaders: extend the `shaders` build step to emit both
-backends in one file (`sokol-shdc -l glsl430:metal_macos`) so Linux stays
-intact; verify `gl_PrimitiveID`, storage buffers (face scalars) and the
-`RG32UI` pick target translate (SPIRV-Cross → MSL). `pick.zig` calls raw GL:
-gate it out on darwin at comptime first (picking disabled) so the viewer
-comes up; `sketches/current.zig` over the socket must print
-`vertex-view: structures=4 frames=25 blobs=83`. Retina: sokol reports a
-2× framebuffer; `VERTEX_PICK_PROBE` coordinates are framebuffer pixels, and
-the probe's expected face (693 on a 1400×900 Xvfb) is display-dependent —
-re-pin per platform, or fix the window size and dpi scale for the smoke.
+**Step 1 — viewer on Metal, inline path.** ✅ (2026-08-24) `sketch-current`
+over the socket prints `vertex-view: structures=4 frames=25 blobs=83` on
+`-Dvertex_layout=aos3` and `=soa`, no sokol error, no leak report; a
+screenshot confirms mesh, points, lines and the ImGui panels rendering.
+
+- Backend: `build.zig` passes `.gl = !target.isDarwin()` and publishes
+  `build_options.gl_backend`; sokol-zig's `auto` then resolves to Metal.
+  Watch out — `addOptions` mints a *new* module per call and two modules
+  cannot share a source file, so the options module is created once and
+  imported everywhere.
+- Shaders: `-l glsl430:metal_macos`, one checked-in file per shader for
+  both backends. Regenerating added only Metal; every GLCORE line is
+  unchanged, so Linux needs no re-verification beyond a build.
+- **`gl_PrimitiveID` does not translate.** MSL needs 2.2 for it and
+  SPIRV-Cross refuses below that; sokol-shdc has no MSL version flag —
+  checked against the pinned binary *and* sokol-tools-bin master, so it is
+  upstream, not a stale pin. `mesh_face_scalar{,_soa}` and
+  `pick_mesh{,_soa}` are listed GL-only in `build.zig` (`isGlOnlyShader`) so
+  `zig build shaders` stays reproducible. Face-target scalars fall back to
+  the plain mesh pipeline; the renderer decides by asking the generated desc
+  whether this backend has a source, so a future shdc turns the feature back
+  on by itself. If you want face scalars on Metal sooner, the options are a
+  shdc built with MSL 2.2 or replacing `primitive_id` with a per-vertex face
+  index (which costs vertex duplication — weigh it against §2's layout rules).
+- Picking is comptime-disabled (`pick.Picker` selects `DisabledPicker`).
+  This is load-bearing, not cosmetic: a Metal build does not link OpenGL, so
+  the GL externs must not be analyzed at all.
+
+**Still open from Step 1, for whoever does Step 3:** the `VERTEX_PICK_PROBE`
+path is untested here. Retina reports a 2× framebuffer, and the expected
+face (693 on a 1400×900 Xvfb) is display-dependent — re-pin per platform, or
+fix the window size and dpi scale for the smoke.
 
 **Step 2 — platform layer for darwin (restore zero-copy).** `fdpass`:
 `SCM_RIGHTS` works on macOS — port `fdpass_linux.zig` to `std.c`/posix

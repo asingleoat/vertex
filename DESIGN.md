@@ -314,8 +314,8 @@ inside a viewer edge module with a documented backend assumption. The
 touchpoints and their counterparts:
 
 macOS cells marked ✅ are facts established on aarch64-darwin (macOS 26.5.2,
-M1 Pro, 2026-08-24) while getting `zig build test` green; the rest are still
-the plan.
+M1 Pro, 2026-08-24) while getting `zig build test` green and the viewer up
+on Metal; the rest are still the plan.
 
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
@@ -326,13 +326,13 @@ the plan.
 | Receiving without handle passing | `recvmsg` always | ✅ needed: `recvWithHandles` is `error.Unsupported` here, so a receiver that calls it cannot read the socket at all. Until fdpass lands, read plainly (`Stream.read`) when `platform.fdpass.supported` is false | same, permanently — Windows never passes handles this way |
 | Transport | Unix domain socket via `std.Io.net` | ✅ same; `std.Io.net` binds, connects and accepts on the kqueue `Threaded` backend | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
 | Abstract sockets | `"\0name"`, no file to clean up | ✅ none — Darwin has no abstract namespace; bind a real file | none |
-| Windowing / GPU | sokol_app X11 + GL 4.3 | sokol_app Cocoa + Metal (sokol links `AppKit`, `QuartzCore`, `AudioToolbox`, and `OpenGL` while `-Dgl` is on) | sokol_app Win32 + D3D11 |
-| Shaders | `sokol-shdc -l glsl430` | add `metal_macos`; ✅ the `osx_arm64` sokol-shdc binary runs straight from the nix store — no Gatekeeper quarantine, so sokol-tools need not be built from source | add `hlsl5` |
-| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
-| Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | Metal storage buffer + `primitive_id` | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
+| Windowing / GPU | sokol_app X11 + GL 4.3 | ✅ sokol_app Cocoa + Metal, selected by passing `.gl = false` to sokol-zig (its `auto` resolves to Metal on darwin); frameworks `AppKit`, `QuartzCore`, `Metal`, `AudioToolbox`. Mesh, points, lines and ImGui all render | sokol_app Win32 + D3D11 |
+| Shaders | `sokol-shdc -l glsl430` | ✅ `-l glsl430:metal_macos` — one checked-in file per shader carries both backends, byte-identical from either OS, and the GLCORE branch is unchanged by adding Metal. The `osx_arm64` sokol-shdc runs straight from the nix store (no Gatekeeper quarantine) | add `hlsl5` |
+| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` (Step 3). Until then `pick.Picker` comptime-selects a disabled picker — required, not merely tidy: a Metal build does not link OpenGL, so the GL externs must not be analyzed at all | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
+| Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | ❌ blocked: `gl_PrimitiveID` in a fragment shader needs **MSL 2.2** and SPIRV-Cross refuses below it (`PrimitiveId on macOS requires MSL 2.2`) — sokol-shdc has no MSL version flag, in the pinned build *or* master (checked 2026-08-24). `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` stay GL-only; the renderer asks the generated desc whether the backend has a source and falls back to the plain mesh pipeline. Fixing it means a shdc that sets MSL 2.2, or dropping `primitive_id` for a per-vertex face index (which costs vertex duplication) | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
 | Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock` — the existing fallback, because `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is *per `nix develop` shell* (`/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`), which would put viewer and sketch on different sockets | `\\.\pipe` or a temp-dir `AF_UNIX` path |
 | `sun_path` limit | 107 usable bytes, longer ones rebased via `/proc/self/fd/<fd>` | ✅ `sun_path` is `char[104]` (SDK `sys/un.h`) → 103 usable, and there is no `/proc` to rebase on, so longer paths are rejected naming the limit | 107 usable, no rebasing |
-| Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | `getrusage`, `task_info` | `GetProcessMemoryInfo` |
+| Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | `getrusage`, `task_info`; ✅ `huge=` in the exit stats reads `off` where there is no shared memory to back | `GetProcessMemoryInfo` |
 
 Rules that keep this cheap: no `std.os.linux` or raw GL call outside
 `src/platform/*` and `pick.zig`; the scene and protocol never see handles as
