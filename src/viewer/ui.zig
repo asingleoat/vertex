@@ -1,4 +1,14 @@
-//! Plain Dear ImGui panels for scene state and viewer controls.
+//! The viewer's panels, drawn with Dear ImGui.
+//!
+//! There are three: a structure tree listing what the scene holds, with the
+//! per-structure display settings; a timeline with the frame scrubber, the
+//! memory budget and the camera mode; and an inspector tooltip for whatever the
+//! cursor is over.
+//!
+//! The panels read the scene and write only `UiState` and the handful of
+//! viewer-owned values passed in by pointer, so no display setting is ever lost
+//! by a rebuild: the state they mutate is keyed by structure name and outlives
+//! any single run.
 const std = @import("std");
 const vertex = @import("vertex");
 const ig = @import("cimgui");

@@ -1,4 +1,10 @@
-//! Instanced vector-field arrows derived from position and quantity blobs.
+//! Drawing vector fields as arrows.
+//!
+//! One low-poly arrow mesh is instanced per element, with a transform built from
+//! the element's position and its vector, so an arrow's direction and length
+//! carry the value. The instance buffer is derived from the position and
+//! quantity blobs and cached per blob pair, under the same residency policy as
+//! everything else on the GPU.
 const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;

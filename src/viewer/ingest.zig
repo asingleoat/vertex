@@ -1,4 +1,14 @@
-//! Render-thread inbox draining and mapped-payload ownership cleanup.
+//! Draining the inbox into the scene, once per rendered frame.
+//!
+//! This is the render thread's half of the thread boundary. It takes whatever
+//! the socket thread staged, registers any shared mappings that arrived,
+//! applies the decoded messages to the scene in order, and then releases the
+//! payload allocations and any mapping the scene no longer refers to.
+//!
+//! The ordering matters and is the reason this is a separate module: a mapping
+//! must be registered before the messages that point into it are applied, and
+//! may only be unmapped after the scene has released the blobs that viewed it.
+//! It also gathers the ingest statistics the viewer prints on exit.
 const std = @import("std");
 const vertex = @import("vertex");
 

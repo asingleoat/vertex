@@ -1,4 +1,11 @@
-//! Instanced thick-line rendering and mesh wireframe edge derivation.
+//! Drawing line sets, and deriving the wireframes of meshes.
+//!
+//! Each segment is an instanced quad expanded to a constant pixel width in the
+//! vertex shader, because hardware line width is limited and inconsistent across
+//! backends. The same pipeline draws mesh wireframes, whose unique edges are
+//! extracted on the CPU and cached per blob: extracting edges avoids duplicating
+//! vertices for barycentric shading, and caching per blob means two versions
+//! that share topology also share the extracted edges.
 const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;

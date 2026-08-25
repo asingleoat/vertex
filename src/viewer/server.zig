@@ -1,4 +1,18 @@
-//! Unix-domain socket listener and the viewer's single thread boundary.
+//! The socket server: the only place another process reaches the viewer, and
+//! the only thread boundary in the program.
+//!
+//! A listener thread accepts one connection at a time and reads frames from it,
+//! decoding each header to know how much payload to wait for. Complete frames
+//! are pushed onto an `Inbox`, which the render thread drains once per frame.
+//! Nothing else crosses between the two threads, and the inbox owns what it
+//! holds until the render thread takes it.
+//!
+//! Payloads arrive one of two ways. An ordinary frame is read into an aligned
+//! allocation that the scene later copies out of. A frame that carries
+//! descriptors instead has its shared regions mapped here, on this thread, and
+//! the mapping is handed to the render thread to register with the scene, after
+//! which blobs point into it directly. Which path a frame takes is a flag in
+//! its header; see `protocol.Flags`.
 const std = @import("std");
 const vertex = @import("vertex");
 

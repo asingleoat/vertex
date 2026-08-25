@@ -1,4 +1,14 @@
-//! Camera, mouse, and keyboard control for the Sokol viewer edge.
+//! Turning sokol_app events into camera movement and selection.
+//!
+//! Holds both cameras and the current mode, and routes each event to the one in
+//! use. Dragging orbits or pans, the scroll wheel dollies or zooms, `F` fits the
+//! scene and the number keys switch mode. Every drag follows the cursor, in the
+//! sense that the surface under it moves with it, which is the convention both
+//! cameras and both axes obey.
+//!
+//! It also decides what the cursor is over. A hover is resolved to a `pick.Hit`
+//! each frame the mouse has moved, and a click without a drag pins that hit as
+//! the selection, which is what the inspector displays.
 const vertex = @import("vertex");
 const sokol = @import("sokol");
 const ig = @import("cimgui");

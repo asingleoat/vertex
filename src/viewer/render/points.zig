@@ -1,4 +1,11 @@
-//! Instanced screen-space point rendering over scene-owned position blobs.
+//! Drawing point clouds.
+//!
+//! Each point is an instanced quad facing the screen, with a round sprite cut
+//! out of it in the fragment shader. That is more work than a hardware point
+//! would be, but hardware point size is unreliable across backends and cannot be
+//! made to look the same on each, whereas a quad of a chosen pixel size is
+//! exact everywhere. The vertex buffer is the position blob itself, so no
+//! per-point data is uploaded beyond what the scene already holds.
 const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;

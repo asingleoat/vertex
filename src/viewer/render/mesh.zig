@@ -1,4 +1,15 @@
-//! Unified viewer renderer and sole owner of scene blob notification draining.
+//! Mesh drawing, and the renderer that owns every other renderer.
+//!
+//! `Renderer` is the single object the frame loop holds: it draws meshes itself
+//! and contains the point, line and vector renderers, so that they share one GPU
+//! mirror of the scene. It is also the only place that drains the scene's
+//! new-blob and freed-blob lists, which is what keeps that mirror correct.
+//!
+//! Three mesh pipelines exist because a mesh is drawn one of three ways: plain,
+//! coloured by a per-vertex scalar, or coloured by a per-face scalar. The
+//! face-scalar pipeline reads the values by primitive index and is unavailable
+//! on backends whose shading language cannot express that; the renderer tests
+//! for it and falls back to plain drawing.
 const std = @import("std");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;

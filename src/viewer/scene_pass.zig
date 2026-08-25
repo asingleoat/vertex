@@ -1,4 +1,13 @@
-//! Ordered scene rendering passes over the displayed scene.
+//! The order the scene is drawn in.
+//!
+//! Solid meshes first, so that they establish depth for everything that follows;
+//! then wireframe overlays, then lines, then vector arrows, then points. The
+//! order is not arbitrary: the overlays depend on depth already being written,
+//! and points are drawn last because they are the smallest and should not be
+//! hidden by an arrow drawn over them.
+//!
+//! Each pass walks the same structures and skips those that are hidden or have
+//! nothing to display at the current frame.
 const std = @import("std");
 const vertex = @import("vertex");
 

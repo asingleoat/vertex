@@ -1,4 +1,22 @@
-//! Persistent Sokol viewer process and render-thread orchestration.
+//! The viewer process: startup, the frame loop, and the state everything else
+//! hangs off.
+//!
+//! This is the outermost edge. It owns the window through sokol_app, the scene,
+//! the renderer, the socket server and the stepper, and it runs the frame
+//! callback that ties them together: drain whatever the socket thread has
+//! staged, apply it to the scene, let the renderer catch up with the blobs that
+//! changed, draw, then draw the UI over it.
+//!
+//! Everything with a lifetime longer than a frame lives in one file-scope
+//! `state`, because sokol_app's callbacks are C function pointers with no
+//! context argument. That is the only global in the program.
+//!
+//! Several environment variables exist for headless use, and the smoke tests
+//! depend on them: `VERTEX_EXIT_AFTER_FRAMES` stops the viewer after a fixed
+//! number of frames, `VERTEX_PICK_PROBE` issues one pick at given coordinates,
+//! `VERTEX_MEMORY_BUDGET_MB` sets the retention budget, and the `VERTEX_STEP_*`
+//! variables drive dylib mode. The statistics lines printed on exit are what
+//! those tests assert against.
 const std = @import("std");
 const vertex = @import("vertex");
 const sokol = @import("sokol");
