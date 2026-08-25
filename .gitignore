@@ -3,3 +3,4 @@ zig-out/
 .direnv/
 result
 zig-pkg/
+zig-out-debug/

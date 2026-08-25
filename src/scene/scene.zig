@@ -1899,3 +1899,45 @@ test "frame 0 is implicit: frameCount is 1 after begin_run and grows with begin_
     try scene.apply(.{ .begin_run = {} });
     try testing.expectEqual(@as(u32, 1), scene.frameCount());
 }
+
+test "per-version scene overhead beyond blob bytes stays within a fixed envelope" {
+    // The retention model assumes a version costs its blob bytes plus a
+    // small fixed record. A hidden per-version container (list, map) would
+    // pass every other test and silently multiply timeline memory; this pins
+    // the overhead in bytes using the debug allocator's live accounting.
+    var debug: std.heap.DebugAllocator(.{ .enable_memory_limit = true }) = .init;
+    defer std.debug.assert(debug.deinit() == .ok);
+    const gpa = debug.allocator();
+    var scene = Scene.init(gpa);
+    defer scene.deinit();
+
+    const elem_count = if (layout.layout == .soa) 9 else 3;
+    var position_data: [elem_count]layout.Positions.Elem = undefined;
+    const positions = layout.Positions.fromSlice(&position_data);
+    positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+    var frame: [512]u8 align(protocol.section_alignment) = undefined;
+    var encoded: protocol.Encoded = undefined;
+
+    try scene.apply(.{ .begin_run = {} });
+    protocol.encodeMesh(&encoded, "m", .d3, positions.toConst(), &faces);
+    try applyEncoded(&scene, &encoded, &frame);
+    const versions: u32 = 1000;
+    const before = debug.total_requested_bytes;
+    const blob_before = scene.blob_bytes;
+    var i: u32 = 1;
+    while (i <= versions) : (i += 1) {
+        try scene.apply(.{ .begin_frame = .{ .index = i, .label = "" } });
+        protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        try applyEncoded(&scene, &encoded, &frame);
+    }
+    const overhead = (debug.total_requested_bytes - before) - (scene.blob_bytes - blob_before);
+    const per_version = overhead / versions;
+    // Measured 68 bytes on 2026-08-24 (Version record + Blob record + list
+    // growth slack). The envelope leaves room for slack, not for new
+    // per-version records; if this trips, look for a container per version.
+    if (per_version > 128) {
+        std.debug.print("scene per-version overhead: {d} bytes ({d} versions)\n", .{ per_version, versions });
+        return error.PerVersionOverheadExceeded;
+    }
+}

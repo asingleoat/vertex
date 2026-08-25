@@ -219,7 +219,10 @@ quantity replaces only that quantity's ref. Scrubbing the timeline is just
 binding a different combination of already-uploaded GPU buffers — no re-upload.
 Timeline memory cost is therefore proportional to what actually changed per
 step, and derived data (unique edge lists for wireframe, arrow instances) is
-cached per-blob, not per-version.
+cached per-blob, not per-version. The fixed cost of a version beyond its blob
+bytes is **68 bytes** (measured 2026-08-24: the `Version` record, its blob
+record and list slack); a test pins it under 128 so a per-version container
+cannot creep in unnoticed.
 
 **GPU residency.** Retained versions are bounded only by the memory budget,
 but sokol's buffer pool is finite (1024 slots, set at `sg.setup`). Every blob
@@ -260,6 +263,14 @@ inspector tooltip.
 
 ## Hot-recompile loop
 
+- Build modes: on zig master `zig build` is a Debug build (the viewer then
+  runs on a leak-checking `DebugAllocator`); `zig build -Drelease` is the
+  ReleaseSafe daily driver; benches are always ReleaseFast.
+- Verification: `zig build test` (all layouts via `-Dvertex_layout`) plus
+  `nix develop -c scripts/smoke.sh`, which drives the viewer under Xvfb
+  through the socket sketches, the churn regression, the stepper autorun and
+  the shared-memory stress, asserting the deterministic stat lines and the
+  absence of sokol errors and allocator leak reports.
 - Terminal 1: `zig build run-viewer` — stays up for days.
 - Terminal 2: `zig build run-sketch --watch` (`-Dsketch=<name>`, default
   `current`) — verified: the run step re-executes on every save; the exe

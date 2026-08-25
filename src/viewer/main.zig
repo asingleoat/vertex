@@ -385,4 +385,5 @@ fn finishCiFrame(s: *State) void {
 test {
     _ = server_mod;
     _ = stepper_mod;
+    _ = ingest_mod;
 }

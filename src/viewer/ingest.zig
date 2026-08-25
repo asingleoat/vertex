@@ -182,3 +182,82 @@ fn disposeMapping(mapping: vertex.scene.Mapping) void {
     });
     vertex.platform.shm.close(mapping.fd);
 }
+
+const testing = std.testing;
+
+fn pushEncoded(gpa: std.mem.Allocator, io: std.Io, inbox: *server_mod.Inbox, encoded: *vertex.protocol.Encoded) !void {
+    // Mirrors the socket server: exact-size, 16-aligned payload owned by the item.
+    var frame: [4096]u8 align(vertex.protocol.section_alignment) = undefined;
+    const bytes = encoded.writeTo(&frame);
+    const header = try vertex.protocol.decodeHeader(bytes);
+    const payload = try gpa.alignedAlloc(u8, .@"16", header.len);
+    @memcpy(payload, bytes[@sizeOf(vertex.protocol.Header)..][0..header.len]);
+    try inbox.push(gpa, io, .{ .header = header, .payload = payload });
+}
+
+test "ingest drain allocates only the new blob per mesh_positions frame at steady state" {
+    // The per-frame hot path: inbox drain -> decode -> scene apply -> mapping
+    // cleanup. After warm-up, a frame of N position updates must allocate
+    // exactly N blobs and nothing else (STYLE §2).
+    var counting: vertex.testutil.CountingAllocator = .{ .child = testing.allocator };
+    const gpa = counting.allocator();
+    var inbox: server_mod.Inbox = .{};
+    defer inbox.deinit(gpa);
+    var scene = Scene.init(gpa);
+    defer scene.deinit();
+    var ingest = Ingest.init(gpa, testing.io, &inbox, &scene);
+    defer ingest.deinit();
+
+    const layout = vertex.layout;
+    const elem_count = if (layout.layout == .soa) 9 else 3;
+    var position_data: [elem_count]layout.Positions.Elem = undefined;
+    const positions = layout.Positions.fromSlice(&position_data);
+    positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+
+    var encoded: vertex.protocol.Encoded = undefined;
+    vertex.protocol.encodeBeginRun(&encoded);
+    try pushEncoded(gpa, testing.io, &inbox, &encoded);
+    vertex.protocol.encodeMesh(&encoded, "m", .d3, positions.toConst(), &faces);
+    try pushEncoded(gpa, testing.io, &inbox, &encoded);
+    try testing.expect(ingest.drain());
+
+    // Warm up: two frames grow every list to its steady capacity.
+    var frame_index: u32 = 1;
+    while (frame_index <= 2) : (frame_index += 1) {
+        vertex.protocol.encodeBeginFrame(&encoded, frame_index, "");
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+        _ = ingest.drain();
+    }
+    // Retained versions keep growing the version list; make its capacity
+    // ample so growth cannot be mistaken for a per-frame allocation.
+    const updates: u32 = 8;
+    var pre: [updates]void = undefined;
+    _ = &pre;
+    while (frame_index <= 2 + 64) : (frame_index += 1) {
+        vertex.protocol.encodeBeginFrame(&encoded, frame_index, "");
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+        _ = ingest.drain();
+    }
+
+    // Measured frame: `updates` position updates queued, then one drain.
+    // Payload allocations happen in pushEncoded (the socket thread's job)
+    // and are excluded by counting only inside drain.
+    var k: u32 = 0;
+    while (k < updates) : (k += 1) {
+        vertex.protocol.encodeBeginFrame(&encoded, frame_index + k, "");
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+        vertex.protocol.encodeMeshPositions(&encoded, "m", positions.toConst());
+        try pushEncoded(gpa, testing.io, &inbox, &encoded);
+    }
+    const allocs_before = counting.alloc_calls;
+    const resizes_before = counting.resize_calls + counting.remap_calls;
+    _ = ingest.drain();
+    try testing.expectEqual(@as(usize, updates), counting.alloc_calls - allocs_before);
+    try testing.expectEqual(@as(usize, 0), counting.resize_calls + counting.remap_calls - resizes_before);
+    try testing.expectEqual(@as(u64, 2 + 2 * 2 + 2 * 64 + 2 * updates), ingest.messages);
+}

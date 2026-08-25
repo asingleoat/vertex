@@ -65,6 +65,7 @@
             (zlsFor pkgs)
             pkg-config
             watchexec   # fallback for `zig build --watch`
+            xvfb-run    # scripts/smoke.sh (headless GL via llvmpipe)
             gdb
             (sokolShdc pkgs)   # `zig build shaders`
           ];
