@@ -1,6 +1,10 @@
 # vertex
 
 A persistent geometry visualization viewer with a hot-recompile loop, in Zig.
+A *sketch* is a program written against the client library; a *structure* is one
+named renderable in the viewer; a *quantity* is a named field attached to a
+structure; a *run* is one execution of a sketch and a *frame* one step within
+it. `DESIGN.md` defines these once and they are used throughout.
 
 Read before writing code:
 

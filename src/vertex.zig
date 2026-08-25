@@ -1,6 +1,15 @@
 //! Root module of the vertex library, and an index to the two modules a sketch
 //! reads.
 //!
+//! Five terms are used throughout and are specific to this project. A *sketch*
+//! is a program written against this library, which computes geometry and sends
+//! it to the viewer. A *structure* is one named renderable in the viewer: a
+//! triangle mesh, a point cloud or a set of line segments. A *quantity* is a
+//! named field attached to a structure, holding one scalar or one vector per
+//! vertex, per face or per point. A *run* is one execution of a sketch, and a
+//! *frame* is one step within a run, which the viewer's timeline can move
+//! between.
+//!
 //! `shapes` is pure and holds the geometry vocabulary: `Positions`, `Vec3`, the
 //! kernels `bounds`, `vertexNormals` and `uniqueEdges`, and the fixtures
 //! `icosphere`, `grid` and `randomPoints`. `sketch` is the effectful edge that

@@ -18,9 +18,15 @@
 //! ```
 //!
 //! No call retains its arguments: each borrows its slices until it returns, and
-//! none allocate. Structures are identified by name. Registering an existing
-//! name replaces that structure's geometry and appends a version to the
-//! timeline, while the viewer's per-name display settings persist across runs.
+//! none allocate.
+//!
+//! A structure is one named renderable in the viewer, being a triangle mesh, a
+//! point cloud or a set of line segments, and is identified by the name it was
+//! registered under. Registering an existing name replaces that structure's
+//! geometry and appends a version to the timeline, while the viewer's per-name
+//! display settings persist across runs. A quantity is a named field attached
+//! to a structure, holding one scalar or one vector per vertex, per face or per
+//! point.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");

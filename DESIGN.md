@@ -1,9 +1,18 @@
 # vertex — architecture
 
 A persistent geometry visualization viewer with a hot-recompile feedback loop.
-Geometry code is written, saved, rebuilt and run; its results stream to an
+Geometry code is written, saved, rebuilt and run, and its results stream to an
 always-open viewer and are rendered immediately, with camera and UI state
 preserved across rebuilds.
+
+Five terms below are specific to this project. A *sketch* is a program written
+against the client library, which computes geometry and sends it to the viewer.
+A *structure* is one named renderable in the viewer: a triangle mesh, a point
+cloud or a set of line segments. A *quantity* is a named field attached to a
+structure, holding one scalar or one vector per vertex, per face or per point.
+A *run* is one execution of a sketch, and a *frame* is one step within a run.
+Everything else follows the standard vocabulary of graphics and geometry
+processing.
 
 ## Decisions
 

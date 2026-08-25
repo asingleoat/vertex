@@ -278,9 +278,14 @@ Neither is used yet. The code is shaped to keep both available.
   read, not carried, ridden or travelled; a module does not know, speak or
   surrender anything, and state does not hang off or live in a structure. An
   evaluative adjective such as cheap, clever or convenient states an opinion
-  where a measurement or a mechanism belongs. A term of art from outside this
-  project, such as "walking skeleton", is ornament unless the reader is certain
-  to know it; name the thing instead.
+  where a measurement or a mechanism belongs.
+- Established terminology means the standard vocabulary of programming, and of
+  graphics, geometry and CAD in particular: vertex buffer, index buffer,
+  primitive, instancing, frustum, decimation, manifold, colormap. Use it
+  exactly. A term coined by this project is not established, however familiar it
+  has become to whoever wrote it, and neither is a term of art borrowed from
+  elsewhere, such as "walking skeleton". Define a project term where the reader
+  first meets it, or name the thing plainly instead.
 - Prefer a word to a punctuation mark. A colon or a semicolon standing in for
   "because", "so that", "and" or "which" reads worse than the word it replaced,
   and reads as terse for its own sake. Keep the colon for a genuine list or

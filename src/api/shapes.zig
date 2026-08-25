@@ -1,8 +1,8 @@
 //! Geometry vocabulary: the types a sketch builds data in, together with the
 //! kernels and fixtures that produce it.
 //!
-//! A sketch imports this module together with `sketch.zig`, which sends the
-//! results to the viewer. This module is pure: the same inputs produce the same
+//! A sketch, meaning a program written against this library, imports this
+//! module together with `sketch.zig`, which sends the results to the viewer. This module is pure: the same inputs produce the same
 //! outputs, no socket, window, clock or global is involved, and every function
 //! that allocates takes the allocator as its first argument. It can therefore be
 //! called from anywhere in a sketch and tested without a viewer.
