@@ -88,8 +88,8 @@ identical version.
 
 Stream payloads are the in-memory blob bytes verbatim. The wire format derives
 from the build-selected `Positions` type, so neither end converts anything for
-any layout; see `STYLE.md` §3. The version number is the entire compatibility
-contract, and a change to either the message shapes or the vertex layout bumps
+any layout; see `STYLE.md` §3. The version number is the only compatibility
+check, and a change to either the message shapes or the vertex layout bumps
 it. The format is language-agnostic in that a Python or C++ client is a
 serializer emitting the viewer's layout, but it is not layout-agnostic.
 
@@ -358,14 +358,14 @@ console; and a pick inspector tooltip.
 
 ## Hot-recompile loop
 
-Build modes are divided by who is building. Using vertex, meaning writing
-sketches and leaving the viewer running, is `zig build -Drelease`, which selects
-ReleaseFast, since sketch geometry is real computation and the tool around it
-should not slow it down. Working on vertex uses Debug or ReleaseSafe: on zig
-master a plain `zig build` is Debug, in which the viewer runs on a leak-checking
-`DebugAllocator`, and `-Doptimize=ReleaseSafe` retains the bounds, overflow and
-assertion checks that a core built from `u32` indices into flat arrays depends
-on. Benchmarks are always ReleaseFast.
+Build modes are divided by who is building. Writing sketches and running the
+viewer uses `zig build -Drelease`, which selects ReleaseFast, because sketch
+geometry is real computation and the surrounding tool must not slow it. Working
+on vertex itself uses Debug or ReleaseSafe. On zig master a plain `zig build` is
+Debug, in which the viewer runs on a leak-checking `DebugAllocator`, and
+`-Doptimize=ReleaseSafe` retains the bounds, overflow and assertion checks that
+a core addressed by `u32` indices into flat arrays depends on. Benchmarks are
+always ReleaseFast.
 
 Verification is `zig build test`, run for each layout through `-Dvertex_layout`,
 together with `nix develop -c scripts/smoke.sh`. The smoke script drives the
@@ -515,8 +515,9 @@ Each instance receives its own leak-checking `DebugAllocator`. `vertex_deinit`
 reports leaks and the viewer logs them, and a failing step pauses with the error
 in the log.
 
-This mode gives up crash isolation by construction. Socket mode remains the
-default and the appropriate choice for batch runs.
+This mode has no crash isolation: a fault in the sketch takes the viewer with
+it. Socket mode remains the default and is the appropriate choice for batch
+runs.
 
 `VERTEX_STEP_LIB=<path>` loads a library at startup and `VERTEX_STEP_AUTORUN=1`
 starts it running. The exit statistics line gains

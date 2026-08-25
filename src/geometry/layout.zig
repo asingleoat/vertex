@@ -19,13 +19,13 @@ const build_options = @import("build_options");
 
 /// The memory layouts a vertex stream can have.
 /// ---
-/// `.aos3` stores each vertex as three consecutive `f32`, twelve bytes, and is
-/// the default: it is the most compact, so the most vertices fit in a cache
-/// line, which suits straight-line scalar code. `.aos4` pads each vertex to
-/// sixteen bytes so that it casts to `@Vector(4, f32)` at no cost, trading
-/// memory and wire bandwidth for vector loads. `.soa` stores the stream as
-/// three planar runs, all x, then all y, then all z, which suits component-wise
-/// arithmetic and lets `xs`, `ys` and `zs` hand a kernel whole `[]f32` runs.
+/// `.aos3` stores each vertex as three consecutive `f32`, twelve bytes. It is
+/// the default and the most compact, so it fits the most vertices per cache
+/// line. `.aos4` pads each vertex to sixteen bytes, which casts to
+/// `@Vector(4, f32)` at no cost and costs memory and wire bandwidth in
+/// exchange. `.soa` stores the stream as three planar runs, all x, then all y,
+/// then all z, and exposes them through `xs`, `ys` and `zs` as whole `[]f32`
+/// runs a kernel can consume.
 /// ---
 /// The choice is made by `-Dvertex_layout` and applies to the entire build.
 /// `.aos3` is the default; the other two exist to be measured against it with
@@ -271,9 +271,8 @@ pub fn PositionsOf(comptime l: Layout) type {
             }
         }
         /// Writes the whole stream from a `Vec3` slice, which must have
-        /// exactly `len()` elements. This is the usual way to fill a freshly
-        /// allocated stream, and the natural handoff from geometry code that
-        /// computes into a `[]Vec3`.
+        /// exactly `len()` elements. Geometry code that computes into a
+        /// `[]Vec3` transfers its result with one call.
         pub fn setAll(self: Mut, src: []const Vec3) void {
             std.debug.assert(src.len == self.len());
             for (src, 0..) |v, i| self.set(@intCast(i), v);

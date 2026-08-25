@@ -35,8 +35,8 @@ pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddr
 /// ---
 /// `len` is the number of bytes that were asked for, while `map` covers the
 /// whole mapping and so may be longer, since a mapping is a whole number of
-/// pages. `huge` records whether the kernel actually provided huge pages, which
-/// is a request rather than a guarantee.
+/// pages. `huge` records whether the kernel provided huge pages; requesting
+/// them is not a guarantee.
 /// ---
 /// The connection owns this until the message that sends it succeeds, which
 /// consumes it.

@@ -86,9 +86,9 @@ shell hook unsets both, and `DEVELOPER_DIR` and `SDKROOT` from the apple-sdk
 setup hook keep `xcrun` pointed at the pinned SDK. If frameworks go missing
 again, check those two variables first.
 
-The three failing tests were Linux-only by construction and went as predicted:
-the abstract socket became a file under `std.testing.tmpDir`, and the
-`/proc`-rebasing and shared-memory tests skip. Capability is now a
+The three failing tests depended on Linux-only facilities. The abstract socket
+became a file under `std.testing.tmpDir`, and the `/proc`-rebasing and
+shared-memory tests skip. Capability is now a
 `pub const supported` on the platform module rather than a comparison against
 `builtin.os.tag`, so step 2 enabled the zero-copy path by writing the module
 with no operating-system checks left to find outside `src/platform/`.
@@ -133,15 +133,17 @@ the socket carries 36 MB rather than 517 MB. Skipped tests fell from three to
 one, the remaining one being the `/proc`-rebasing test, and the live socket
 round trip now asserts the zero-copy flag here.
 
-Two things not to copy from the Linux files. `fdpass_darwin.zig` is not a
-transliteration: `CMSG_ALIGN` is `__DARWIN_ALIGN32`, four bytes rather than
-`sizeof(size_t)`, and `cmsghdr` is 12 bytes rather than 16, so the Linux cmsg
-arithmetic computes incorrect lengths silently. There is no `MSG_NOSIGNAL`, so
-set `SO_NOSIGPIPE` on the socket, and no `MSG_CMSG_CLOEXEC`, so mark each
-received descriptor. `std.c` declares `recvmsg` without exporting it, so the
-module declares its own extern. `shm_darwin.zig` names each object and unlinks
-it immediately, so that the descriptor is its only reference and a crash leaves
-nothing behind; `O_EXCL` makes a name collision a retry.
+`fdpass_darwin.zig` must not be transliterated from the Linux file.
+`CMSG_ALIGN` is `__DARWIN_ALIGN32`, four bytes rather than `sizeof(size_t)`, and
+`cmsghdr` is 12 bytes rather than 16, so the Linux cmsg arithmetic computes
+incorrect lengths without reporting an error. There is no `MSG_NOSIGNAL`, so the
+socket takes `SO_NOSIGPIPE`, and no `MSG_CMSG_CLOEXEC`, so each received
+descriptor is marked individually. `std.c` declares `recvmsg` without exporting
+it, so the module declares its own extern.
+
+`shm_darwin.zig` names each object and unlinks it immediately, leaving the
+descriptor as its only reference so that a crash leaves nothing behind.
+`O_EXCL` turns a name collision into a retry.
 
 `getrusage` alone was sufficient for `stats`, so `task_info` was not needed.
 `sockpath` keeps the rejection path, since there is no `/proc` to rebase on and
@@ -155,21 +157,23 @@ than an ID buffer", picking becomes a CPU ray cast in the pure core, which needs
 no readback on any backend and removes the GL escape hatch, the four `pick_*`
 shaders and the `RG32UI` target.
 
-Two things to know before starting it. The synchronous Metal readback this step
-used to describe cannot work: sokol creates one command buffer per frame,
-enqueues it at the first `beginPass`, commits it at `sg.commit()` and never
-exposes it, so a mid-frame blit followed by `waitUntilCompleted` waits on a
-command buffer queued behind an uncommitted one. And hover picking currently
-re-renders every visible structure on every mouse movement, so the CPU
-implementation starts from a low bar: implement brute force first, measure, then
-add a per-blob BVH cached as the derived edge lists are.
+The synchronous Metal readback this step used to describe cannot work. sokol
+creates one command buffer per frame, enqueues it at the first `beginPass`,
+commits it at `sg.commit()` and never exposes it, so a mid-frame blit followed
+by `waitUntilCompleted` waits on a command buffer queued behind an uncommitted
+one.
 
-It is sequenced after steps 2, 4 and 5 because it is a redesign of a working
-feature rather than a port step. It owes before and after numbers and a check
-that a CPU hit agrees with a GL hit on the same scene. The retina and dpi
-question below belongs to it.
+Hover picking re-renders every visible structure on every mouse movement, so
+brute force may already be competitive. Implement it first, measure, and add a
+per-blob BVH, cached as the derived edge lists are, if the measurements require
+it.
 
-**Step 4, dylib mode.** Completed 2026-08-24, essentially unchanged.
+The step is sequenced after steps 2, 4 and 5 because it is a redesign of a
+working feature rather than a port step. It requires before and after numbers
+and a check that a CPU hit agrees with a GL hit on the same scene. The retina
+and dpi question below belongs to it.
+
+**Step 4, dylib mode.** Completed 2026-08-24 with one change.
 `zig build step` already names the artifact `libstep-<name>.dylib`,
 `std.DynLib` is `dlopen`, and macOS raises no code-signing objection to
 `dlopen`ing the viewer's copy. Only the copied library path's hardcoded `.so`

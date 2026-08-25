@@ -133,9 +133,10 @@ pub const Connection = struct {
     /// Returns a `len`-byte buffer that the viewer reads without copying it.
     ///
     /// The buffer is shared memory mapped into both processes, so sending it
-    /// transfers a descriptor rather than the contents. This is worthwhile for
-    /// large payloads sent every frame, where it reduces a million-vertex update
-    /// from milliseconds to microseconds, and unnecessary for small ones.
+    /// transfers a descriptor rather than the contents. For a million-vertex
+    /// update sent every frame this reduces the send from milliseconds to
+    /// microseconds. For a small payload the saving is below the cost of
+    /// requesting the buffer.
     ///
     /// The connection owns the buffer until the message that sends it succeeds,
     /// which consumes it; unsent buffers are released by `finish` and `close`. A
@@ -189,12 +190,10 @@ pub const Connection = struct {
         return self.sharedPositions(n);
     }
 
-    /// Returns how many of this connection's shared buffers were actually
-    /// backed by huge pages.
-    ///
-    /// This is a diagnostic for benchmarks that report what the kernel granted
-    /// rather than what was requested. It is always zero on platforms without
-    /// huge pages. Borrows `self` and allocates nothing.
+    /// Returns how many of this connection's shared buffers were backed by huge
+    /// pages, which may be fewer than were requested. Benchmarks report this
+    /// figure. It is zero on platforms without huge pages. Borrows `self` and
+    /// allocates nothing.
     pub fn sharedHugeRegions(self: *const Connection) u64 {
         return self.shared_tracker.huge_regions;
     }
@@ -293,10 +292,9 @@ pub const Connection = struct {
     /// Attaches a named vector field to an already registered structure.
     ///
     /// `vectors` holds one `Vec3` per element of `target`, and its length must
-    /// match the count that `target` implies. The viewer draws them as arrows
-    /// at a scale selected per structure, which suits normals, gradients,
-    /// velocities and forces. Sending the same quantity name again replaces it.
-    /// The stream is borrowed only until the call returns.
+    /// match the count that `target` implies. The viewer draws each vector as an
+    /// arrow, at a scale selected per structure. Sending the same quantity name
+    /// again replaces it. The stream is borrowed only until the call returns.
     pub fn vector(
         self: *Connection,
         structure: []const u8,
@@ -350,11 +348,11 @@ pub const Connection = struct {
 
     /// Releases the connection without ending the run.
     ///
-    /// Releases any unsent shared buffers and the socket. It is safe to call
-    /// repeatedly and after `finish`, so it suits a `defer` placed immediately
-    /// after `connect`. No run terminator is sent, so the viewer retains the
-    /// last frame as it stood and a sketch that fails partway leaves its
-    /// progress on screen.
+    /// Releases any unsent shared buffers and the socket. It may be called
+    /// repeatedly and after `finish`, so a `defer` placed immediately after
+    /// `connect` is safe. No run terminator is sent, so the viewer retains the
+    /// last frame and a sketch that fails partway leaves its progress on
+    /// screen.
     pub fn close(self: *Connection) void {
         if (self.socket) |*socket| {
             self.shared_tracker.releaseAll();

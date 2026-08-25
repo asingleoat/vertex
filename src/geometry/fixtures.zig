@@ -56,8 +56,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// parameterization uses that mapping.
         ///
         /// Allocates the positions and the faces from `gpa`; the caller owns the
-        /// returned mesh and releases it with `deinit`. This is the usual
-        /// starting surface for height fields, parameter domains and cloth.
+        /// returned mesh and releases it with `deinit`. Height fields, parameter
+        /// domains and cloth simulations all start from this surface.
         pub fn grid(
             gpa: std.mem.Allocator,
             nx: u32,

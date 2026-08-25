@@ -13,12 +13,12 @@ const std = @import("std");
 
 /// Which color ramp to display a scalar quantity through.
 /// ---
-/// `viridis` is the perceptually uniform default and reads correctly in
-/// greyscale and with the common forms of color blindness. `plasma` is a
-/// similar ramp with a warmer range. `turbo` spans more distinguishable hues,
-/// which suits picking out fine structure at the cost of implying boundaries
-/// that the data may not have. `coolwarm` is diverging, with a neutral middle,
-/// and suits values that are meaningfully signed about zero.
+/// `viridis` is the default. It is perceptually uniform and reads correctly in
+/// greyscale and under the common forms of color blindness. `plasma` is a
+/// similar ramp over a warmer range. `turbo` spans more distinguishable hues,
+/// which resolves finer structure but implies boundaries the data may not have.
+/// `coolwarm` is diverging with a neutral middle, for values that are signed
+/// about zero.
 pub const Colormap = enum(u8) { viridis, turbo, coolwarm, plasma };
 
 /// The 256-entry RGBA8 ramp for a colormap, as a pointer to compile-time

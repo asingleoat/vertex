@@ -43,10 +43,9 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   Structure and quantity names are interned once, on first registration.
 - A pointer or slice is never held across a call that may grow the list it came
   from. Hold the index and take a fresh slice afterwards.
-- Some pointers are appropriate: slices, which are fat pointers to contiguous
-  data and are the point of the exercise; `*Self` and `*const Self` receivers;
-  out-parameters; and the FFI boundary with sokol and cimgui. FFI pointers stay
-  inside edge modules.
+- Four uses of pointers are permitted: slices, which are fat pointers to
+  contiguous data; `*Self` and `*const Self` receivers; out-parameters; and the
+  FFI boundary with sokol and cimgui. FFI pointers stay inside edge modules.
 - Freed blob and structure slots go on a free list, an
   `ArrayListUnmanaged(BlobIndex)`, and are reused; the arrays never shrink
   during a session. An index remains valid for the lifetime of its entity.
@@ -178,8 +177,8 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   attaches to core entities without pointers.
 - The handoff from the socket thread through the staging queue to the render
   thread is the only cross-thread contract in the program; everything else is
-  single-threaded by construction. The queue owns its memory and decoded batches
-  are handed over whole.
+  single-threaded. The queue owns its memory and decoded batches are handed over
+  whole.
 - Module boundaries declare narrow error sets, such as
   `pub const DecodeError = error{ Truncated, BadMagic, ... }`. `anyerror` does
   not appear. Edges translate errors into log output; the core never logs.
@@ -237,9 +236,9 @@ Neither is used yet, but the code is shaped so that both remain available.
   visitor API over elements.
 - A SIMD experiment begins by benchmarking `Geometry(.aos4)`, which `@bitCast`s
   to `@Vector(4, f32)`, and `Geometry(.soa)` against the default. A layout is
-  adopted only on numbers from `zig build bench` measured over the whole path
-  from encoding through the socket, blob store and kernel to the GPU, since the
-  padding bytes of `.aos4` travel the wire and that bandwidth is part of its
+  adopted only on numbers from `zig build bench` measured over the full path
+  from encoding through the socket, blob store and kernel to the GPU. The
+  padding bytes of `.aos4` travel the wire, and that bandwidth is part of its
   cost. Kernels written against the accessor API need no change to take part.
 - Blobs are aligned to 64 bytes as described in §2, and scratch buffers may pad
   counts to multiples of eight.

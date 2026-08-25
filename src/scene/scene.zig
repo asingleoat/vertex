@@ -1080,7 +1080,7 @@ pub const Scene = struct {
     }
 
     /// Drops a mapping the edge has finished unmapping and closing, returning
-    /// its slot for reuse. Call it only after the region is actually gone, since
+    /// its slot for reuse. Call it only after the region has been unmapped, as
     /// any view into it is invalid from this point.
     pub fn forgetMapping(self: *Scene, mapping_index: MappingIndex) void {
         std.debug.assert(mapping_index != .none);
@@ -1194,9 +1194,9 @@ pub const Scene = struct {
         return @intCast(versions.len - 1);
     }
 
-    /// Whether the structure was actually updated at `frame`, as opposed to
-    /// merely being displayed there through an earlier version. The UI uses it
-    /// to mark that a scrubbed frame is showing older geometry.
+    /// Whether a version was recorded at `frame`, rather than an earlier
+    /// version being displayed there. The UI uses this to mark that a scrubbed
+    /// frame shows older geometry.
     pub fn hasExactVersion(self: *const Scene, structure_index: StructureIndex, frame: u32) bool {
         const structures = self.structures.slice();
         const versions = structures.items(.versions)[indexOf(structure_index)].items;
