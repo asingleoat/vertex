@@ -207,10 +207,10 @@ pub const Connection = struct {
     /// `options.dim` selects three or two dimensions. Both slices are borrowed
     /// only until the call returns.
     ///
-    /// This is the call to use whenever the topology is new, such as an initial
-    /// registration, a remesh or a decimation. When only the vertex positions
-    /// have changed, `meshPositions` is considerably cheaper. Each call appends
-    /// a version that the viewer's timeline can return to.
+    /// Use this when the topology is new: an initial registration, a remesh or
+    /// a decimation. When only the vertex positions have changed,
+    /// `meshPositions` is considerably cheaper. Each call appends a version the
+    /// viewer's timeline can return to.
     pub fn mesh(
         self: *Connection,
         name: []const u8,
@@ -351,10 +351,10 @@ pub const Connection = struct {
     /// Releases the connection without ending the run.
     ///
     /// Releases any unsent shared buffers and the socket. It is safe to call
-    /// repeatedly and after `finish`, which is what makes it suitable for a
-    /// `defer` immediately after `connect`. No run terminator is sent, so the
-    /// viewer retains the last frame as it stood; a sketch that fails partway
-    /// therefore leaves its progress on screen.
+    /// repeatedly and after `finish`, so it suits a `defer` placed immediately
+    /// after `connect`. No run terminator is sent, so the viewer retains the
+    /// last frame as it stood and a sketch that fails partway leaves its
+    /// progress on screen.
     pub fn close(self: *Connection) void {
         if (self.socket) |*socket| {
             self.shared_tracker.releaseAll();

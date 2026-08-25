@@ -264,6 +264,12 @@ Neither is used yet, but the code is shaped so that both remain available.
   they address "the caller" rather than the reader. Their length follows how
   much there is to explain: a paragraph or several for a type or function a
   reader must understand, a sentence for a mechanical accessor.
+- State a fact directly rather than approaching it. "The same representation is
+  used in memory, on the wire and on the GPU, so no destination requires a
+  conversion" says what an enumeration of the parts that agree on it does not,
+  in a third of the words. Constructions like "which is what makes", "this is
+  the one to use when" and lists that exist for their rhythm are all signs of
+  the fact being circled rather than stated.
 - A doc comment on a value declaration must contain no empty `///` line.
   Separate its paragraphs with `/// ---`, which renders as a horizontal rule.
   Autodoc renders such a declaration with its "short" form, which stops at the

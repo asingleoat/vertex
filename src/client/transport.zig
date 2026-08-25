@@ -362,9 +362,9 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
 /// returning the portion filled.
 ///
 /// The order of precedence is an explicit path, then `$VERTEX_SOCK`, then
-/// `$XDG_RUNTIME_DIR/vertex.sock`, then `/tmp/vertex.sock`. Both the viewer's
-/// bind and the client's connect resolve through this, which is what makes them
-/// agree without either being configured.
+/// `$XDG_RUNTIME_DIR/vertex.sock`, then `/tmp/vertex.sock`. The viewer's bind
+/// and the client's connect both resolve through this function, so they agree
+/// without either being configured.
 pub fn resolveSocketPath(
     environ: std.process.Environ,
     explicit_path: ?[]const u8,
@@ -414,8 +414,8 @@ pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
     return !std.mem.eql(u8, value, "0");
 }
 
-/// A sink that accepts every message and does nothing, which is what backs a
-/// connection opened with `.optional` when no viewer is listening.
+/// A sink that accepts every message and does nothing. It backs a connection
+/// opened with `.optional` when no viewer is listening.
 pub fn noopSink() Sink {
     return .{ .context = null, .vtable = &noop_vtable };
 }

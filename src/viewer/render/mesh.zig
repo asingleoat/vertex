@@ -3,7 +3,8 @@
 //! `Renderer` is the single object the frame loop holds: it draws meshes itself
 //! and contains the point, line and vector renderers, so that they share one GPU
 //! mirror of the scene. It is also the only place that drains the scene's
-//! new-blob and freed-blob lists, which is what keeps that mirror correct.
+//! new-blob and freed-blob lists, and so the only place that mirror is
+//! updated.
 //!
 //! Three mesh pipelines exist because a mesh is drawn one of three ways: plain,
 //! coloured by a per-vertex scalar, or coloured by a per-face scalar. The

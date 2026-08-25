@@ -159,8 +159,8 @@ pub const Session = struct {
         return self.state.log(self.destination, level, message);
     }
 
-    /// Ends the current frame and opens the next, which is what divides a run
-    /// into the states the viewer's timeline moves between.
+    /// Ends the current frame and opens the next. Frames divide a run into the
+    /// states the viewer's timeline moves between.
     pub fn step(self: *Session) Error!void {
         return self.state.step(self.destination, "");
     }

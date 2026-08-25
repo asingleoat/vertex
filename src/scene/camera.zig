@@ -53,9 +53,9 @@ pub const Mat4 = extern struct {
     /// view of `fovy_rad`.
     ///
     /// Depth maps to [-1, 1]. `aspect` and `near` must be positive and `far`
-    /// greater than `near`. The ratio between `near` and `far` governs depth
-    /// precision, which is why `Orbit` derives both from its current distance
-    /// rather than fixing them.
+    /// greater than `near`. Depth precision falls as the ratio between `near`
+    /// and `far` grows, so `Orbit` derives both from its current distance
+    /// instead of fixing them.
     pub fn perspective(fovy_rad: f32, aspect: f32, near: f32, far: f32) Mat4 {
         std.debug.assert(fovy_rad > 0 and fovy_rad < std.math.pi);
         std.debug.assert(aspect > 0 and near > 0 and far > near);
@@ -83,8 +83,8 @@ pub const Mat4 = extern struct {
 
     /// Builds the view transform for a camera at `eye_position` looking at
     /// `target`, with `up_hint` giving the roll. The hint must not be parallel
-    /// to the direction of view, which is why `Orbit` clamps its pitch away from
-    /// straight up and down.
+    /// to the direction of view; `Orbit` clamps its pitch to keep it from
+    /// becoming so.
     pub fn lookAt(eye_position: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
         const forward = target.sub(eye_position).normalize();
         const right = forward.cross(up_hint).normalize();

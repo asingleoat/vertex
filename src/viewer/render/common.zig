@@ -2,10 +2,10 @@
 //! the scene indexes its own data.
 //!
 //! The scene knows nothing of sokol, so the correspondence is kept here as a
-//! parallel array of GPU buffers indexed by `BlobIndex`. Each frame the
-//! renderer drains the scene's lists of newly created and newly freed blobs and
-//! brings that array into step, which is how edge state attaches to core
-//! entities without either side holding a pointer to the other.
+//! parallel array of GPU buffers indexed by `BlobIndex`. Each frame the renderer
+//! drains the scene's lists of newly created and newly freed blobs and brings
+//! that array into step. Neither side holds a pointer to the other; the shared
+//! index is the only link.
 //!
 //! It also holds what is derived from a blob rather than uploaded from it, such
 //! as the unique edge list a wireframe needs, cached per blob so that two

@@ -187,8 +187,8 @@ pub fn Geometry(comptime l: layout.Layout) type {
         ///
         /// Each edge is canonical, meaning its lower vertex index comes first,
         /// and the result is sorted and deduplicated, so an edge shared by two
-        /// triangles appears once. That is what a wireframe needs, and what any
-        /// traversal over a mesh's connectivity graph needs.
+        /// triangles appears once. Wireframe drawing and connectivity
+        /// traversals both require that.
         ///
         /// The cost is dominated by sorting three entries per face.
         pub fn uniqueEdges(

@@ -3,17 +3,16 @@
 //! A scene holds named structures. A structure is a mesh, a point cloud or a
 //! line set, identified by the name a sketch registered it under and holding a
 //! chronological list of versions. A version is one snapshot of that structure's
-//! geometry, tagged with the run and frame it arrived in, and is a set of
-//! references into a reference-counted blob store rather than a copy of
-//! anything. Registering a mesh under a name that already exists therefore
-//! appends a version, and a positions-only update appends a version that shares
-//! the previous one's topology blob. This is why the timeline costs memory in
-//! proportion to what actually changed per frame, and why scrubbing it rebinds
-//! existing GPU buffers rather than uploading anything.
+//! geometry, tagged with the run and frame it arrived in, and holds references
+//! into a reference-counted blob store rather than copies. Registering a mesh
+//! under an existing name appends a version, and a positions-only update
+//! appends a version sharing the previous one's topology blob. The timeline
+//! therefore costs memory in proportion to what changed per frame, and scrubbing
+//! it rebinds existing GPU buffers without uploading.
 //!
-//! Identity is the interned name, which is what makes viewer state survive a
-//! rebuild: the display settings for "surface" are keyed by that name and are
-//! untouched when a new run replaces the geometry behind it.
+//! Identity is the interned name. Viewer state is keyed by the same name, so
+//! the display settings for "surface" are untouched when a new run replaces the
+//! geometry behind it.
 //!
 //! The module is pure. It performs no I/O, holds no globals, and touches
 //! neither sokol nor the socket; the only memory it uses comes from the
@@ -868,8 +867,8 @@ pub const Scene = struct {
         return self.createBlobAssumeReserved(bytes);
     }
 
-    /// Takes another reference to a live blob. Every version that points at a
-    /// blob holds one, which is what lets versions share topology.
+    /// Takes another reference to a live blob. Every version pointing at a blob
+    /// holds one reference, so several versions can share one blob.
     pub fn retainBlob(self: *Scene, blob_index: BlobIndex) void {
         std.debug.assert(blob_index != .none);
         var blobs = self.blobs.slice();
@@ -1177,8 +1176,8 @@ pub const Scene = struct {
     /// rather than one recorded for it: a structure registered once and never
     /// updated displays that version for the rest of the run. A structure with
     /// no version in the current run falls back to the last one retained from
-    /// the previous run, which is what keeps geometry on screen between a
-    /// rebuild and the first message of the new run.
+    /// the previous run, so geometry stays on screen between a rebuild and the
+    /// first message of the new run.
     pub fn versionAt(self: *const Scene, structure_index: StructureIndex, frame: u32) ?u32 {
         const structures = self.structures.slice();
         const versions = structures.items(.versions)[indexOf(structure_index)].items;

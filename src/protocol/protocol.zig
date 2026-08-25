@@ -1,12 +1,12 @@
 //! The wire protocol: the frames a client sends and the viewer decodes.
 //!
-//! Encoding and decoding both allocate nothing, anywhere. Encoding gathers
-//! borrowed slices into a scatter/gather list that the caller writes with one
-//! `writev`, so a payload never enters an intermediate buffer; decoding returns
-//! views into the caller's payload rather than copies. The corollary is that
-//! every slice handed to an encode function, and the payload handed to `decode`,
-//! must outlive the use of the result. Individual declarations below repeat this
-//! only where the lifetime is unobvious.
+//! Encoding and decoding allocate nothing. Encoding gathers borrowed slices
+//! into a scatter/gather list that the caller writes with one `writev`, so a
+//! payload never enters an intermediate buffer, and decoding returns views into
+//! the caller's payload rather than copies. Every slice passed to an encode
+//! function, and the payload passed to `decode`, must therefore outlive the use
+//! of the result. Declarations below repeat this only where the lifetime is
+//! unobvious.
 //!
 //! Frames are native-endian, because both peers are the same build; `magic`
 //! doubles as the endianness check and `version` as the entire compatibility
@@ -387,10 +387,9 @@ const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(
 
 /// One encoded frame, as a list of slices to be written in order.
 /// ---
-/// The frame header and the message's fixed head are stored inside this value;
-/// the variable parts, being names, positions, indices and values, remain the
-/// caller's slices and are only pointed at, which is what makes encoding
-/// copy-free. All of them must outlive the write.
+/// The frame header and the message's fixed head are stored inside this value.
+/// The variable parts — names, positions, indices and values — are pointed at
+/// rather than copied, so they must outlive the write.
 /// ---
 /// `slices` and `writeTo` install views that point into this value's own
 /// storage, so an `Encoded` must not be moved or copied once either has been

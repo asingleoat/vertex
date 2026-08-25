@@ -7,14 +7,13 @@
 //! travel alongside it as plain slices. `Positions` is the type every part of
 //! the program uses for one, and this module defines it.
 //!
-//! The point of having a type rather than a convention is that the memory
-//! layout is chosen once, at build time, by `-Dvertex_layout`. Callers address
-//! vertices through the named accessors `get`, `set`, `x`, `y` and `z` and never
-//! compute an offset themselves, so selecting a different layout recompiles
-//! every kernel against new offsets and strides and changes nothing else. The
-//! wire format, the viewer's blob storage and the GPU vertex layout are all
-//! derived from this type, through `bytes` and `fromBytes`, so no layout ever
-//! pays for a conversion. This is `STYLE.md` §3.
+//! The memory layout is chosen once, at build time, by `-Dvertex_layout`.
+//! Callers address vertices through the named accessors `get`, `set`, `x`, `y`
+//! and `z` and never compute an offset, so selecting a different layout
+//! recompiles every kernel against new offsets and strides and changes nothing
+//! else. The wire format, the viewer's blob storage and the GPU vertex layout
+//! are all derived from this type through `bytes` and `fromBytes`, so no
+//! conversion is performed for any layout. See `STYLE.md` §3.
 const std = @import("std");
 const build_options = @import("build_options");
 
@@ -231,9 +230,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         pub inline fn toConst(self: Mut) Const {
             return .{ .data = self.data };
         }
-        /// The stream as raw bytes. This is the same representation in memory,
-        /// on the wire and in the viewer's blob store, which is why sending a
-        /// stream requires no serialization step.
+        /// The stream as raw bytes. Sending a stream writes these bytes
+        /// directly, with no serialization step.
         pub inline fn bytes(self: Mut) []u8 {
             return std.mem.sliceAsBytes(self.data);
         }
@@ -361,11 +359,8 @@ pub fn PositionsOf(comptime l: Layout) type {
 /// travel beside it as plain slices — triangles as `[]const [3]u32`, segments
 /// as `[]const [2]u32`, scalar quantities as `[]const f32`.
 /// ---
-/// This is the type to use whenever vertex coordinates are passed anywhere. The
-/// geometry kernels take it, the client library sends it, the scene stores it
-/// and the renderer uploads it, and because every part of the program agrees on
-/// it the wire format and the GPU vertex layout are derived from it rather than
-/// converted to.
+/// The same representation is used in memory, on the wire and on the GPU, so
+/// no destination requires a conversion.
 /// ---
 /// It is a view rather than a container. `Mut` and `Const` mirror `[]T` and
 /// `[]const T`: copying one copies the view and not the data, and the memory

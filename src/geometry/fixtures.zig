@@ -112,16 +112,15 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// sphere.
         ///
         /// The result has `20·4^subdivisions` triangles: 1,280 at three
-        /// subdivisions and 81,920 at six. Unlike a latitude-longitude sphere it
-        /// has no poles and no seam, and its triangles are close to equilateral
-        /// everywhere, which is why it is the default test surface here — a
-        /// kernel that misbehaves on degenerate or wildly varying triangles will
-        /// not be flattered by it.
+        /// subdivisions and 81,920 at six. It has no poles and no seam, unlike a
+        /// latitude-longitude sphere, and its triangles are close to equilateral
+        /// everywhere. It is the default test surface because a kernel that
+        /// misbehaves on degenerate or uneven triangles will still fail on it.
         ///
         /// Allocates the positions and the faces from `gpa`; the caller owns the
-        /// returned mesh and releases it with `deinit`. The midpoint table used
-        /// during subdivision, which is what keeps shared edges from duplicating
-        /// vertices, is freed before returning.
+        /// returned mesh and releases it with `deinit`. Subdivision uses a
+        /// midpoint table so that an edge shared by two faces yields one vertex
+        /// rather than two; the table is freed before returning.
         pub fn icosphere(
             gpa: std.mem.Allocator,
             subdivisions: u32,
