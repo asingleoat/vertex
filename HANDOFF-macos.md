@@ -152,13 +152,25 @@ Keep the decl-parity test honest (`platform.zig`). Done: `sketches/stress.zig`
 in shared mode reports `mapped_bytes=480960480` and the client-side send
 time collapses as it did on Linux (§DESIGN "Copies on the path").
 
-**Step 3 — picking on Metal.** Replace the GL readback with a Metal one:
-after the pick pass, blit the `RG32UI` target's 1×1 region into a shared
-`MTLBuffer` and `waitUntilCompleted`, via sokol's Metal query hooks
-(`sg.mtlDevice`/`sg_mtl_query_image_info`…) and `objc_msgSend` externs.
-Keep it isolated in `pick.zig` behind a comptime backend switch, mirroring
-the Linux GL escape hatch. Done: the probe reports a sphere face and the
-inspector tooltip shows quantity values.
+**Step 3 — picking: superseded, and deliberately last.** Do *not* write a
+Metal readback. Decided 2026-08-24 (rationale in DESIGN.md, "Picking,
+decided 2026-08-24"): picking becomes a **CPU ray cast in the pure core**,
+which needs no readback on any backend and deletes the GL escape hatch, the
+four `pick_*` shaders and the `RG32UI` target.
+
+Two things to know before starting it. The synchronous Metal readback this
+step used to describe cannot work — sokol creates one command buffer per
+frame, `enqueue`s it at the first `beginPass`, commits it at `sg.commit()`
+and never exposes it, so a mid-frame blit + `waitUntilCompleted` waits behind
+a command buffer that has not been committed. And hover picking today
+re-renders every visible structure per mouse move, so the CPU version starts
+from a low bar; brute force first, measure, then a per-blob BVH cached like
+the derived edge lists.
+
+It is sequenced after Steps 2, 4 and 5 because it is a redesign of a working
+feature, not a port step. Owes before/after numbers and a check that a CPU
+hit agrees with a GL hit on the same scene. The retina/dpi question below
+belongs to it.
 
 **Step 4 — dylib mode.** `std.DynLib` uses `dlopen` on macOS; the stepping
 library becomes `libstep-<name>.dylib` (`build.zig` names it; the viewer's

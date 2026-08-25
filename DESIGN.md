@@ -249,7 +249,45 @@ versions) — this exhausted the pool before the policy existed.
 - Picking: offscreen pass writing `(structure_id, element_id)` to an integer
   target. **sokol-gfx has no readback API** — use a direct `glReadPixels`
   escape hatch, isolated in `pick.zig` (acceptable: Linux/GL backend is the
-  target; revisit if ever porting).
+  target; revisit if ever porting). **Revisited 2026-08-24, porting: replace
+  it with CPU picking** (see below). The GL path stays until that lands.
+
+### Picking, decided 2026-08-24: ray-cast on the CPU, not an ID buffer
+
+Porting made the readback escape hatch cost three implementations instead of
+one, so the "revisit if ever porting" above came due. What settled it:
+
+- **The synchronous shape does not port.** sokol's Metal backend creates one
+  `MTLCommandBuffer` per frame, `enqueue`s it at the first `beginPass` and
+  commits it at `sg.commit()`; it exposes the device, the queue and the
+  encoders but *not* that command buffer. A blit committed mid-frame sits
+  behind a command buffer that has not been committed yet, so
+  `waitUntilCompleted` cannot return. Any GPU readback here has to be
+  asynchronous (fence after `sg.commit()`, result one frame later) — and the
+  same is true of D3D11. Three backends, three hatches, one of them a
+  restructuring of the pick call path.
+- **Nothing needs the GPU.** Scene blobs are CPU memory already. A ray cast
+  gives ray-triangle for meshes, cursor-to-projected-point distance against
+  `point_size` for points, cursor-to-projected-segment distance against
+  `line_width` for lines, nearest `t` across kinds — which is what the depth
+  test was doing. It is more precise than the ID buffer, not less: no
+  rasterization quantization.
+- **It is core, so it is testable.** `geometry/` code with
+  `checkAllAllocationFailures` and a `bench/` entry (STYLE §5–6), instead of
+  GPU behaviour that can only be checked by running a window.
+- **It is plausibly faster than what we have.** Hover picking currently
+  re-renders every visible structure through the pick pipelines on every
+  mouse move — full vertex processing of the scene per motion event. A BVH
+  cached per positions-blob (invalidated exactly like the derived edge-list
+  cache) turns that into a log-time query.
+
+Plan: brute force first, measured; add the per-blob BVH when the numbers ask
+for it (`sketches/stress.zig` is ~2M triangles, far past brute force for
+hover). Landing it deletes `pick.zig`'s GL externs, the four `pick_*` shaders
+and the `RG32UI` target. Sequenced after the platform layer and the smokes,
+because it is a redesign of a working feature rather than a port step, and it
+owes before/after numbers plus a check that a CPU hit agrees with a GL hit on
+the same scene.
 
 **Camera.** Orbit (turntable) with pan/dolly for 3D; orthographic pan/zoom-under-
 cursor for 2D. Mode auto-selected when all live structures are `dim=2`, manual
@@ -328,7 +366,7 @@ on Metal; the rest are still the plan.
 | Abstract sockets | `"\0name"`, no file to clean up | ✅ none — Darwin has no abstract namespace; bind a real file | none |
 | Windowing / GPU | sokol_app X11 + GL 4.3 | ✅ sokol_app Cocoa + Metal, selected by passing `.gl = false` to sokol-zig (its `auto` resolves to Metal on darwin); frameworks `AppKit`, `QuartzCore`, `Metal`, `AudioToolbox`. Mesh, points, lines and ImGui all render | sokol_app Win32 + D3D11 |
 | Shaders | `sokol-shdc -l glsl430` | ✅ `-l glsl430:metal_macos` — one checked-in file per shader carries both backends, byte-identical from either OS, and the GLCORE branch is unchanged by adding Metal. The `osx_arm64` sokol-shdc runs straight from the nix store (no Gatekeeper quarantine) | add `hlsl5` |
-| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` (Step 3). Until then `pick.Picker` comptime-selects a disabled picker — required, not merely tidy: a Metal build does not link OpenGL, so the GL externs must not be analyzed at all | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
+| Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass — **to be deleted**: picking moves to a CPU ray cast (decision above), which needs no readback on any backend | ✅ picking is off meanwhile: `pick.Picker` comptime-selects a disabled picker — required, not merely tidy, because a Metal build does not link OpenGL, so the GL externs must not be analyzed at all. ✅ a synchronous Metal readback is impossible (sokol commits its only frame command buffer at `sg.commit()` and does not expose it, so a mid-frame `waitUntilCompleted` waits on a command buffer behind an uncommitted one) | same: no readback needed |
 | Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | ❌ blocked: `gl_PrimitiveID` in a fragment shader needs **MSL 2.2** and SPIRV-Cross refuses below it (`PrimitiveId on macOS requires MSL 2.2`) — sokol-shdc has no MSL version flag, in the pinned build *or* master (checked 2026-08-24). `mesh_face_scalar{,_soa}` and `pick_mesh{,_soa}` stay GL-only; the renderer asks the generated desc whether the backend has a source and falls back to the plain mesh pipeline. Fixing it means a shdc that sets MSL 2.2, or dropping `primitive_id` for a per-vertex face index (which costs vertex duplication) | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
 | Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock` — the existing fallback, because `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is *per `nix develop` shell* (`/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`), which would put viewer and sketch on different sockets | `\\.\pipe` or a temp-dir `AF_UNIX` path |
 | `sun_path` limit | 107 usable bytes, longer ones rebased via `/proc/self/fd/<fd>` | ✅ `sun_path` is `char[104]` (SDK `sys/un.h`) → 103 usable, and there is no `/proc` to rebase on, so longer paths are rejected naming the limit | 107 usable, no rebasing |
