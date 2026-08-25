@@ -27,6 +27,7 @@ pub const Renderer = struct {
     mesh_pipeline: sg.Pipeline,
     mesh_scalar_pipeline: sg.Pipeline,
     mesh_face_scalar_pipeline: sg.Pipeline,
+    face_scalars: bool,
     points: point_render.Renderer,
     lines: line_render.Renderer,
     vectors: vector_render.Renderer,
@@ -42,10 +43,21 @@ pub const Renderer = struct {
             .aos3, .aos4 => scalar_shader.meshScalarShaderDesc(sg.queryBackend()),
             .soa => scalar_soa_shader.meshScalarSoaShaderDesc(sg.queryBackend()),
         });
-        const face_scalar = sg.makeShader(switch (vertex.layout.layout) {
+        // Face-target scalars read the quantity blob by `gl_PrimitiveID`, which
+        // has no MSL translation below 2.2 and so no source in a Metal desc
+        // (see build.zig's `isGlOnlyShader`). Ask the generated artifact rather
+        // than naming a backend: regenerate with a shdc that can emit it and
+        // the feature turns itself back on.
+        const face_scalar_shader_desc = switch (vertex.layout.layout) {
             .aos3, .aos4 => face_scalar_shader.meshFaceScalarShaderDesc(sg.queryBackend()),
             .soa => face_scalar_soa_shader.meshFaceScalarSoaShaderDesc(sg.queryBackend()),
-        });
+        };
+        const face_scalars = face_scalar_shader_desc.vertex_func.source != null;
+        if (!face_scalars) std.log.info(
+            "face-target scalars are unavailable on this backend; they render as plain meshes",
+            .{},
+        );
+        const face_scalar = if (face_scalars) sg.makeShader(face_scalar_shader_desc) else sg.Shader{};
         var mesh_desc = baseMeshPipeline(shader, "vertex mesh pipeline");
         var scalar_desc = baseMeshPipeline(scalar, "vertex scalar mesh pipeline");
         var face_scalar_desc = baseMeshPipeline(face_scalar, "vertex face scalar mesh pipeline");
@@ -70,7 +82,8 @@ pub const Renderer = struct {
             .mesh_face_scalar_shader = face_scalar,
             .mesh_pipeline = sg.makePipeline(mesh_desc),
             .mesh_scalar_pipeline = sg.makePipeline(scalar_desc),
-            .mesh_face_scalar_pipeline = sg.makePipeline(face_scalar_desc),
+            .mesh_face_scalar_pipeline = if (face_scalars) sg.makePipeline(face_scalar_desc) else sg.Pipeline{},
+            .face_scalars = face_scalars,
             .points = point_render.Renderer.init(),
             .lines = line_render.Renderer.init(gpa),
             .vectors = vector_render.Renderer.init(gpa),
@@ -145,7 +158,7 @@ pub const Renderer = struct {
         else
             false;
         const use_face_scalar = if (active) |quantity|
-            quantity.kind == .scalar and quantity.target == .face and
+            self.face_scalars and quantity.kind == .scalar and quantity.target == .face and
                 quantity.count == faces.len
         else
             false;
@@ -281,10 +294,10 @@ pub const Renderer = struct {
         self.vectors.deinit();
         self.lines.deinit();
         self.points.deinit();
-        sg.destroyPipeline(self.mesh_face_scalar_pipeline);
+        if (self.face_scalars) sg.destroyPipeline(self.mesh_face_scalar_pipeline);
         sg.destroyPipeline(self.mesh_scalar_pipeline);
         sg.destroyPipeline(self.mesh_pipeline);
-        sg.destroyShader(self.mesh_face_scalar_shader);
+        if (self.face_scalars) sg.destroyShader(self.mesh_face_scalar_shader);
         sg.destroyShader(self.mesh_scalar_shader);
         sg.destroyShader(self.mesh_shader);
         self.gpu.deinit();

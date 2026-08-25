@@ -1,12 +1,16 @@
-//! GL-BACKEND-ONLY element-ID rendering and synchronous pixel readback.
+//! Element-ID rendering and synchronous pixel readback.
 //!
-//! This module deliberately calls OpenGL while Sokol's offscreen framebuffer is
+//! `GlPicker` deliberately calls OpenGL while Sokol's offscreen framebuffer is
 //! bound. The pinned GL backend executes draw calls immediately. Its generic
 //! pass clear path calls `glClearBufferfv` for every color format, including
 //! integer attachments, so the queried pixel is cleared explicitly with
-//! `glClearBufferuiv` after applying the 1x1 scissor. Porting this viewer away
-//! from Linux/GL requires replacing this entire escape hatch.
+//! `glClearBufferuiv` after applying the 1x1 scissor. sokol-gfx has no readback
+//! API, so every backend needs its own escape hatch: `Picker` selects one at
+//! comptime and picking is simply off where none exists (Metal readback is
+//! Step 3 of the macOS port). `Hit`/`ElementKind` are backend-independent and
+//! stay the vocabulary the UI speaks either way.
 const std = @import("std");
+const build_options = @import("build_options");
 const vertex = @import("vertex");
 const sg = @import("sokol").gfx;
 
@@ -59,6 +63,38 @@ pub const Hit = struct {
     kind: ElementKind,
 };
 
+/// Whether this build can run the ID-buffer pass and read a pixel back. False
+/// leaves every query a miss; nothing else in the viewer changes.
+pub const supported = build_options.gl_backend;
+
+/// The backend's picker. Only the selected branch is analyzed, so the raw GL
+/// externs above exist solely in a GL build.
+pub const Picker = if (supported) GlPicker else DisabledPicker;
+
+/// Stand-in for a backend without a readback path: costs nothing, holds
+/// nothing, and reports no hit. It exists so main.zig has one code path.
+const DisabledPicker = struct {
+    pub fn init() DisabledPicker {
+        return .{};
+    }
+
+    pub fn query(
+        _: *DisabledPicker,
+        _: *mesh_render.Renderer,
+        _: *const Scene,
+        _: u32,
+        _: Mat4,
+        _: [2]i32,
+        _: [2]u32,
+    ) ?Hit {
+        return null;
+    }
+
+    pub fn deinit(self: *DisabledPicker) void {
+        self.* = undefined;
+    }
+};
+
 const Target = struct {
     color_image: sg.Image = .{},
     depth_image: sg.Image = .{},
@@ -70,7 +106,7 @@ const Target = struct {
 
 /// Owns the integer offscreen target and all pick shaders/pipelines. It owns no
 /// CPU allocations; a first line-cache lookup may use renderer storage.
-pub const Picker = struct {
+const GlPicker = struct {
     target: Target = .{},
     mesh_shader: sg.Shader,
     points_shader: sg.Shader,
@@ -81,7 +117,7 @@ pub const Picker = struct {
 
     /// Creates GL 4.3 integer-output pipelines without CPU allocation. The
     /// returned owner must be destroyed before `sg.shutdown`.
-    pub fn init() Picker {
+    pub fn init() GlPicker {
         const mesh_shader = sg.makeShader(switch (vertex.layout.layout) {
             .aos3, .aos4 => pick_mesh_shader.pickMeshShaderDesc(sg.queryBackend()),
             .soa => pick_mesh_soa_shader.pickMeshSoaShaderDesc(sg.queryBackend()),
@@ -128,7 +164,7 @@ pub const Picker = struct {
     /// top-left-origin framebuffer pixel inside the pass, and returns a valid hit.
     /// A line-cache OOM skips that line structure rather than retaining an error.
     pub fn query(
-        self: *Picker,
+        self: *GlPicker,
         renderer: *mesh_render.Renderer,
         scene: *const Scene,
         scrub: u32,
@@ -183,7 +219,7 @@ pub const Picker = struct {
 
     /// Destroys the current target and all pick pipelines/shaders. It owns no
     /// CPU allocations and must run before the renderer and `sg.shutdown`.
-    pub fn deinit(self: *Picker) void {
+    pub fn deinit(self: *GlPicker) void {
         self.destroyTarget();
         sg.destroyPipeline(self.lines_pipeline);
         sg.destroyPipeline(self.points_pipeline);
@@ -194,7 +230,7 @@ pub const Picker = struct {
         self.* = undefined;
     }
 
-    fn ensureTarget(self: *Picker, width: i32, height: i32) void {
+    fn ensureTarget(self: *GlPicker, width: i32, height: i32) void {
         if (self.target.width == width and self.target.height == height) return;
         self.destroyTarget();
         const color_image = sg.makeImage(.{
@@ -229,7 +265,7 @@ pub const Picker = struct {
         };
     }
 
-    fn destroyTarget(self: *Picker) void {
+    fn destroyTarget(self: *GlPicker) void {
         if (self.target.width == 0) return;
         sg.destroyView(self.target.depth_view);
         sg.destroyView(self.target.color_view);
@@ -238,7 +274,7 @@ pub const Picker = struct {
         self.target = .{};
     }
 
-    fn drawMeshes(self: *Picker, renderer: *mesh_render.Renderer, scene: *const Scene, scrub: u32, vp: Mat4) void {
+    fn drawMeshes(self: *GlPicker, renderer: *mesh_render.Renderer, scene: *const Scene, scrub: u32, vp: Mat4) void {
         const structures = scene.structures.slice();
         const ui_states = structures.items(.ui);
         const kinds = structures.items(.kind);
@@ -264,7 +300,7 @@ pub const Picker = struct {
     }
 
     fn drawLines(
-        self: *Picker,
+        self: *GlPicker,
         renderer: *mesh_render.Renderer,
         scene: *const Scene,
         scrub: u32,
@@ -302,7 +338,7 @@ pub const Picker = struct {
     }
 
     fn drawPoints(
-        self: *Picker,
+        self: *GlPicker,
         renderer: *mesh_render.Renderer,
         scene: *const Scene,
         scrub: u32,

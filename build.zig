@@ -15,8 +15,19 @@ pub fn build(b: *Build) !void {
     const vertex_layout = b.option(Layout, "vertex_layout", "Vertex stream layout (default: aos3)") orelse .aos3;
     const sketch_name = b.option([]const u8, "sketch", "Sketch to run with `zig build run-sketch` (default: current)") orelse "current";
 
+    // sokol's `auto` backend is Metal on darwin and GL elsewhere; force GL
+    // where that is what we mean, and tell our own code which one it got.
+    // `pick.zig`'s readback is a raw GL escape hatch, so it exists exactly
+    // when this is true (DESIGN.md, portability table).
+    const gl_backend = !target.result.os.tag.isDarwin();
+
     const build_options = b.addOptions();
     build_options.addOption(Layout, "vertex_layout", vertex_layout);
+    build_options.addOption(bool, "gl_backend", gl_backend);
+    // One module, imported everywhere: `addOptions` creates a fresh module per
+    // call, and two modules cannot share a source file, so the viewer importing
+    // `build_options` directly while `vertex` has its own copy is a hard error.
+    const options_module = build_options.createModule();
 
     // ---- `vertex`: pure core (geometry, protocol, scene) + client library ----
     const mod_vertex = b.addModule("vertex", .{
@@ -24,7 +35,7 @@ pub fn build(b: *Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    mod_vertex.addOptions("build_options", build_options);
+    mod_vertex.addImport("build_options", options_module);
 
     // ---- tests ----
     const test_step = b.step("test", "Run unit tests");
@@ -36,7 +47,7 @@ pub fn build(b: *Build) !void {
     const dep_sokol = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
-        .gl = true,
+        .gl = gl_backend,
         .with_sokol_imgui = true,
     });
     const dep_cimgui = b.dependency("cimgui", .{
@@ -57,7 +68,7 @@ pub fn build(b: *Build) !void {
             .{ .name = cimgui_conf.module_name, .module = dep_cimgui.module(cimgui_conf.module_name) },
         },
     });
-    mod_viewer.addOptions("build_options", build_options);
+    mod_viewer.addImport("build_options", options_module);
     addRuntimeLibPaths(b, mod_viewer);
     const viewer_tests = b.addTest(.{ .root_module = mod_viewer });
     test_step.dependOn(&b.addRunArtifact(viewer_tests).step);
@@ -97,7 +108,7 @@ pub fn build(b: *Build) !void {
             .link_libc = true,
             .imports = &.{.{ .name = "vertex", .module = mod_vertex }},
         });
-        mod.addOptions("build_options", build_options);
+        mod.addImport("build_options", options_module);
         const library = b.addLibrary(.{
             .name = b.fmt("step-{s}", .{name}),
             .linkage = .dynamic,
@@ -120,7 +131,7 @@ pub fn build(b: *Build) !void {
             .target = target,
             .optimize = .fast,
         });
-        mod_bench_vertex.addOptions("build_options", build_options);
+        mod_bench_vertex.addImport("build_options", options_module);
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("bench/{s}.zig", .{name})),
             .target = target,
@@ -143,7 +154,10 @@ pub fn build(b: *Build) !void {
             "-o",
             b.fmt("src/viewer/shaders/{s}.zig", .{name}),
             "-l",
-            "glsl430",
+            // One generated file per shader carrying every backend we target,
+            // so a Linux checkout and a macOS checkout produce byte-identical
+            // output and neither has to regenerate for the other.
+            if (isGlOnlyShader(name)) "glsl430" else "glsl430:metal_macos",
             "-f",
             "sokol_zig",
         });
@@ -204,6 +218,23 @@ fn addRuntimeLibPaths(b: *Build, mod: *Build.Module) void {
         mod.addRPath(.{ .cwd_relative = lib_dir });
     }
     mod.addRPath(.{ .cwd_relative = "/run/opengl-driver/lib" });
+}
+
+/// Shaders that cannot be translated to MSL. `gl_PrimitiveID` in a fragment
+/// shader requires MSL 2.2; SPIRV-Cross refuses below that ("PrimitiveId on
+/// macOS requires MSL 2.2") and sokol-shdc exposes no MSL version flag —
+/// checked against both the pinned build and sokol-tools-bin master on
+/// 2026-08-24. The renderer asks the generated desc whether a backend has a
+/// source, so this list only decides what gets generated, never what runs.
+fn isGlOnlyShader(name: []const u8) bool {
+    const gl_only = [_][]const u8{
+        "mesh_face_scalar",
+        "mesh_face_scalar_soa",
+        "pick_mesh",
+        "pick_mesh_soa",
+    };
+    for (gl_only) |entry| if (std.mem.eql(u8, entry, name)) return true;
+    return false;
 }
 
 fn nonEmpty(value: ?[]const u8) ?[]const u8 {
