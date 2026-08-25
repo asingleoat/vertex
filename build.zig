@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Build = std.Build;
 const cimgui = @import("cimgui");
 
@@ -174,7 +175,12 @@ pub fn build(b: *Build) !void {
 fn resolveTarget(b: *Build) Build.ResolvedTarget {
     var query = b.standardTargetOptionsQueryOnly(.{});
     const env = b.graph.environ_map;
-    if (query.isNative()) if (nonEmpty(env.get("ZIG_DYNAMIC_LINKER"))) |dl| {
+    // Linux-only by construction: nixpkgs' darwin cc wrapper also publishes a
+    // nix-support/dynamic-linker (/usr/lib/dyld), so the shell hook's file test
+    // is not a platform test. Pinning here would force abi=gnu on a macOS
+    // target and break the C/C++ dependencies (sokol, cimgui).
+    const host_is_linux = (query.os_tag orelse builtin.os.tag) == .linux;
+    if (host_is_linux) if (query.isNative()) if (nonEmpty(env.get("ZIG_DYNAMIC_LINKER"))) |dl| {
         query.dynamic_linker = .init(dl);
         query.cpu_model = .native;
         // Without an explicit ABI zig falls back to probing /lib64, which on

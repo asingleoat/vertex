@@ -90,8 +90,25 @@
 
           # Zig's global cache is per-user; keep the project cache local so a
           # `git clean` resets everything.
+          # The glibc pin below is Linux-only. nixpkgs' *darwin* cc wrapper also
+          # ships nix-support/dynamic-linker (holding /usr/lib/dyld), so gating
+          # on that file's existence is not enough: guard on the platform.
           shellHook = ''
             export ZIG_LOCAL_CACHE_DIR="$PWD/.zig-cache"
+          '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+            # zig 0.17.0-dev.1857: setting either NIX_CFLAGS_COMPILE or
+            # NIX_LDFLAGS makes zig skip its darwin SDK detection entirely
+            # (`xcrun --sdk macosx --show-sdk-path`), so no framework search
+            # path is ever added and every `-framework` in the sokol_app /
+            # sokol_gfx link fails with `searched paths: none`. Neither is
+            # needed here: zig links libSystem, the Cocoa/Metal/OpenGL
+            # frameworks and the C headers from the SDK, and it ships its own
+            # libc++. Drop them so detection runs, exactly as on a Mac
+            # without nix. DEVELOPER_DIR/SDKROOT (set by the apple-sdk setup
+            # hook) point xcrun at the pinned nixpkgs SDK, so detection stays
+            # reproducible.
+            unset NIX_CFLAGS_COMPILE NIX_LDFLAGS
+          '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             # zig's compiler detects the native dynamic linker by probing
             # /usr/bin/env, i.e. the *system* glibc, while this shell links
             # against nixpkgs' glibc. Mixed ld.so/libc versions fail to load,
