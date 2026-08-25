@@ -1,10 +1,10 @@
 # vertex
 
 ```sh
-nix develop                                     # toolchain; run everything below inside it
+nix develop                                     # the toolchain; run every command below inside it
 
-zig build -Drelease run-viewer                  # terminal 1 — leave it up for days
-zig build run-sketch --watch -Dsketch=NAME      # terminal 2 — rebuild + rerun on every save
+zig build -Drelease run-viewer                  # terminal 1: the viewer, which stays running
+zig build run-sketch --watch -Dsketch=NAME      # terminal 2: rebuilds and reruns on every save
                                                 #   on Linux, add -fincremental
 ```
 
@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     var vx = try vertex.connect(init, .{ .name = "example" });
     defer vx.close();
 
-    // Mesh: positions + triangles.
+    // A mesh: positions, and the triangles indexing them.
     const tri = try Positions.alloc(init.gpa, 3);
     defer tri.free(init.gpa);
     tri.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
