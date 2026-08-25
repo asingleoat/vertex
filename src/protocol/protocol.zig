@@ -43,26 +43,31 @@
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 
-/// Protocol compatibility version. This module borrows all input and allocates nothing.
+// ---------------------------------------------------------------------------
+// constants / types
+
+/// Protocol compatibility version. The value owns no memory, and access allocates nothing.
 pub const version: u16 = 2;
 
-/// Handshake magic. This module borrows all input and allocates nothing.
+/// Handshake magic. The value owns no memory, and access allocates nothing.
 pub const magic: [4]u8 = "VTXP".*;
 
-/// Maximum byte length accepted for source, structure, and quantity names.
+/// Maximum accepted source, structure, and quantity name length. The constant
+/// owns no memory and allocates nothing.
 pub const max_name_len = 255;
 
-/// Payload-relative alignment of binary sections; encoding allocates nothing.
+/// Payload-relative alignment of binary sections. The constant owns no memory, and encoding allocates nothing.
 /// Sections start at multiples of 16 from the payload start so that a payload
 /// placed in 16-aligned memory yields SIMD-aligned views; `decode` itself only
 /// needs `payload_alignment`.
 pub const section_alignment = 16;
 
-/// Minimum alignment `decode` requires of a payload buffer: enough for every
-/// element type that appears in a section (f32, u32, Positions.Elem).
+/// Minimum alignment `decode` requires of a borrowed payload buffer. The
+/// constant owns no memory and allocates nothing; it covers every element type
+/// that appears in a section (`f32`, `u32`, `Positions.Elem`).
 pub const payload_alignment = @max(@alignOf(u32), @alignOf(f32), @alignOf(layout.Positions.Elem));
 
-/// Wire message tag. Values outside the named v2 set are rejected without allocation.
+/// Wire message tag. Values own no memory; unknown v2 tags are rejected without allocation.
 pub const Kind = enum(u16) {
     hello = 1,
     begin_run,
@@ -79,57 +84,24 @@ pub const Kind = enum(u16) {
     _,
 };
 
-/// Geometric dimensionality carried by geometry messages; no memory is owned.
+/// Geometric dimensionality carried by geometry messages. Values own no memory
+/// and allocate nothing.
 pub const Dim = enum(u8) { d2 = 2, d3 = 3 };
 
-/// Quantity attachment target; no memory is owned.
+/// Quantity attachment target. Values own no memory and allocate nothing.
 pub const Target = enum(u8) { vertex = 0, face = 1, point = 2 };
 
-/// Log severity; no memory is owned.
+/// Log severity. Values own no memory and allocate nothing.
 pub const LogLevel = enum(u8) { info, warn, err };
 
-/// Eight-byte frame header. `flags` uses `Flags`; the value is copied into or
-/// out of caller-owned bytes and owns no memory.
-pub const Header = extern struct {
-    len: u32,
-    kind: u16,
-    flags: u16 = 0,
-};
-
-/// Bit layout of `Header.flags`; conversion to/from the wire integer is a
-/// bit-cast and owns no memory.
-pub const Flags = packed struct(u16) {
-    external: bool = false,
-    fd_count: u3 = 0,
-    _pad: u12 = 0,
-
-    /// Decodes the native-endian wire bits without allocation.
-    pub fn fromInt(raw: u16) Flags {
-        return @bitCast(raw);
-    }
-
-    /// Encodes the native-endian wire bits without allocation.
-    pub fn toInt(self: Flags) u16 {
-        return @bitCast(self);
-    }
-};
-
-/// One binary-section descriptor in an external frame. Inline data remains in
-/// the frame; external data borrows the mapping selected by `fd_index`.
-pub const SectionRef = extern struct {
-    source: u32,
-    fd_index: u32,
-    offset: u64,
-    len: u64,
-};
-
 /// Borrowed encoder input for one binary section. Inline bytes must outlive
-/// the write; an external reference owns neither its mapping nor its fd.
+/// the write; an external reference owns neither its mapping nor its fd. The
+/// union itself allocates nothing.
 pub const Section = union(enum) {
     @"inline": []const u8,
     external: External,
 
-    /// Location of bytes inside one fd-backed mapping; owns no memory.
+    /// Location of bytes inside one fd-backed mapping; owns no memory and allocates nothing.
     pub const External = struct {
         fd_index: u32,
         offset: u64,
@@ -137,82 +109,11 @@ pub const Section = union(enum) {
     };
 };
 
-/// Maximum binary sections carried by any protocol message.
+/// Maximum binary sections per message. The constant owns no memory and allocates nothing.
 pub const max_sections = 2;
 
-/// Eight-byte fixed head for `hello`; no memory is owned.
-pub const HelloHead = extern struct {
-    magic: [4]u8,
-    version: u16,
-    name_len: u16,
-};
-
-/// Eight-byte fixed head for `begin_frame`; no memory is owned.
-pub const BeginFrameHead = extern struct {
-    index: u32,
-    label_len: u16,
-    _pad: u16,
-};
-
-/// Twelve-byte fixed head for `mesh`; no memory is owned.
-pub const MeshHead = extern struct {
-    vertex_count: u32,
-    face_count: u32,
-    name_len: u16,
-    dim: u8,
-    _pad: u8,
-};
-
-/// Eight-byte fixed head for `mesh_positions`; no memory is owned.
-pub const MeshPositionsHead = extern struct {
-    vertex_count: u32,
-    name_len: u16,
-    _pad: u16,
-};
-
-/// Eight-byte fixed head for `points`; no memory is owned.
-pub const PointsHead = extern struct {
-    count: u32,
-    name_len: u16,
-    dim: u8,
-    _pad: u8,
-};
-
-/// Twelve-byte fixed head for `lines`; no memory is owned.
-pub const LinesHead = extern struct {
-    vertex_count: u32,
-    segment_count: u32,
-    name_len: u16,
-    dim: u8,
-    _pad: u8,
-};
-
-/// Twelve-byte fixed head for `scalar_quantity`; no memory is owned.
-pub const ScalarQuantityHead = extern struct {
-    count: u32,
-    structure_len: u16,
-    name_len: u16,
-    target: u8,
-    _pad: [3]u8,
-};
-
-/// Twelve-byte fixed head for `vector_quantity`; no memory is owned.
-pub const VectorQuantityHead = extern struct {
-    count: u32,
-    structure_len: u16,
-    name_len: u16,
-    target: u8,
-    _pad: [3]u8,
-};
-
-/// Eight-byte fixed head for `log`; no memory is owned.
-pub const LogHead = extern struct {
-    text_len: u32,
-    level: u8,
-    _pad: [3]u8,
-};
-
-/// Errors returned by total, allocation-free frame decoding.
+/// Errors returned by total, allocation-free frame decoding. The error set
+/// owns no memory.
 pub const DecodeError = error{
     Truncated,
     BadLength,
@@ -242,7 +143,7 @@ pub const Mesh = struct {
     faces: []const [3]u32,
 };
 
-/// Decoded topology-preserving mesh update; all views borrow the payload buffer.
+/// Decoded topology-preserving mesh update. All views borrow the payload buffer; no allocation occurs.
 pub const MeshPositions = struct {
     name: []const u8,
     positions: layout.Positions.Const,
@@ -285,7 +186,7 @@ pub const Log = struct {
     text: []const u8,
 };
 
-/// Decoded message whose slices borrow the supplied payload buffer; no allocation occurs.
+/// Decoded message whose slices borrow the supplied payload or mapping buffers; no allocation occurs.
 pub const Message = union(Kind) {
     hello: Hello,
     begin_run: void,
@@ -300,6 +201,448 @@ pub const Message = union(Kind) {
     vector_quantity: VectorQuantity,
     log: Log,
 };
+
+// ---------------------------------------------------------------------------
+// heads
+
+/// Eight-byte frame header. `flags` uses `Flags`; the value is copied into or
+/// out of caller-owned bytes, owns no memory, and allocates nothing.
+pub const Header = extern struct {
+    len: u32,
+    kind: u16,
+    flags: u16 = 0,
+};
+
+/// Bit layout of `Header.flags`; conversion to/from the wire integer is a
+/// bit-cast. Values own no memory and allocate nothing.
+pub const Flags = packed struct(u16) {
+    external: bool = false,
+    fd_count: u3 = 0,
+    _pad: u12 = 0,
+
+    /// Returns a non-owning flags value from native-endian bits without allocation.
+    pub fn fromInt(raw: u16) Flags {
+        return @bitCast(raw);
+    }
+
+    /// Returns native-endian bits by value without ownership transfer or allocation.
+    pub fn toInt(self: Flags) u16 {
+        return @bitCast(self);
+    }
+};
+
+/// One allocation-free binary-section descriptor in an external frame. The
+/// descriptor owns no memory: external data borrows the mapping selected by
+/// `fd_index`, while inline data remains in the frame.
+pub const SectionRef = extern struct {
+    source: u32,
+    fd_index: u32,
+    offset: u64,
+    len: u64,
+};
+
+/// Eight-byte fixed head for `hello`; the record owns no memory and allocates nothing.
+pub const HelloHead = extern struct {
+    magic: [4]u8,
+    version: u16,
+    name_len: u16,
+};
+
+/// Eight-byte fixed head for `begin_frame`; the record owns no memory and allocates nothing.
+pub const BeginFrameHead = extern struct {
+    index: u32,
+    label_len: u16,
+    _pad: u16,
+};
+
+/// Twelve-byte fixed head for `mesh`; the record owns no memory and allocates nothing.
+pub const MeshHead = extern struct {
+    vertex_count: u32,
+    face_count: u32,
+    name_len: u16,
+    dim: u8,
+    _pad: u8,
+};
+
+/// Eight-byte fixed head for `mesh_positions`; the record owns no memory and allocates nothing.
+pub const MeshPositionsHead = extern struct {
+    vertex_count: u32,
+    name_len: u16,
+    _pad: u16,
+};
+
+/// Eight-byte fixed head for `points`; the record owns no memory and allocates nothing.
+pub const PointsHead = extern struct {
+    count: u32,
+    name_len: u16,
+    dim: u8,
+    _pad: u8,
+};
+
+/// Twelve-byte fixed head for `lines`; the record owns no memory and allocates nothing.
+pub const LinesHead = extern struct {
+    vertex_count: u32,
+    segment_count: u32,
+    name_len: u16,
+    dim: u8,
+    _pad: u8,
+};
+
+/// Twelve-byte fixed head for `scalar_quantity`; the record owns no memory and allocates nothing.
+pub const ScalarQuantityHead = extern struct {
+    count: u32,
+    structure_len: u16,
+    name_len: u16,
+    target: u8,
+    _pad: [3]u8,
+};
+
+/// Twelve-byte fixed head for `vector_quantity`; the record owns no memory and allocates nothing.
+pub const VectorQuantityHead = extern struct {
+    count: u32,
+    structure_len: u16,
+    name_len: u16,
+    target: u8,
+    _pad: [3]u8,
+};
+
+/// Eight-byte fixed head for `log`; the record owns no memory and allocates nothing.
+pub const LogHead = extern struct {
+    text_len: u32,
+    level: u8,
+    _pad: [3]u8,
+};
+
+// ---------------------------------------------------------------------------
+// encode
+
+/// Maximum header, head, padding, and caller-owned slices in an encoding. The
+/// constant owns no memory and allocates nothing.
+pub const max_parts = 12;
+
+/// Largest fixed payload head in bytes. The constant owns no memory; encoding
+/// stores the head inline without allocation.
+pub const max_head_size = 12;
+
+const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(0);
+
+/// Borrowing scatter/gather encoding. Header and head storage are owned inline;
+/// variable slices remain caller-owned and must outlive the write. `slices()`
+/// installs self-referential header/head/descriptor views, so `Encoded` must not be
+/// moved or copied after `slices()` (or `writeTo()`) is called. No method allocates.
+pub const Encoded = struct {
+    header: Header,
+    head: [max_head_size]u8 align(8),
+    descriptors: [max_sections]SectionRef,
+    parts: [max_parts][]const u8,
+    part_count: u8,
+    descriptor_count: u8,
+    descriptor_part: u8,
+
+    /// Returns borrowed writev slices in wire order without allocation. The
+    /// returned list and its inline header/head slices are invalidated by moving
+    /// or copying this `Encoded`.
+    pub fn slices(self: *Encoded) []const []const u8 {
+        self.parts[0] = std.mem.asBytes(&self.header);
+        const head_len = encodedHeadLen(self.header.kind);
+        if (head_len != 0) self.parts[1] = self.head[0..head_len];
+        if (self.descriptor_count != 0) {
+            self.parts[self.descriptor_part] = std.mem.sliceAsBytes(self.descriptors[0..self.descriptor_count]);
+        }
+        return self.parts[0..self.part_count];
+    }
+
+    /// Returns the complete frame byte count without allocation.
+    pub fn totalLen(self: *const Encoded) usize {
+        return @sizeOf(Header) + @as(usize, self.header.len);
+    }
+
+    /// Concatenates into caller-owned, 16-aligned `buf` without allocation and
+    /// returns the initialized prefix. `buf` must be at least `totalLen()` bytes.
+    pub fn writeTo(self: *Encoded, buf: []align(section_alignment) u8) []align(section_alignment) u8 {
+        std.debug.assert(buf.len >= self.totalLen());
+        var offset: usize = 0;
+        for (self.slices()) |part| {
+            @memcpy(buf[offset..][0..part.len], part);
+            offset += part.len;
+        }
+        std.debug.assert(offset == self.totalLen());
+        return buf[0..offset];
+    }
+};
+
+/// Writes caller-owned `out`, borrowing `name` through the write. Asserts the
+/// name limit and allocates nothing.
+pub fn encodeHello(out: *Encoded, name: []const u8) void {
+    assertName(name);
+    initHead(out, .hello, HelloHead{
+        .magic = magic,
+        .version = version,
+        .name_len = @intCast(name.len),
+    });
+    addPart(out, name);
+}
+
+/// Writes an empty begin-run frame into caller-owned `out` without allocation.
+pub fn encodeBeginRun(out: *Encoded) void {
+    initEmpty(out, .begin_run);
+}
+
+/// Writes caller-owned `out`, borrowing `label` through the write and allocating nothing.
+pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
+    std.debug.assert(label.len <= std.math.maxInt(u16));
+    initHead(out, .begin_frame, BeginFrameHead{
+        .index = index,
+        .label_len = @intCast(label.len),
+        ._pad = 0,
+    });
+    addPart(out, label);
+}
+
+/// Writes an empty end-frame marker into caller-owned `out` without allocation.
+pub fn encodeEndFrame(out: *Encoded) void {
+    initEmpty(out, .end_frame);
+}
+
+/// Writes an empty end-run marker into caller-owned `out` without allocation.
+pub fn encodeEndRun(out: *Encoded) void {
+    initEmpty(out, .end_run);
+}
+
+/// Writes caller-owned `out`, borrowing every mesh section through the write
+/// and allocating nothing.
+pub fn encodeMesh(
+    out: *Encoded,
+    name: []const u8,
+    dim: Dim,
+    positions: layout.Positions.Const,
+    faces: []const [3]u32,
+) void {
+    std.debug.assert(faces.len <= std.math.maxInt(u32));
+    encodeMeshSections(
+        out,
+        name,
+        dim,
+        positions.len(),
+        inlineSection(positions.bytes()),
+        @intCast(faces.len),
+        inlineSection(std.mem.sliceAsBytes(faces)),
+    );
+}
+
+/// Writes caller-owned `out` with independently inline or external mesh
+/// sections. Every input is borrowed through the write and no allocation occurs.
+pub fn encodeMeshSections(
+    out: *Encoded,
+    name: []const u8,
+    dim: Dim,
+    vertex_count: u32,
+    positions: Section,
+    face_count: u32,
+    faces: Section,
+) void {
+    assertName(name);
+    initHead(out, .mesh, MeshHead{
+        .vertex_count = vertex_count,
+        .face_count = face_count,
+        .name_len = @intCast(name.len),
+        .dim = @backingInt(dim),
+        ._pad = 0,
+    });
+    addPart(out, name);
+    addSections(out, &.{ positions, faces }, &.{
+        layout.Positions.byteSize(vertex_count),
+        @as(usize, face_count) * @sizeOf([3]u32),
+    });
+}
+
+/// Writes caller-owned `out`, borrowing replacement positions through the
+/// write and allocating nothing.
+pub fn encodeMeshPositions(out: *Encoded, name: []const u8, positions: layout.Positions.Const) void {
+    encodeMeshPositionsSection(out, name, positions.len(), inlineSection(positions.bytes()));
+}
+
+/// Writes caller-owned `out` from an inline or external positions section. The
+/// section is borrowed through the write and no allocation occurs.
+pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count: u32, positions: Section) void {
+    assertName(name);
+    initHead(out, .mesh_positions, MeshPositionsHead{
+        .vertex_count = vertex_count,
+        .name_len = @intCast(name.len),
+        ._pad = 0,
+    });
+    addPart(out, name);
+    addSections(out, &.{positions}, &.{layout.Positions.byteSize(vertex_count)});
+}
+
+/// Writes caller-owned `out`, borrowing the point-set inputs through the write
+/// and allocating nothing.
+pub fn encodePoints(out: *Encoded, name: []const u8, dim: Dim, positions: layout.Positions.Const) void {
+    encodePointsSection(out, name, dim, positions.len(), inlineSection(positions.bytes()));
+}
+
+/// Writes caller-owned `out` from an inline or external positions section. The
+/// section is borrowed through the write and no allocation occurs.
+pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32, positions: Section) void {
+    assertName(name);
+    initHead(out, .points, PointsHead{
+        .count = count,
+        .name_len = @intCast(name.len),
+        .dim = @backingInt(dim),
+        ._pad = 0,
+    });
+    addPart(out, name);
+    addSections(out, &.{positions}, &.{layout.Positions.byteSize(count)});
+}
+
+/// Writes caller-owned `out`, borrowing every line-set section through the
+/// write and allocating nothing.
+pub fn encodeLines(
+    out: *Encoded,
+    name: []const u8,
+    dim: Dim,
+    positions: layout.Positions.Const,
+    segments: []const [2]u32,
+) void {
+    std.debug.assert(segments.len <= std.math.maxInt(u32));
+    encodeLinesSections(
+        out,
+        name,
+        dim,
+        positions.len(),
+        inlineSection(positions.bytes()),
+        @intCast(segments.len),
+        inlineSection(std.mem.sliceAsBytes(segments)),
+    );
+}
+
+/// Writes caller-owned `out` with independently inline or external line-set
+/// sections. Every input is borrowed through the write and no allocation occurs.
+pub fn encodeLinesSections(
+    out: *Encoded,
+    name: []const u8,
+    dim: Dim,
+    vertex_count: u32,
+    positions: Section,
+    segment_count: u32,
+    segments: Section,
+) void {
+    assertName(name);
+    initHead(out, .lines, LinesHead{
+        .vertex_count = vertex_count,
+        .segment_count = segment_count,
+        .name_len = @intCast(name.len),
+        .dim = @backingInt(dim),
+        ._pad = 0,
+    });
+    addPart(out, name);
+    addSections(out, &.{ positions, segments }, &.{
+        layout.Positions.byteSize(vertex_count),
+        @as(usize, segment_count) * @sizeOf([2]u32),
+    });
+}
+
+/// Writes caller-owned `out`, borrowing scalar strings and values through the
+/// write and allocating nothing.
+pub fn encodeScalarQuantity(
+    out: *Encoded,
+    structure: []const u8,
+    name: []const u8,
+    target: Target,
+    values: []const f32,
+) void {
+    std.debug.assert(values.len <= std.math.maxInt(u32));
+    encodeScalarQuantitySection(
+        out,
+        structure,
+        name,
+        target,
+        @intCast(values.len),
+        inlineSection(std.mem.sliceAsBytes(values)),
+    );
+}
+
+/// Writes caller-owned `out` from inline or external scalar values. Every
+/// input is borrowed through the write and no allocation occurs.
+pub fn encodeScalarQuantitySection(
+    out: *Encoded,
+    structure: []const u8,
+    name: []const u8,
+    target: Target,
+    count: u32,
+    values: Section,
+) void {
+    assertName(structure);
+    assertName(name);
+    initHead(out, .scalar_quantity, ScalarQuantityHead{
+        .count = count,
+        .structure_len = @intCast(structure.len),
+        .name_len = @intCast(name.len),
+        .target = @backingInt(target),
+        ._pad = @splat(0),
+    });
+    addPart(out, structure);
+    addPart(out, name);
+    addSections(out, &.{values}, &.{@as(usize, count) * @sizeOf(f32)});
+}
+
+/// Writes caller-owned `out`, borrowing vector strings and bytes through the
+/// write and allocating nothing.
+pub fn encodeVectorQuantity(
+    out: *Encoded,
+    structure: []const u8,
+    name: []const u8,
+    target: Target,
+    vectors: layout.Positions.Const,
+) void {
+    encodeVectorQuantitySection(
+        out,
+        structure,
+        name,
+        target,
+        vectors.len(),
+        inlineSection(vectors.bytes()),
+    );
+}
+
+/// Writes caller-owned `out` from inline or external vector positions. Every
+/// input is borrowed through the write and no allocation occurs.
+pub fn encodeVectorQuantitySection(
+    out: *Encoded,
+    structure: []const u8,
+    name: []const u8,
+    target: Target,
+    count: u32,
+    vectors: Section,
+) void {
+    assertName(structure);
+    assertName(name);
+    initHead(out, .vector_quantity, VectorQuantityHead{
+        .count = count,
+        .structure_len = @intCast(structure.len),
+        .name_len = @intCast(name.len),
+        .target = @backingInt(target),
+        ._pad = @splat(0),
+    });
+    addPart(out, structure);
+    addPart(out, name);
+    addSections(out, &.{vectors}, &.{layout.Positions.byteSize(count)});
+}
+
+/// Writes caller-owned `out`, borrowing the log string through the write and
+/// allocating nothing.
+pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
+    std.debug.assert(text.len <= std.math.maxInt(u32));
+    initHead(out, .log, LogHead{
+        .text_len = @intCast(text.len),
+        .level = @backingInt(level),
+        ._pad = @splat(0),
+    });
+    addPart(out, text);
+}
+
+// ---------------------------------------------------------------------------
+// decode
 
 /// Parses the first eight caller-owned bytes without allocation.
 pub fn decodeHeader(bytes: []const u8) DecodeError!Header {
@@ -354,321 +697,6 @@ pub fn decode(
 /// with no mappings; non-external frames ignore mappings by protocol.
 pub fn decodeInline(header: Header, payload: []align(payload_alignment) const u8) DecodeError!Message {
     return decode(header, payload, &.{});
-}
-
-/// Maximum number of header, head, padding, and caller-owned slices in an encoding.
-pub const max_parts = 12;
-
-/// Largest fixed payload head in bytes; encoding stores it inline without allocation.
-pub const max_head_size = 12;
-
-const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(0);
-
-/// Borrowing scatter/gather encoding. Header and head storage are owned inline;
-/// variable slices remain caller-owned and must outlive the write. `slices()`
-/// installs self-referential header/head/descriptor views, so `Encoded` must not be
-/// moved or copied after `slices()` (or `writeTo()`) is called. No method allocates.
-pub const Encoded = struct {
-    header: Header,
-    head: [max_head_size]u8 align(8),
-    descriptors: [max_sections]SectionRef,
-    parts: [max_parts][]const u8,
-    part_count: u8,
-    descriptor_count: u8,
-    descriptor_part: u8,
-
-    /// Returns borrowed writev slices in wire order without allocation. The
-    /// returned list and its inline header/head slices are invalidated by moving
-    /// or copying this `Encoded`.
-    pub fn slices(self: *Encoded) []const []const u8 {
-        self.parts[0] = std.mem.asBytes(&self.header);
-        const head_len = encodedHeadLen(self.header.kind);
-        if (head_len != 0) self.parts[1] = self.head[0..head_len];
-        if (self.descriptor_count != 0) {
-            self.parts[self.descriptor_part] = std.mem.sliceAsBytes(self.descriptors[0..self.descriptor_count]);
-        }
-        return self.parts[0..self.part_count];
-    }
-
-    /// Returns the complete frame byte count without allocation.
-    pub fn totalLen(self: *const Encoded) usize {
-        return @sizeOf(Header) + @as(usize, self.header.len);
-    }
-
-    /// Concatenates into caller-owned, 16-aligned `buf` without allocation and
-    /// returns the initialized prefix. `buf` must be at least `totalLen()` bytes.
-    pub fn writeTo(self: *Encoded, buf: []align(section_alignment) u8) []align(section_alignment) u8 {
-        std.debug.assert(buf.len >= self.totalLen());
-        var offset: usize = 0;
-        for (self.slices()) |part| {
-            @memcpy(buf[offset..][0..part.len], part);
-            offset += part.len;
-        }
-        std.debug.assert(offset == self.totalLen());
-        return buf[0..offset];
-    }
-};
-
-/// Encodes a hello borrowing `name`; asserts the name limit and allocates nothing.
-pub fn encodeHello(out: *Encoded, name: []const u8) void {
-    assertName(name);
-    initHead(out, .hello, HelloHead{
-        .magic = magic,
-        .version = version,
-        .name_len = @intCast(name.len),
-    });
-    addPart(out, name);
-}
-
-/// Encodes an empty begin-run frame without allocation.
-pub fn encodeBeginRun(out: *Encoded) void {
-    initEmpty(out, .begin_run);
-}
-
-/// Encodes a frame marker borrowing `label`; it allocates nothing.
-pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
-    std.debug.assert(label.len <= std.math.maxInt(u16));
-    initHead(out, .begin_frame, BeginFrameHead{
-        .index = index,
-        .label_len = @intCast(label.len),
-        ._pad = 0,
-    });
-    addPart(out, label);
-}
-
-/// Encodes an empty end-frame marker without allocation.
-pub fn encodeEndFrame(out: *Encoded) void {
-    initEmpty(out, .end_frame);
-}
-
-/// Encodes an empty end-run marker without allocation.
-pub fn encodeEndRun(out: *Encoded) void {
-    initEmpty(out, .end_run);
-}
-
-/// Encodes a mesh by borrowing every variable section; it allocates nothing.
-pub fn encodeMesh(
-    out: *Encoded,
-    name: []const u8,
-    dim: Dim,
-    positions: layout.Positions.Const,
-    faces: []const [3]u32,
-) void {
-    std.debug.assert(faces.len <= std.math.maxInt(u32));
-    encodeMeshSections(
-        out,
-        name,
-        dim,
-        positions.len(),
-        .{ .@"inline" = positions.bytes() },
-        @intCast(faces.len),
-        .{ .@"inline" = std.mem.sliceAsBytes(faces) },
-    );
-}
-
-/// Encodes a mesh with independently inline or external binary sections.
-/// Every input is borrowed through the write and no allocation occurs.
-pub fn encodeMeshSections(
-    out: *Encoded,
-    name: []const u8,
-    dim: Dim,
-    vertex_count: u32,
-    positions: Section,
-    face_count: u32,
-    faces: Section,
-) void {
-    assertName(name);
-    initHead(out, .mesh, MeshHead{
-        .vertex_count = vertex_count,
-        .face_count = face_count,
-        .name_len = @intCast(name.len),
-        .dim = @backingInt(dim),
-        ._pad = 0,
-    });
-    addPart(out, name);
-    addSections(out, &.{ positions, faces }, &.{
-        layout.Positions.byteSize(vertex_count),
-        @as(usize, face_count) * @sizeOf([3]u32),
-    });
-}
-
-/// Encodes borrowed replacement positions without allocation.
-pub fn encodeMeshPositions(out: *Encoded, name: []const u8, positions: layout.Positions.Const) void {
-    encodeMeshPositionsSection(out, name, positions.len(), .{ .@"inline" = positions.bytes() });
-}
-
-/// Encodes replacement positions from an inline or external section. The
-/// section is borrowed through the write and no allocation occurs.
-pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count: u32, positions: Section) void {
-    assertName(name);
-    initHead(out, .mesh_positions, MeshPositionsHead{
-        .vertex_count = vertex_count,
-        .name_len = @intCast(name.len),
-        ._pad = 0,
-    });
-    addPart(out, name);
-    addSections(out, &.{positions}, &.{layout.Positions.byteSize(vertex_count)});
-}
-
-/// Encodes a point set by borrowing all variable sections; it allocates nothing.
-pub fn encodePoints(out: *Encoded, name: []const u8, dim: Dim, positions: layout.Positions.Const) void {
-    encodePointsSection(out, name, dim, positions.len(), .{ .@"inline" = positions.bytes() });
-}
-
-/// Encodes points from an inline or external positions section. The section
-/// is borrowed through the write and no allocation occurs.
-pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32, positions: Section) void {
-    assertName(name);
-    initHead(out, .points, PointsHead{
-        .count = count,
-        .name_len = @intCast(name.len),
-        .dim = @backingInt(dim),
-        ._pad = 0,
-    });
-    addPart(out, name);
-    addSections(out, &.{positions}, &.{layout.Positions.byteSize(count)});
-}
-
-/// Encodes a line set by borrowing every variable section; it allocates nothing.
-pub fn encodeLines(
-    out: *Encoded,
-    name: []const u8,
-    dim: Dim,
-    positions: layout.Positions.Const,
-    segments: []const [2]u32,
-) void {
-    std.debug.assert(segments.len <= std.math.maxInt(u32));
-    encodeLinesSections(
-        out,
-        name,
-        dim,
-        positions.len(),
-        .{ .@"inline" = positions.bytes() },
-        @intCast(segments.len),
-        .{ .@"inline" = std.mem.sliceAsBytes(segments) },
-    );
-}
-
-/// Encodes lines with independently inline or external binary sections.
-/// Every input is borrowed through the write and no allocation occurs.
-pub fn encodeLinesSections(
-    out: *Encoded,
-    name: []const u8,
-    dim: Dim,
-    vertex_count: u32,
-    positions: Section,
-    segment_count: u32,
-    segments: Section,
-) void {
-    assertName(name);
-    initHead(out, .lines, LinesHead{
-        .vertex_count = vertex_count,
-        .segment_count = segment_count,
-        .name_len = @intCast(name.len),
-        .dim = @backingInt(dim),
-        ._pad = 0,
-    });
-    addPart(out, name);
-    addSections(out, &.{ positions, segments }, &.{
-        layout.Positions.byteSize(vertex_count),
-        @as(usize, segment_count) * @sizeOf([2]u32),
-    });
-}
-
-/// Encodes a scalar quantity by borrowing strings and values; it allocates nothing.
-pub fn encodeScalarQuantity(
-    out: *Encoded,
-    structure: []const u8,
-    name: []const u8,
-    target: Target,
-    values: []const f32,
-) void {
-    std.debug.assert(values.len <= std.math.maxInt(u32));
-    encodeScalarQuantitySection(
-        out,
-        structure,
-        name,
-        target,
-        @intCast(values.len),
-        .{ .@"inline" = std.mem.sliceAsBytes(values) },
-    );
-}
-
-/// Encodes scalar values from an inline or external section. Every input is
-/// borrowed through the write and no allocation occurs.
-pub fn encodeScalarQuantitySection(
-    out: *Encoded,
-    structure: []const u8,
-    name: []const u8,
-    target: Target,
-    count: u32,
-    values: Section,
-) void {
-    assertName(structure);
-    assertName(name);
-    initHead(out, .scalar_quantity, ScalarQuantityHead{
-        .count = count,
-        .structure_len = @intCast(structure.len),
-        .name_len = @intCast(name.len),
-        .target = @backingInt(target),
-        ._pad = @splat(0),
-    });
-    addPart(out, structure);
-    addPart(out, name);
-    addSections(out, &.{values}, &.{@as(usize, count) * @sizeOf(f32)});
-}
-
-/// Encodes a vector quantity by borrowing strings and vector bytes; it allocates nothing.
-pub fn encodeVectorQuantity(
-    out: *Encoded,
-    structure: []const u8,
-    name: []const u8,
-    target: Target,
-    vectors: layout.Positions.Const,
-) void {
-    encodeVectorQuantitySection(
-        out,
-        structure,
-        name,
-        target,
-        vectors.len(),
-        .{ .@"inline" = vectors.bytes() },
-    );
-}
-
-/// Encodes vectors from an inline or external positions section. Every input
-/// is borrowed through the write and no allocation occurs.
-pub fn encodeVectorQuantitySection(
-    out: *Encoded,
-    structure: []const u8,
-    name: []const u8,
-    target: Target,
-    count: u32,
-    vectors: Section,
-) void {
-    assertName(structure);
-    assertName(name);
-    initHead(out, .vector_quantity, VectorQuantityHead{
-        .count = count,
-        .structure_len = @intCast(structure.len),
-        .name_len = @intCast(name.len),
-        .target = @backingInt(target),
-        ._pad = @splat(0),
-    });
-    addPart(out, structure);
-    addPart(out, name);
-    addSections(out, &.{vectors}, &.{layout.Positions.byteSize(count)});
-}
-
-/// Encodes a borrowed log string without allocation.
-pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
-    std.debug.assert(text.len <= std.math.maxInt(u32));
-    initHead(out, .log, LogHead{
-        .text_len = @intCast(text.len),
-        .level = @backingInt(level),
-        ._pad = @splat(0),
-    });
-    addPart(out, text);
 }
 
 fn decodeHello(payload: []align(payload_alignment) const u8) DecodeError!Hello {
@@ -873,6 +901,13 @@ fn decodeSections(
         }
     }
     if (inline_cursor != payload.len) return error.BadLength;
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+
+fn inlineSection(bytes: []const u8) Section {
+    return .{ .@"inline" = bytes };
 }
 
 fn readHead(comptime T: type, payload: []const u8) DecodeError!T {

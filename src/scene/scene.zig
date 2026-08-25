@@ -7,6 +7,9 @@ const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const protocol = @import("../protocol/protocol.zig");
 
+// ---------------------------------------------------------------------------
+// types / handles
+
 const StringTable = std.HashMapUnmanaged(
     u32,
     void,
@@ -20,11 +23,13 @@ pub const StructureIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 /// Typed index into `Scene.blobs`; it owns no memory and never allocates.
 pub const BlobIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
-/// Typed index into `Scene.mappings`; `.none` marks allocator-owned blob bytes.
+/// Typed index into `Scene.mappings`; it owns no memory, never allocates, and
+/// `.none` marks allocator-owned blob bytes.
 pub const MappingIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 /// Byte offset of a NUL-terminated entry in `Scene.strings`; borrowed string
-/// views are invalidated when the scene interns another string.
+/// views are invalidated when the scene interns another string. The index owns
+/// no memory and never allocates.
 pub const StringIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
 /// Renderable structure kind; this value owns no memory and never allocates.
@@ -63,8 +68,9 @@ pub const UiState = struct {
     vector_scale: f32 = 1.0,
 };
 
-/// One chronological geometry snapshot. Blob references are owned by the
-/// containing structure until that version is dropped or the scene is deinitialized.
+/// One chronological geometry snapshot. The record allocates nothing; blob
+/// references are owned by the containing structure until that version is
+/// dropped or the scene is deinitialized.
 pub const Version = struct {
     run: u32,
     frame: u32,
@@ -98,30 +104,34 @@ pub const Structure = struct {
     touched: bool = false,
 };
 
-/// Refcounted blob view. Allocator-owned bytes use `mapping = .none`; mapped
-/// bytes borrow their registered mapping until the final blob release.
+/// Refcounted blob view. The record allocates nothing. Allocator-owned bytes
+/// use `mapping = .none`; mapped bytes borrow their registered mapping until
+/// the final blob release.
 pub const Blob = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     refcount: u32,
     mapping: MappingIndex,
 };
 
-/// One edge-owned fd mapping registered with the pure scene. The scene borrows
-/// `bytes` and `fd`; the edge unmaps/closes them after their index is released.
+/// One edge-owned fd mapping registered with the pure scene. The record
+/// allocates nothing; the scene borrows `bytes` and `fd`, and the edge
+/// unmaps/closes them after their index is released.
 pub const Mapping = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     fd: i32,
     refcount: u32,
 };
 
-/// Interned log entry. Text storage is owned by the containing scene.
+/// Interned log entry. The record allocates nothing; text storage is owned by
+/// the containing scene.
 pub const LogEntry = struct {
     level: protocol.LogLevel,
     text: StringIndex,
 };
 
-/// Errors from applying a decoded message. OOM is reported without leaking;
-/// all other errors describe protocol messages that cannot mutate this scene.
+/// Errors from applying a decoded message. The error set owns no memory and
+/// allocates nothing. OOM is reported without leaking; all other errors
+/// describe protocol messages that cannot mutate this scene.
 pub const ApplyError = std.mem.Allocator.Error || error{
     UnknownStructure,
     KindMismatch,
@@ -129,8 +139,9 @@ pub const ApplyError = std.mem.Allocator.Error || error{
     NoRunActive,
 };
 
-/// Maximum retained log entries. Interned text remains scene-owned even after
-/// an old entry is evicted; the entry array does not grow beyond this cap.
+/// Maximum retained log entries. The constant owns no memory and allocates
+/// nothing. Interned text remains scene-owned even after an old entry is
+/// evicted; the entry array does not grow beyond this cap.
 pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
@@ -140,6 +151,23 @@ const EvictionCandidate = struct {
     structure: StructureIndex,
     version: u32,
 };
+
+const QuantityReplacement = struct {
+    offset: u32,
+    value: QuantityRef,
+};
+
+fn indexOf(index: anytype) usize {
+    return @backingInt(index);
+}
+
+fn emptyBlobBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
+    return empty_blob_storage[0..];
+}
+
+fn emptyMappingBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
+    return empty_mapping_storage[0..];
+}
 
 /// Owns all scene strings, structures, versions, blobs, notifications, and
 /// logs. Every allocation uses the allocator supplied to `init`.
@@ -169,6 +197,9 @@ pub const Scene = struct {
     blob_bytes: usize = 0,
     evicted_versions: u32 = 0,
     decimation_level: u8 = 1,
+
+    // -----------------------------------------------------------------------
+    // Scene lifecycle
 
     /// Initializes an empty scene without allocating. The caller must keep
     /// `gpa` valid until `deinit`.
@@ -212,6 +243,9 @@ pub const Scene = struct {
         self.strings.deinit(self.gpa);
         self.* = undefined;
     }
+
+    // -----------------------------------------------------------------------
+    // apply + per-message handlers
 
     /// Applies one decoded message. Slices inside registered mappings become
     /// refcounted views; all other retained slices are copied into scene-owned
@@ -318,338 +352,6 @@ pub const Scene = struct {
         if (created_blob) self.enforceBudget();
     }
 
-    /// Registers an edge-owned mapping with refcount zero. The scene borrows
-    /// `bytes` and `fd`; registration reserves every future release-queue push.
-    pub fn registerMapping(
-        self: *Scene,
-        bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
-        fd: i32,
-    ) std.mem.Allocator.Error!MappingIndex {
-        const new_slots = @intFromBool(self.mapping_free.items.len == 0);
-        try self.mappings.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
-        try self.mapping_free.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
-        try self.released_mappings.ensureUnusedCapacity(self.gpa, @as(usize, self.live_mappings) + 1);
-
-        const mapping_index = if (self.mapping_free.pop()) |free_index| blk: {
-            var mappings = self.mappings.slice();
-            const i = indexOf(free_index);
-            std.debug.assert(mappings.items(.fd)[i] == -1);
-            mappings.items(.bytes)[i] = bytes;
-            mappings.items(.fd)[i] = fd;
-            mappings.items(.refcount)[i] = 0;
-            break :blk free_index;
-        } else blk: {
-            const new_index: MappingIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.mappings.len))));
-            self.mappings.appendAssumeCapacity(.{ .bytes = bytes, .fd = fd, .refcount = 0 });
-            break :blk new_index;
-        };
-        self.live_mappings += 1;
-        return mapping_index;
-    }
-
-    /// Returns the borrowed bytes of a registered mapping without allocation.
-    /// The view remains valid until the edge forgets the mapping index.
-    pub fn mappingBytes(
-        self: *const Scene,
-        mapping_index: MappingIndex,
-    ) []align(layout.blob_alignment.toByteUnits()) const u8 {
-        std.debug.assert(mapping_index != .none);
-        const mappings = self.mappings.slice();
-        const i = indexOf(mapping_index);
-        std.debug.assert(mappings.items(.fd)[i] >= 0);
-        return mappings.items(.bytes)[i];
-    }
-
-    /// Returns one registered mapping record by value without allocation. The
-    /// record remains edge-owned and must not be closed before `forgetMapping`.
-    pub fn mappingValue(self: *const Scene, mapping_index: MappingIndex) Mapping {
-        std.debug.assert(mapping_index != .none);
-        const mappings = self.mappings.slice();
-        const i = indexOf(mapping_index);
-        std.debug.assert(mappings.items(.fd)[i] >= 0);
-        return .{
-            .bytes = mappings.items(.bytes)[i],
-            .fd = mappings.items(.fd)[i],
-            .refcount = mappings.items(.refcount)[i],
-        };
-    }
-
-    /// Queues every registered zero-ref mapping in registration-index order.
-    /// `registerMapping` pre-reserves this operation, so it never allocates.
-    pub fn releaseUnreferencedMappings(self: *Scene) void {
-        const mappings = self.mappings.slice();
-        const fds = mappings.items(.fd);
-        const refcounts = mappings.items(.refcount);
-        for (fds, refcounts, 0..) |fd, refcount, i| {
-            if (fd < 0 or refcount != 0) continue;
-            self.queueMappingRelease(@fromBackingInt(@intCast(i)));
-        }
-    }
-
-    /// Forgets a zero-ref mapping after the edge has unmapped its bytes and
-    /// closed its fd. The slot is returned to the free list without allocation.
-    pub fn forgetMapping(self: *Scene, mapping_index: MappingIndex) void {
-        std.debug.assert(mapping_index != .none);
-        var mappings = self.mappings.slice();
-        const i = indexOf(mapping_index);
-        std.debug.assert(mappings.items(.fd)[i] >= 0);
-        std.debug.assert(mappings.items(.refcount)[i] == 0);
-
-        var found = false;
-        for (self.released_mappings.items, 0..) |queued, queued_i| {
-            if (queued != mapping_index) continue;
-            std.mem.copyForwards(
-                MappingIndex,
-                self.released_mappings.items[queued_i .. self.released_mappings.items.len - 1],
-                self.released_mappings.items[queued_i + 1 ..],
-            );
-            self.released_mappings.items.len -= 1;
-            found = true;
-            break;
-        }
-        std.debug.assert(found);
-        mappings.items(.bytes)[i] = emptyMappingBytes();
-        mappings.items(.fd)[i] = -1;
-        self.mapping_free.appendAssumeCapacity(mapping_index);
-        self.live_mappings -= 1;
-    }
-
-    /// Moves every still-registered mapping into caller-owned `out`, using the
-    /// scene allocator only to reserve output capacity. The edge then owns all
-    /// returned fds/mappings and must unmap and close them before `deinit`.
-    pub fn takeAllMappings(self: *Scene, out: *std.ArrayList(Mapping)) std.mem.Allocator.Error!void {
-        try out.ensureUnusedCapacity(self.gpa, self.live_mappings);
-        var mappings = self.mappings.slice();
-        const bytes = mappings.items(.bytes);
-        const fds = mappings.items(.fd);
-        const refcounts = mappings.items(.refcount);
-        for (bytes, fds, refcounts) |mapping_bytes, fd, refcount| {
-            if (fd < 0) continue;
-            out.appendAssumeCapacity(.{ .bytes = mapping_bytes, .fd = fd, .refcount = refcount });
-        }
-        for (fds, bytes) |*fd, *mapping_bytes| {
-            if (fd.* < 0) continue;
-            fd.* = -1;
-            mapping_bytes.* = emptyMappingBytes();
-        }
-        self.released_mappings.clearRetainingCapacity();
-        self.live_mappings = 0;
-    }
-
-    /// Creates a 64-byte-aligned, refcount-one blob and queues its index in
-    /// `new_blobs`. Registered mapping slices are adopted without allocation;
-    /// all other bytes are copied into scene-owned storage.
-    pub fn createBlob(self: *Scene, bytes: []const u8) std.mem.Allocator.Error!BlobIndex {
-        try self.reserveBlobCreates(1);
-        return self.createBlobAssumeReserved(bytes);
-    }
-
-    /// Adds one owning reference to a live blob without allocation.
-    pub fn retainBlob(self: *Scene, blob_index: BlobIndex) void {
-        std.debug.assert(blob_index != .none);
-        var blobs = self.blobs.slice();
-        const refcount = &blobs.items(.refcount)[indexOf(blob_index)];
-        std.debug.assert(refcount.* > 0);
-        refcount.* += 1;
-    }
-
-    /// Releases one owning reference without allocating. At zero, owned bytes
-    /// are freed; mapped bytes decrement their mapping and may queue its release.
-    /// The blob index is queued in both `blob_free` and `freed_blobs`.
-    pub fn releaseBlob(self: *Scene, blob_index: BlobIndex) void {
-        std.debug.assert(blob_index != .none);
-        var blobs = self.blobs.slice();
-        const i = indexOf(blob_index);
-        const refcount = &blobs.items(.refcount)[i];
-        std.debug.assert(refcount.* > 0);
-        refcount.* -= 1;
-        if (refcount.* != 0) return;
-
-        self.blob_bytes -= blobs.items(.bytes)[i].len;
-        const mapping_index = blobs.items(.mapping)[i];
-        if (mapping_index == .none) {
-            self.gpa.free(blobs.items(.bytes)[i]);
-        } else {
-            var mappings = self.mappings.slice();
-            const mapping_refcount = &mappings.items(.refcount)[indexOf(mapping_index)];
-            std.debug.assert(mapping_refcount.* > 0);
-            mapping_refcount.* -= 1;
-            if (mapping_refcount.* == 0) self.queueMappingRelease(mapping_index);
-        }
-        blobs.items(.bytes)[i] = emptyBlobBytes();
-        blobs.items(.mapping)[i] = .none;
-        var pending = self.new_blobs.items.len;
-        while (pending > 0) {
-            pending -= 1;
-            if (self.new_blobs.items[pending] != blob_index) continue;
-            std.mem.copyForwards(
-                BlobIndex,
-                self.new_blobs.items[pending .. self.new_blobs.items.len - 1],
-                self.new_blobs.items[pending + 1 ..],
-            );
-            self.new_blobs.items.len -= 1;
-            break;
-        }
-        self.blob_free.appendAssumeCapacity(blob_index);
-        self.freed_blobs.appendAssumeCapacity(blob_index);
-        self.live_blobs -= 1;
-    }
-
-    /// Returns immutable scene-owned blob bytes without allocation. The view
-    /// remains valid until the blob's final `releaseBlob` or scene deinit.
-    pub fn blobBytes(self: *const Scene, blob_index: BlobIndex) []align(layout.blob_alignment.toByteUnits()) const u8 {
-        std.debug.assert(blob_index != .none);
-        const blobs = self.blobs.slice();
-        const i = indexOf(blob_index);
-        std.debug.assert(blobs.items(.refcount)[i] > 0);
-        return blobs.items(.bytes)[i];
-    }
-
-    /// Finds a structure by borrowed name without allocation. The returned
-    /// index remains stable for the lifetime of that structure.
-    pub fn find(self: *const Scene, name: []const u8) ?StructureIndex {
-        if (std.mem.findScalar(u8, name, 0) != null) return null;
-        const raw = self.string_table.getKeyAdapted(name, std.hash_map.StringIndexAdapter{
-            .bytes = &self.strings,
-        }) orelse return null;
-        return self.by_name.get(@fromBackingInt(@intCast(raw)));
-    }
-
-    /// Selects the latest current-run version at or before `frame` without
-    /// allocating. A structure with no current-run versions falls back to its
-    /// last retained previous-run version; one first registered later returns null.
-    pub fn versionAt(self: *const Scene, structure_index: StructureIndex, frame: u32) ?u32 {
-        const structures = self.structures.slice();
-        const versions = structures.items(.versions)[indexOf(structure_index)].items;
-        var has_current_run = false;
-        var i = versions.len;
-        while (i > 0) {
-            i -= 1;
-            const version = versions[i];
-            if (version.run != self.run) continue;
-            has_current_run = true;
-            if (version.frame <= frame) return @intCast(i);
-        }
-        if (has_current_run or versions.len == 0) return null;
-        return @intCast(versions.len - 1);
-    }
-
-    /// Selects the latest version in exactly `run` at or before `frame` without
-    /// allocating. No version from another run is used as a fallback.
-    pub fn versionAtRun(self: *const Scene, structure_index: StructureIndex, run: u32, frame: u32) ?u32 {
-        const structures = self.structures.slice();
-        const versions = structures.items(.versions)[indexOf(structure_index)].items;
-        var i = versions.len;
-        while (i > 0) {
-            i -= 1;
-            const version = versions[i];
-            if (version.run == run and version.frame <= frame) return @intCast(i);
-        }
-        return null;
-    }
-
-    /// Reports whether the current run has a version at exactly `frame` for
-    /// `structure_index`. The lookup borrows scene state and never allocates.
-    pub fn hasExactVersion(self: *const Scene, structure_index: StructureIndex, frame: u32) bool {
-        const structures = self.structures.slice();
-        const versions = structures.items(.versions)[indexOf(structure_index)].items;
-        for (versions) |version| {
-            if (version.run == self.run and version.frame == frame) return true;
-        }
-        return false;
-    }
-
-    /// Returns the number of frames in the current run (frame 0 is implicit,
-    /// so this is 1 right after begin_run); borrows scene state, never allocates.
-    pub fn frameCount(self: *const Scene) u32 {
-        return @intCast(self.frame_labels.items.len);
-    }
-
-    /// Returns the known frame count for the current or immediately previous
-    /// run without allocating. Older and future runs return zero.
-    pub fn frameCountOfRun(self: *const Scene, run: u32) u32 {
-        if (run == self.run) return self.frameCount();
-        if (self.run > 1 and run == self.run - 1) return self.previous_frame_count;
-        return 0;
-    }
-
-    /// Returns live blob bytes/count, retained version count, and evictions
-    /// since the current run began. It scans flat version arrays without allocation.
-    pub fn memoryStats(self: *const Scene) MemoryStats {
-        var version_count: usize = 0;
-        const structures = self.structures.slice();
-        for (structures.items(.versions)) |versions| version_count += versions.items.len;
-        var mapped_bytes: usize = 0;
-        const blobs = self.blobs.slice();
-        for (blobs.items(.bytes), blobs.items(.refcount), blobs.items(.mapping)) |bytes, refcount, mapping| {
-            if (refcount != 0 and mapping != .none) mapped_bytes += bytes.len;
-        }
-        std.debug.assert(version_count <= std.math.maxInt(u32));
-        return .{
-            .blob_bytes = self.blob_bytes,
-            .mapped_bytes = mapped_bytes,
-            .blob_count = self.live_blobs,
-            .versions = @intCast(version_count),
-            .evicted_versions = self.evicted_versions,
-        };
-    }
-
-    /// Enforces the configured byte budget by releasing old-run versions first,
-    /// then progressively decimating current-run history. The operation allocates
-    /// nothing; released quantity side-array ranges remain as harmless holes.
-    pub fn enforceBudget(self: *Scene) void {
-        while (self.blob_bytes > self.retention.budget_bytes) {
-            if (self.findOldRunCandidate()) |candidate| {
-                self.removeVersion(candidate.structure, candidate.version);
-                continue;
-            }
-
-            var candidate = self.findDecimationCandidate();
-            while (candidate == null and self.decimation_level < 16) {
-                self.decimation_level += 1;
-                candidate = self.findDecimationCandidate();
-            }
-            if (candidate == null) return;
-            self.removeVersion(candidate.?.structure, candidate.?.version);
-        }
-    }
-
-    /// Returns a borrowed interned string without allocation. The `.none`
-    /// sentinel maps to an empty string; other views invalidate on interning.
-    pub fn string(self: *const Scene, string_index: StringIndex) []const u8 {
-        if (string_index == .none) return "";
-        return std.mem.sliceTo(self.strings.items[indexOf(string_index)..], 0);
-    }
-
-    /// Returns a zero-copy positions view over a live scene-owned blob. The
-    /// view borrows the scene and never allocates.
-    pub fn positionsOf(self: *const Scene, version: Version) layout.Positions.Const {
-        return layout.Positions.Const.fromBytes(self.blobBytes(version.positions));
-    }
-
-    /// Returns a zero-copy face view over a version's topology blob. The view
-    /// borrows the scene and never allocates.
-    pub fn facesOf(self: *const Scene, version: Version) []const [3]u32 {
-        if (version.topology == .none) return &.{};
-        return std.mem.bytesAsSlice([3]u32, self.blobBytes(version.topology));
-    }
-
-    /// Returns a zero-copy segment view over a version's topology blob. The
-    /// view borrows the scene and never allocates.
-    pub fn segmentsOf(self: *const Scene, version: Version) []const [2]u32 {
-        if (version.topology == .none) return &.{};
-        return std.mem.bytesAsSlice([2]u32, self.blobBytes(version.topology));
-    }
-
-    /// Returns the immutable quantity range owned by `version`. The returned
-    /// slice borrows a structure side array and is invalidated by later applies.
-    pub fn quantities(self: *const Scene, structure_index: StructureIndex, version: Version) []const QuantityRef {
-        const structures = self.structures.slice();
-        const refs = structures.items(.quantity_refs)[indexOf(structure_index)].items;
-        const start: usize = version.quantity_start;
-        return refs[start .. start + version.quantity_len];
-    }
-
     fn beginFrame(self: *Scene, frame: u32, label_text: []const u8) std.mem.Allocator.Error!void {
         const label = try self.intern(label_text);
         const needed: usize = @as(usize, frame) + 1;
@@ -681,53 +383,24 @@ pub const Scene = struct {
         topology_bytes: ?[]const u8,
     ) std.mem.Allocator.Error!void {
         const name = try self.intern(name_text);
-        const existing = self.by_name.get(name);
         const blob_count: usize = if (topology_bytes == null) 1 else 2;
+        var created_structure = false;
+        const structure_index = self.by_name.get(name) orelse blk: {
+            try self.structures.ensureTotalCapacity(self.gpa, self.structures.len + 1);
+            try self.by_name.ensureUnusedCapacity(self.gpa, 1);
+            const new_index: StructureIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.structures.len))));
+            self.structures.appendAssumeCapacity(.{ .name = name, .kind = kind, .dim = dim });
+            self.by_name.putAssumeCapacityNoClobber(name, new_index);
+            created_structure = true;
+            break :blk new_index;
+        };
+        errdefer if (created_structure) self.discardCreatedStructure(structure_index);
 
-        if (existing) |structure_index| {
-            const i = indexOf(structure_index);
-            var structures = self.structures.slice();
-            const version_list = &structures.items(.versions)[i];
-            const quantity_list = &structures.items(.quantity_refs)[i];
-            try version_list.ensureUnusedCapacity(self.gpa, 1);
-            try self.reserveBlobCreates(blob_count);
-
-            const position_blob = try self.createBlobAssumeReserved(positions.bytes());
-            errdefer self.discardCreatedBlob(position_blob);
-            const topology_blob = if (topology_bytes) |bytes|
-                try self.createBlobAssumeReserved(bytes)
-            else
-                BlobIndex.none;
-
-            const replace_history = version_list.items.len != 0 and
-                (structures.items(.kind)[i] != kind or structures.items(.dim)[i] != dim);
-            version_list.appendAssumeCapacity(.{
-                .run = self.run,
-                .frame = self.frame,
-                .positions = position_blob,
-                .topology = topology_blob,
-                .quantity_start = @intCast(quantity_list.items.len),
-                .quantity_len = 0,
-            });
-            if (replace_history) self.collapseToLatest(structure_index);
-            self.releaseExpiredVersions(structure_index);
-
-            structures = self.structures.slice();
-            structures.items(.kind)[i] = kind;
-            structures.items(.dim)[i] = dim;
-            structures.items(.touched)[i] = true;
-            structures.items(.stale)[i] = false;
-            return;
-        }
-
-        try self.structures.ensureTotalCapacity(self.gpa, self.structures.len + 1);
-        try self.by_name.ensureUnusedCapacity(self.gpa, 1);
-        var structure: Structure = .{ .name = name, .kind = kind, .dim = dim, .touched = true };
-        errdefer {
-            structure.versions.deinit(self.gpa);
-            structure.quantity_refs.deinit(self.gpa);
-        }
-        try structure.versions.ensureUnusedCapacity(self.gpa, 1);
+        const i = indexOf(structure_index);
+        var structures = self.structures.slice();
+        const version_list = &structures.items(.versions)[i];
+        const quantity_list = &structures.items(.quantity_refs)[i];
+        try version_list.ensureUnusedCapacity(self.gpa, 1);
         try self.reserveBlobCreates(blob_count);
 
         const position_blob = try self.createBlobAssumeReserved(positions.bytes());
@@ -736,18 +409,77 @@ pub const Scene = struct {
             try self.createBlobAssumeReserved(bytes)
         else
             BlobIndex.none;
-        structure.versions.appendAssumeCapacity(.{
+
+        const replace_history = version_list.items.len != 0 and
+            (structures.items(.kind)[i] != kind or structures.items(.dim)[i] != dim);
+        self.appendVersionAssumeCapacity(
+            structure_index,
+            position_blob,
+            topology_blob,
+            @intCast(quantity_list.items.len),
+            0,
+        );
+        if (replace_history) self.collapseToLatest(structure_index);
+        self.releaseExpiredVersions(structure_index);
+
+        structures = self.structures.slice();
+        structures.items(.kind)[i] = kind;
+        structures.items(.dim)[i] = dim;
+        structures.items(.touched)[i] = true;
+        structures.items(.stale)[i] = false;
+    }
+
+    fn discardCreatedStructure(self: *Scene, structure_index: StructureIndex) void {
+        std.debug.assert(indexOf(structure_index) == self.structures.len - 1);
+        var structure = self.structures.pop().?;
+        std.debug.assert(structure.versions.items.len == 0);
+        std.debug.assert(structure.quantity_refs.items.len == 0);
+        std.debug.assert(self.by_name.remove(structure.name));
+        structure.versions.deinit(self.gpa);
+        structure.quantity_refs.deinit(self.gpa);
+    }
+
+    fn appendVersionAssumeCapacity(
+        self: *Scene,
+        structure_index: StructureIndex,
+        positions: BlobIndex,
+        topology: BlobIndex,
+        quantity_start: u32,
+        quantity_len: u32,
+    ) void {
+        var structures = self.structures.slice();
+        structures.items(.versions)[indexOf(structure_index)].appendAssumeCapacity(.{
             .run = self.run,
             .frame = self.frame,
-            .positions = position_blob,
-            .topology = topology_blob,
-            .quantity_start = 0,
-            .quantity_len = 0,
+            .positions = positions,
+            .topology = topology,
+            .quantity_start = quantity_start,
+            .quantity_len = quantity_len,
         });
+    }
 
-        const structure_index: StructureIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.structures.len))));
-        self.structures.appendAssumeCapacity(structure);
-        self.by_name.putAssumeCapacityNoClobber(name, structure_index);
+    fn inheritQuantityRefsAssumeCapacity(
+        self: *Scene,
+        structure_index: StructureIndex,
+        previous: Version,
+        replacement: ?QuantityReplacement,
+    ) u32 {
+        var structures = self.structures.slice();
+        const quantity_list = &structures.items(.quantity_refs)[indexOf(structure_index)];
+        const quantity_start: u32 = @intCast(quantity_list.items.len);
+        const previous_start: usize = previous.quantity_start;
+        const previous_end = previous_start + previous.quantity_len;
+        for (quantity_list.items[previous_start..previous_end], 0..) |quantity, offset| {
+            if (replacement) |item| {
+                if (offset == item.offset) {
+                    quantity_list.appendAssumeCapacity(item.value);
+                    continue;
+                }
+            }
+            self.retainBlob(quantity.blob);
+            quantity_list.appendAssumeCapacity(quantity);
+        }
+        return quantity_start;
     }
 
     fn updateMeshPositions(self: *Scene, update: protocol.MeshPositions) ApplyError!void {
@@ -767,22 +499,14 @@ pub const Scene = struct {
 
         const position_blob = try self.createBlobAssumeReserved(update.positions.bytes());
         self.retainBlob(previous.topology);
-        const quantity_start: u32 = @intCast(quantity_list.items.len);
-        const previous_start: usize = previous.quantity_start;
-        const previous_end = previous_start + previous.quantity_len;
-        const previous_quantities = quantity_list.items[previous_start..previous_end];
-        for (previous_quantities) |quantity| {
-            self.retainBlob(quantity.blob);
-            quantity_list.appendAssumeCapacity(quantity);
-        }
-        version_list.appendAssumeCapacity(.{
-            .run = self.run,
-            .frame = self.frame,
-            .positions = position_blob,
-            .topology = previous.topology,
-            .quantity_start = quantity_start,
-            .quantity_len = previous.quantity_len,
-        });
+        const quantity_start = self.inheritQuantityRefsAssumeCapacity(structure_index, previous, null);
+        self.appendVersionAssumeCapacity(
+            structure_index,
+            position_blob,
+            previous.topology,
+            quantity_start,
+            previous.quantity_len,
+        );
         self.releaseExpiredVersions(structure_index);
         structures = self.structures.slice();
         structures.items(.touched)[i] = true;
@@ -811,7 +535,7 @@ pub const Scene = struct {
         const name = try self.intern(quantity_name);
         structures = self.structures.slice();
         const quantity_list = &structures.items(.quantity_refs)[i];
-        var old_refs = self.quantities(structure_index, previous);
+        const old_refs = self.quantities(structure_index, previous);
         var replace_index: ?usize = null;
         for (old_refs, 0..) |quantity, offset| {
             if (quantity.name == name) {
@@ -850,37 +574,34 @@ pub const Scene = struct {
             try self.reserveBlobCreates(1);
             const blob = try self.createBlobAssumeReserved(bytes);
 
-            const previous_start: usize = previous.quantity_start;
-            const previous_end = previous_start + previous.quantity_len;
-            old_refs = quantity_list.items[previous_start..previous_end];
             self.retainBlob(previous.positions);
             if (previous.topology != .none) self.retainBlob(previous.topology);
-            const quantity_start: u32 = @intCast(quantity_list.items.len);
-            var replaced = false;
-            for (old_refs) |quantity| {
-                if (quantity.name == name) {
-                    var replacement = new_ref;
-                    replacement.blob = blob;
-                    quantity_list.appendAssumeCapacity(replacement);
-                    replaced = true;
-                } else {
-                    self.retainBlob(quantity.blob);
-                    quantity_list.appendAssumeCapacity(quantity);
-                }
-            }
-            if (!replaced) {
+            const replacement: ?QuantityReplacement = if (replace_index) |old_index| blk: {
+                var value = new_ref;
+                value.blob = blob;
+                break :blk .{
+                    .offset = @intCast(old_index - @as(usize, previous.quantity_start)),
+                    .value = value,
+                };
+            } else null;
+            const quantity_start = self.inheritQuantityRefsAssumeCapacity(
+                structure_index,
+                previous,
+                replacement,
+            );
+            if (replacement == null) {
+                structures = self.structures.slice();
                 var appended = new_ref;
                 appended.blob = blob;
-                quantity_list.appendAssumeCapacity(appended);
+                structures.items(.quantity_refs)[i].appendAssumeCapacity(appended);
             }
-            version_list.appendAssumeCapacity(.{
-                .run = self.run,
-                .frame = self.frame,
-                .positions = previous.positions,
-                .topology = previous.topology,
-                .quantity_start = quantity_start,
-                .quantity_len = @intCast(additional),
-            });
+            self.appendVersionAssumeCapacity(
+                structure_index,
+                previous.positions,
+                previous.topology,
+                quantity_start,
+                @intCast(additional),
+            );
         }
         self.releaseExpiredVersions(structure_index);
 
@@ -915,6 +636,29 @@ pub const Scene = struct {
             return @intCast(self.facesOf(version).len);
         }
         return self.positionsOf(version).len();
+    }
+
+    // -----------------------------------------------------------------------
+    // retention & budget
+
+    /// Enforces the configured byte budget by releasing old-run versions first,
+    /// then progressively decimating current-run history. The operation allocates
+    /// nothing; released quantity side-array ranges remain as harmless holes.
+    pub fn enforceBudget(self: *Scene) void {
+        while (self.blob_bytes > self.retention.budget_bytes) {
+            if (self.findOldRunCandidate()) |candidate| {
+                self.removeVersion(candidate.structure, candidate.version);
+                continue;
+            }
+
+            var candidate = self.findDecimationCandidate();
+            while (candidate == null and self.decimation_level < 16) {
+                self.decimation_level += 1;
+                candidate = self.findDecimationCandidate();
+            }
+            if (candidate == null) return;
+            self.removeVersion(candidate.?.structure, candidate.?.version);
+        }
     }
 
     fn collapseToLatest(self: *Scene, structure_index: StructureIndex) void {
@@ -1036,25 +780,76 @@ pub const Scene = struct {
         self.evicted_versions +|= 1;
     }
 
-    fn intern(self: *Scene, text: []const u8) std.mem.Allocator.Error!StringIndex {
-        std.debug.assert(std.mem.findScalar(u8, text, 0) == null);
-        const adapter = std.hash_map.StringIndexAdapter{ .bytes = &self.strings };
-        if (self.string_table.getKeyAdapted(text, adapter)) |raw| return @fromBackingInt(@intCast(raw));
+    // -----------------------------------------------------------------------
+    // blob store
 
-        if (self.strings.items.len > std.math.maxInt(u32) - text.len - 1) return error.OutOfMemory;
-        try self.strings.ensureUnusedCapacity(self.gpa, text.len + 1);
-        try self.string_table.ensureUnusedCapacityContext(
-            self.gpa,
-            1,
-            .{ .bytes = &self.strings },
-        );
-        const raw: u32 = @intCast(self.strings.items.len);
-        self.strings.appendSliceAssumeCapacity(text);
-        self.strings.appendAssumeCapacity(0);
-        const result = self.string_table.getOrPutAssumeCapacityAdapted(text, adapter);
-        std.debug.assert(!result.found_existing);
-        result.key_ptr.* = raw;
-        return @fromBackingInt(@intCast(raw));
+    /// Creates a 64-byte-aligned, refcount-one blob and queues its index in
+    /// `new_blobs`. Registered mapping slices are adopted without allocation;
+    /// all other bytes are copied into scene-owned storage.
+    pub fn createBlob(self: *Scene, bytes: []const u8) std.mem.Allocator.Error!BlobIndex {
+        try self.reserveBlobCreates(1);
+        return self.createBlobAssumeReserved(bytes);
+    }
+
+    /// Adds one owning reference to a live blob without allocation.
+    pub fn retainBlob(self: *Scene, blob_index: BlobIndex) void {
+        std.debug.assert(blob_index != .none);
+        var blobs = self.blobs.slice();
+        const refcount = &blobs.items(.refcount)[indexOf(blob_index)];
+        std.debug.assert(refcount.* > 0);
+        refcount.* += 1;
+    }
+
+    /// Releases one owning reference without allocating. At zero, owned bytes
+    /// are freed; mapped bytes decrement their mapping and may queue its release.
+    /// The blob index is queued in both `blob_free` and `freed_blobs`.
+    pub fn releaseBlob(self: *Scene, blob_index: BlobIndex) void {
+        std.debug.assert(blob_index != .none);
+        var blobs = self.blobs.slice();
+        const i = indexOf(blob_index);
+        const refcount = &blobs.items(.refcount)[i];
+        std.debug.assert(refcount.* > 0);
+        refcount.* -= 1;
+        if (refcount.* != 0) return;
+
+        self.blob_bytes -= blobs.items(.bytes)[i].len;
+        const mapping_index = blobs.items(.mapping)[i];
+        if (mapping_index == .none) {
+            self.gpa.free(blobs.items(.bytes)[i]);
+        } else {
+            var mappings = self.mappings.slice();
+            const mapping_refcount = &mappings.items(.refcount)[indexOf(mapping_index)];
+            std.debug.assert(mapping_refcount.* > 0);
+            mapping_refcount.* -= 1;
+            if (mapping_refcount.* == 0) self.queueMappingRelease(mapping_index);
+        }
+        blobs.items(.bytes)[i] = emptyBlobBytes();
+        blobs.items(.mapping)[i] = .none;
+        var pending = self.new_blobs.items.len;
+        while (pending > 0) {
+            pending -= 1;
+            if (self.new_blobs.items[pending] != blob_index) continue;
+            std.mem.copyForwards(
+                BlobIndex,
+                self.new_blobs.items[pending .. self.new_blobs.items.len - 1],
+                self.new_blobs.items[pending + 1 ..],
+            );
+            self.new_blobs.items.len -= 1;
+            break;
+        }
+        self.blob_free.appendAssumeCapacity(blob_index);
+        self.freed_blobs.appendAssumeCapacity(blob_index);
+        self.live_blobs -= 1;
+    }
+
+    /// Returns immutable scene-owned blob bytes without allocation. The view
+    /// remains valid until the blob's final `releaseBlob` or scene deinit.
+    pub fn blobBytes(self: *const Scene, blob_index: BlobIndex) []align(layout.blob_alignment.toByteUnits()) const u8 {
+        std.debug.assert(blob_index != .none);
+        const blobs = self.blobs.slice();
+        const i = indexOf(blob_index);
+        std.debug.assert(blobs.items(.refcount)[i] > 0);
+        return blobs.items(.bytes)[i];
     }
 
     fn reserveBlobCreates(self: *Scene, count: usize) std.mem.Allocator.Error!void {
@@ -1126,6 +921,127 @@ pub const Scene = struct {
         self.live_blobs -= 1;
     }
 
+    // -----------------------------------------------------------------------
+    // mappings
+
+    /// Registers an edge-owned mapping with refcount zero. The scene borrows
+    /// `bytes` and `fd`; registration reserves every future release-queue push.
+    pub fn registerMapping(
+        self: *Scene,
+        bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
+        fd: i32,
+    ) std.mem.Allocator.Error!MappingIndex {
+        const new_slots = @intFromBool(self.mapping_free.items.len == 0);
+        try self.mappings.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
+        try self.mapping_free.ensureTotalCapacity(self.gpa, self.mappings.len + new_slots);
+        try self.released_mappings.ensureUnusedCapacity(self.gpa, @as(usize, self.live_mappings) + 1);
+
+        const mapping_index = if (self.mapping_free.pop()) |free_index| blk: {
+            var mappings = self.mappings.slice();
+            const i = indexOf(free_index);
+            std.debug.assert(mappings.items(.fd)[i] == -1);
+            mappings.items(.bytes)[i] = bytes;
+            mappings.items(.fd)[i] = fd;
+            mappings.items(.refcount)[i] = 0;
+            break :blk free_index;
+        } else blk: {
+            const new_index: MappingIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.mappings.len))));
+            self.mappings.appendAssumeCapacity(.{ .bytes = bytes, .fd = fd, .refcount = 0 });
+            break :blk new_index;
+        };
+        self.live_mappings += 1;
+        return mapping_index;
+    }
+
+    /// Returns the borrowed bytes of a registered mapping without allocation.
+    /// The view remains valid until the edge forgets the mapping index.
+    pub fn mappingBytes(
+        self: *const Scene,
+        mapping_index: MappingIndex,
+    ) []align(layout.blob_alignment.toByteUnits()) const u8 {
+        std.debug.assert(mapping_index != .none);
+        const mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        return mappings.items(.bytes)[i];
+    }
+
+    /// Returns one registered mapping record by value without allocation. The
+    /// record remains edge-owned and must not be closed before `forgetMapping`.
+    pub fn mappingValue(self: *const Scene, mapping_index: MappingIndex) Mapping {
+        std.debug.assert(mapping_index != .none);
+        const mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        return .{
+            .bytes = mappings.items(.bytes)[i],
+            .fd = mappings.items(.fd)[i],
+            .refcount = mappings.items(.refcount)[i],
+        };
+    }
+
+    /// Queues every registered zero-ref mapping in registration-index order.
+    /// `registerMapping` pre-reserves this operation, so it never allocates.
+    pub fn releaseUnreferencedMappings(self: *Scene) void {
+        const mappings = self.mappings.slice();
+        const fds = mappings.items(.fd);
+        const refcounts = mappings.items(.refcount);
+        for (fds, refcounts, 0..) |fd, refcount, i| {
+            if (fd < 0 or refcount != 0) continue;
+            self.queueMappingRelease(@fromBackingInt(@intCast(i)));
+        }
+    }
+
+    /// Forgets a zero-ref mapping after the edge has unmapped its bytes and
+    /// closed its fd. The slot is returned to the free list without allocation.
+    pub fn forgetMapping(self: *Scene, mapping_index: MappingIndex) void {
+        std.debug.assert(mapping_index != .none);
+        var mappings = self.mappings.slice();
+        const i = indexOf(mapping_index);
+        std.debug.assert(mappings.items(.fd)[i] >= 0);
+        std.debug.assert(mappings.items(.refcount)[i] == 0);
+
+        var found = false;
+        for (self.released_mappings.items, 0..) |queued, queued_i| {
+            if (queued != mapping_index) continue;
+            std.mem.copyForwards(
+                MappingIndex,
+                self.released_mappings.items[queued_i .. self.released_mappings.items.len - 1],
+                self.released_mappings.items[queued_i + 1 ..],
+            );
+            self.released_mappings.items.len -= 1;
+            found = true;
+            break;
+        }
+        std.debug.assert(found);
+        mappings.items(.bytes)[i] = emptyMappingBytes();
+        mappings.items(.fd)[i] = -1;
+        self.mapping_free.appendAssumeCapacity(mapping_index);
+        self.live_mappings -= 1;
+    }
+
+    /// Moves every still-registered mapping into caller-owned `out`, using the
+    /// scene allocator only to reserve output capacity. The edge then owns all
+    /// returned fds/mappings and must unmap and close them before `deinit`.
+    pub fn takeAllMappings(self: *Scene, out: *std.ArrayList(Mapping)) std.mem.Allocator.Error!void {
+        try out.ensureUnusedCapacity(self.gpa, self.live_mappings);
+        var mappings = self.mappings.slice();
+        const bytes = mappings.items(.bytes);
+        const fds = mappings.items(.fd);
+        const refcounts = mappings.items(.refcount);
+        for (bytes, fds, refcounts) |mapping_bytes, fd, refcount| {
+            if (fd < 0) continue;
+            out.appendAssumeCapacity(.{ .bytes = mapping_bytes, .fd = fd, .refcount = refcount });
+        }
+        for (fds, bytes) |*fd, *mapping_bytes| {
+            if (fd.* < 0) continue;
+            fd.* = -1;
+            mapping_bytes.* = emptyMappingBytes();
+        }
+        self.released_mappings.clearRetainingCapacity();
+        self.live_mappings = 0;
+    }
+
     fn mappingContaining(self: *const Scene, section: []const u8) ?MappingIndex {
         const section_start = @intFromPtr(section.ptr);
         const section_end = std.math.add(usize, section_start, section.len) catch return null;
@@ -1147,19 +1063,159 @@ pub const Scene = struct {
         }
         self.released_mappings.appendAssumeCapacity(mapping_index);
     }
+
+    // -----------------------------------------------------------------------
+    // queries
+
+    /// Finds a structure by borrowed name without allocation. The returned
+    /// index remains stable for the lifetime of that structure.
+    pub fn find(self: *const Scene, name: []const u8) ?StructureIndex {
+        if (std.mem.findScalar(u8, name, 0) != null) return null;
+        const raw = self.string_table.getKeyAdapted(name, std.hash_map.StringIndexAdapter{
+            .bytes = &self.strings,
+        }) orelse return null;
+        return self.by_name.get(@fromBackingInt(@intCast(raw)));
+    }
+
+    /// Selects the latest current-run version at or before `frame` without
+    /// allocating. A structure with no current-run versions falls back to its
+    /// last retained previous-run version; one first registered later returns null.
+    pub fn versionAt(self: *const Scene, structure_index: StructureIndex, frame: u32) ?u32 {
+        const structures = self.structures.slice();
+        const versions = structures.items(.versions)[indexOf(structure_index)].items;
+        var has_current_run = false;
+        var i = versions.len;
+        while (i > 0) {
+            i -= 1;
+            const version = versions[i];
+            if (version.run != self.run) continue;
+            has_current_run = true;
+            if (version.frame <= frame) return @intCast(i);
+        }
+        if (has_current_run or versions.len == 0) return null;
+        return @intCast(versions.len - 1);
+    }
+
+    /// Selects the latest version in exactly `run` at or before `frame` without
+    /// allocating. No version from another run is used as a fallback.
+    pub fn versionAtRun(self: *const Scene, structure_index: StructureIndex, run: u32, frame: u32) ?u32 {
+        const structures = self.structures.slice();
+        const versions = structures.items(.versions)[indexOf(structure_index)].items;
+        var i = versions.len;
+        while (i > 0) {
+            i -= 1;
+            const version = versions[i];
+            if (version.run == run and version.frame <= frame) return @intCast(i);
+        }
+        return null;
+    }
+
+    /// Reports whether the current run has a version at exactly `frame` for
+    /// `structure_index`. The lookup borrows scene state and never allocates.
+    pub fn hasExactVersion(self: *const Scene, structure_index: StructureIndex, frame: u32) bool {
+        const structures = self.structures.slice();
+        const versions = structures.items(.versions)[indexOf(structure_index)].items;
+        for (versions) |version| {
+            if (version.run == self.run and version.frame == frame) return true;
+        }
+        return false;
+    }
+
+    /// Returns the number of frames in the current run (frame 0 is implicit,
+    /// so this is 1 right after begin_run); borrows scene state, never allocates.
+    pub fn frameCount(self: *const Scene) u32 {
+        return @intCast(self.frame_labels.items.len);
+    }
+
+    /// Returns the known frame count for the current or immediately previous
+    /// run without allocating. Older and future runs return zero.
+    pub fn frameCountOfRun(self: *const Scene, run: u32) u32 {
+        if (run == self.run) return self.frameCount();
+        if (self.run > 1 and run == self.run - 1) return self.previous_frame_count;
+        return 0;
+    }
+
+    /// Returns live blob bytes/count, retained version count, and evictions
+    /// since the current run began. It scans flat version arrays without allocation.
+    pub fn memoryStats(self: *const Scene) MemoryStats {
+        var version_count: usize = 0;
+        const structures = self.structures.slice();
+        for (structures.items(.versions)) |versions| version_count += versions.items.len;
+        var mapped_bytes: usize = 0;
+        const blobs = self.blobs.slice();
+        for (blobs.items(.bytes), blobs.items(.refcount), blobs.items(.mapping)) |bytes, refcount, mapping| {
+            if (refcount != 0 and mapping != .none) mapped_bytes += bytes.len;
+        }
+        std.debug.assert(version_count <= std.math.maxInt(u32));
+        return .{
+            .blob_bytes = self.blob_bytes,
+            .mapped_bytes = mapped_bytes,
+            .blob_count = self.live_blobs,
+            .versions = @intCast(version_count),
+            .evicted_versions = self.evicted_versions,
+        };
+    }
+
+    /// Returns a borrowed interned string without allocation. The `.none`
+    /// sentinel maps to an empty string; other views invalidate on interning.
+    pub fn string(self: *const Scene, string_index: StringIndex) []const u8 {
+        if (string_index == .none) return "";
+        return std.mem.sliceTo(self.strings.items[indexOf(string_index)..], 0);
+    }
+
+    /// Returns a zero-copy positions view over a live scene-owned blob. The
+    /// view borrows the scene and never allocates.
+    pub fn positionsOf(self: *const Scene, version: Version) layout.Positions.Const {
+        return layout.Positions.Const.fromBytes(self.blobBytes(version.positions));
+    }
+
+    /// Returns a zero-copy face view over a version's topology blob. The view
+    /// borrows the scene and never allocates.
+    pub fn facesOf(self: *const Scene, version: Version) []const [3]u32 {
+        if (version.topology == .none) return &.{};
+        return std.mem.bytesAsSlice([3]u32, self.blobBytes(version.topology));
+    }
+
+    /// Returns a zero-copy segment view over a version's topology blob. The
+    /// view borrows the scene and never allocates.
+    pub fn segmentsOf(self: *const Scene, version: Version) []const [2]u32 {
+        if (version.topology == .none) return &.{};
+        return std.mem.bytesAsSlice([2]u32, self.blobBytes(version.topology));
+    }
+
+    /// Returns the immutable quantity range owned by `version`. The returned
+    /// slice borrows a structure side array and is invalidated by later applies.
+    pub fn quantities(self: *const Scene, structure_index: StructureIndex, version: Version) []const QuantityRef {
+        const structures = self.structures.slice();
+        const refs = structures.items(.quantity_refs)[indexOf(structure_index)].items;
+        const start: usize = version.quantity_start;
+        return refs[start .. start + version.quantity_len];
+    }
+
+    fn intern(self: *Scene, text: []const u8) std.mem.Allocator.Error!StringIndex {
+        std.debug.assert(std.mem.findScalar(u8, text, 0) == null);
+        const adapter = std.hash_map.StringIndexAdapter{ .bytes = &self.strings };
+        if (self.string_table.getKeyAdapted(text, adapter)) |raw| return @fromBackingInt(@intCast(raw));
+
+        if (self.strings.items.len > std.math.maxInt(u32) - text.len - 1) return error.OutOfMemory;
+        try self.strings.ensureUnusedCapacity(self.gpa, text.len + 1);
+        try self.string_table.ensureUnusedCapacityContext(
+            self.gpa,
+            1,
+            .{ .bytes = &self.strings },
+        );
+        const raw: u32 = @intCast(self.strings.items.len);
+        self.strings.appendSliceAssumeCapacity(text);
+        self.strings.appendAssumeCapacity(0);
+        const result = self.string_table.getOrPutAssumeCapacityAdapted(text, adapter);
+        std.debug.assert(!result.found_existing);
+        result.key_ptr.* = raw;
+        return @fromBackingInt(@intCast(raw));
+    }
 };
 
-fn indexOf(index: anytype) usize {
-    return @backingInt(index);
-}
-
-fn emptyBlobBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
-    return empty_blob_storage[0..];
-}
-
-fn emptyMappingBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
-    return empty_mapping_storage[0..];
-}
+// ---------------------------------------------------------------------------
+// tests
 
 const testing = std.testing;
 
