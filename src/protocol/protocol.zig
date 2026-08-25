@@ -1,12 +1,27 @@
-//! Allocation-free, zero-copy vertex wire protocol.
+//! The wire protocol: the frames a client sends and the viewer decodes.
 //!
-//! Frames use native endianness because both peers are the same build. `len`
-//! counts payload bytes after the eight-byte frame header. String fields are
-//! contiguous after their fixed head. Each following binary section begins at
-//! a payload-relative multiple of 16; its preceding gap contains zero bytes.
-//! Frames with any external section instead place one `SectionRef` per binary
-//! section after the strings at a 16-byte boundary, followed by only the inline
-//! sections. External offsets address 64-byte-aligned fd mappings.
+//! Encoding and decoding both allocate nothing, anywhere. Encoding gathers
+//! borrowed slices into a scatter/gather list that the caller writes with one
+//! `writev`, so a payload never enters an intermediate buffer; decoding returns
+//! views into the caller's payload rather than copies. The corollary is that
+//! every slice handed to an encode function, and the payload handed to `decode`,
+//! must outlive the use of the result. Individual declarations below repeat this
+//! only where the lifetime is unobvious.
+//!
+//! Frames are native-endian, because both peers are the same build; `magic`
+//! doubles as the endianness check and `version` as the entire compatibility
+//! contract.
+//!
+//! `len` counts the payload bytes after the eight-byte frame header. String
+//! fields are contiguous after their fixed head. Each binary section that
+//! follows begins at a payload-relative multiple of 16, and the gap before it
+//! is zero-filled, so that a payload placed in aligned memory yields views a
+//! kernel can read directly.
+//!
+//! A frame with any external section instead places one `SectionRef` per binary
+//! section after the strings, at a 16-byte boundary, followed only by whichever
+//! sections remain inline. External offsets address 64-byte-aligned mappings
+//! carried by descriptors that accompany the frame.
 //!
 //! ```text
 //! struct/head         bytes  byte offsets and fields
@@ -46,28 +61,49 @@ const layout = @import("../geometry/layout.zig");
 // ---------------------------------------------------------------------------
 // constants / types
 
-/// Protocol compatibility version. The value owns no memory, and access allocates nothing.
+/// The protocol version, and the whole of the compatibility contract: the
+/// viewer accepts a client reporting this exact value and rejects any other.
+/// Any change to a message's shape or to the vertex layout increments it.
 pub const version: u16 = 2;
 
-/// Handshake magic. The value owns no memory, and access allocates nothing.
+/// The four bytes that open a `hello` frame. Because frames are native-endian,
+/// a peer of the opposite endianness reads these transposed, so this doubles as
+/// an endianness check.
 pub const magic: [4]u8 = "VTXP".*;
 
-/// Maximum accepted source, structure, and quantity name length. The constant
-/// owns no memory and allocates nothing.
+/// The longest accepted name for a source, a structure or a quantity. Names are
+/// length-prefixed with a `u16`, and this bound keeps a malformed length from
+/// describing a plausible-looking frame.
 pub const max_name_len = 255;
 
-/// Payload-relative alignment of binary sections. The constant owns no memory, and encoding allocates nothing.
-/// Sections start at multiples of 16 from the payload start so that a payload
-/// placed in 16-aligned memory yields SIMD-aligned views; `decode` itself only
-/// needs `payload_alignment`.
+/// The alignment, relative to the start of a payload, at which every binary
+/// section begins.
+///
+/// Sections start at multiples of this so that a payload placed in memory
+/// aligned to it yields views a `@Vector` load can use directly. `decode`
+/// itself requires only `payload_alignment`; this larger figure is what makes
+/// the decoded views useful without a copy.
 pub const section_alignment = 16;
 
-/// Minimum alignment `decode` requires of a borrowed payload buffer. The
-/// constant owns no memory and allocates nothing; it covers every element type
-/// that appears in a section (`f32`, `u32`, `Positions.Elem`).
+/// The minimum alignment `decode` requires of the payload buffer it borrows,
+/// being the strictest of the element types that appear in a section: `u32`,
+/// `f32` and `Positions.Elem`. A caller reading frames into its own buffer must
+/// align it to at least this.
 pub const payload_alignment = @max(@alignOf(u32), @alignOf(f32), @alignOf(layout.Positions.Elem));
 
-/// Wire message tag. Values own no memory; unknown v2 tags are rejected without allocation.
+/// The tag identifying what a frame carries, and the tag of the decoded
+/// `Message` union.
+///
+/// `hello` opens a connection and carries the version check. `begin_run` and
+/// `end_run` bracket one execution of a sketch; `begin_frame` and `end_frame`
+/// bracket one step within it. `mesh`, `points` and `lines` register a
+/// structure's geometry under a name, replacing whatever that name held, while
+/// `mesh_positions` updates only the vertices of an existing mesh and reuses its
+/// triangles. `scalar_quantity` and `vector_quantity` attach a named field to a
+/// structure already registered. `log` carries a line for the viewer's console.
+///
+/// The enum is non-exhaustive: a tag this version does not define is rejected
+/// by `decode` rather than treated as corruption.
 pub const Kind = enum(u16) {
     hello = 1,
     begin_run,
@@ -84,24 +120,32 @@ pub const Kind = enum(u16) {
     _,
 };
 
-/// Geometric dimensionality carried by geometry messages. Values own no memory
-/// and allocate nothing.
+/// Whether a structure is two- or three-dimensional. The viewer selects an
+/// orthographic camera once every live structure is `.d2`. Positions are three
+/// components regardless; a two-dimensional structure simply leaves z at zero.
 pub const Dim = enum(u8) { d2 = 2, d3 = 3 };
 
-/// Quantity attachment target. Values own no memory and allocate nothing.
+/// What a quantity attaches to, and therefore how many values it must carry:
+/// one per vertex, one per triangle, or one per point.
 pub const Target = enum(u8) { vertex = 0, face = 1, point = 2 };
 
-/// Log severity. Values own no memory and allocate nothing.
+/// The severity of a `log` line, as shown in the viewer's console.
 pub const LogLevel = enum(u8) { info, warn, err };
 
-/// Borrowed encoder input for one binary section. Inline bytes must outlive
-/// the write; an external reference owns neither its mapping nor its fd. The
-/// union itself allocates nothing.
+/// Where the bytes of one binary section come from.
+///
+/// An inline section is a slice the encoder writes into the frame, so its bytes
+/// travel through the socket and must outlive the write. An external section is
+/// a region of a shared mapping that the frame only refers to, by descriptor
+/// index, offset and length, so its bytes are never copied and the descriptor
+/// accompanies the frame. Choosing between them is the difference between the
+/// inline and the zero-copy payload paths; neither owns the memory it names.
 pub const Section = union(enum) {
     @"inline": []const u8,
     external: External,
 
-    /// Location of bytes inside one fd-backed mapping; owns no memory and allocates nothing.
+    /// A region of a shared mapping: which descriptor of those accompanying
+    /// the frame, and the 64-byte-aligned offset and length within it.
     pub const External = struct {
         fd_index: u32,
         offset: u64,
@@ -109,11 +153,12 @@ pub const Section = union(enum) {
     };
 };
 
-/// Maximum binary sections per message. The constant owns no memory and allocates nothing.
+/// The most binary sections any message has, which is two, for the positions
+/// and topology of a mesh or a line set. Callers size fixed arrays with it.
 pub const max_sections = 2;
 
-/// Errors returned by total, allocation-free frame decoding. The error set
-/// owns no memory.
+/// The ways a frame can fail to decode. Decoding is total: malformed input
+/// always produces one of these rather than a panic or a partial result.
 pub const DecodeError = error{
     Truncated,
     BadLength,
@@ -205,27 +250,31 @@ pub const Message = union(Kind) {
 // ---------------------------------------------------------------------------
 // heads
 
-/// Eight-byte frame header. `flags` uses `Flags`; the value is copied into or
-/// out of caller-owned bytes, owns no memory, and allocates nothing.
+/// The eight bytes that open every frame: the payload length, the `Kind` tag and
+/// the `Flags` bits. A reader needs `len` to know when a whole frame has
+/// arrived, and `flags` to know whether descriptors accompany it.
 pub const Header = extern struct {
     len: u32,
     kind: u16,
     flags: u16 = 0,
 };
 
-/// Bit layout of `Header.flags`; conversion to/from the wire integer is a
-/// bit-cast. Values own no memory and allocate nothing.
+/// The meaning of the bits in `Header.flags`.
+///
+/// `external` marks a frame whose binary sections are `SectionRef`s into shared
+/// mappings rather than inline bytes, and `fd_count` says how many descriptors
+/// accompany it. Conversion to and from the wire integer is a bit-cast.
 pub const Flags = packed struct(u16) {
     external: bool = false,
     fd_count: u3 = 0,
     _pad: u12 = 0,
 
-    /// Returns a non-owning flags value from native-endian bits without allocation.
+    /// Interprets the raw `flags` field of a header.
     pub fn fromInt(raw: u16) Flags {
         return @bitCast(raw);
     }
 
-    /// Returns native-endian bits by value without ownership transfer or allocation.
+    /// Returns the bits to store in a header's `flags` field.
     pub fn toInt(self: Flags) u16 {
         return @bitCast(self);
     }
@@ -241,21 +290,24 @@ pub const SectionRef = extern struct {
     len: u64,
 };
 
-/// Eight-byte fixed head for `hello`; the record owns no memory and allocates nothing.
+/// The fixed head of a `hello` payload, eight bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const HelloHead = extern struct {
     magic: [4]u8,
     version: u16,
     name_len: u16,
 };
 
-/// Eight-byte fixed head for `begin_frame`; the record owns no memory and allocates nothing.
+/// The fixed head of a `begin_frame` payload, eight bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const BeginFrameHead = extern struct {
     index: u32,
     label_len: u16,
     _pad: u16,
 };
 
-/// Twelve-byte fixed head for `mesh`; the record owns no memory and allocates nothing.
+/// The fixed head of a `mesh` payload, twelve bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const MeshHead = extern struct {
     vertex_count: u32,
     face_count: u32,
@@ -264,14 +316,16 @@ pub const MeshHead = extern struct {
     _pad: u8,
 };
 
-/// Eight-byte fixed head for `mesh_positions`; the record owns no memory and allocates nothing.
+/// The fixed head of a `mesh_positions` payload, eight bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const MeshPositionsHead = extern struct {
     vertex_count: u32,
     name_len: u16,
     _pad: u16,
 };
 
-/// Eight-byte fixed head for `points`; the record owns no memory and allocates nothing.
+/// The fixed head of a `points` payload, eight bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const PointsHead = extern struct {
     count: u32,
     name_len: u16,
@@ -279,7 +333,8 @@ pub const PointsHead = extern struct {
     _pad: u8,
 };
 
-/// Twelve-byte fixed head for `lines`; the record owns no memory and allocates nothing.
+/// The fixed head of a `lines` payload, twelve bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const LinesHead = extern struct {
     vertex_count: u32,
     segment_count: u32,
@@ -288,7 +343,8 @@ pub const LinesHead = extern struct {
     _pad: u8,
 };
 
-/// Twelve-byte fixed head for `scalar_quantity`; the record owns no memory and allocates nothing.
+/// The fixed head of a `scalar_quantity` payload, twelve bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const ScalarQuantityHead = extern struct {
     count: u32,
     structure_len: u16,
@@ -297,7 +353,8 @@ pub const ScalarQuantityHead = extern struct {
     _pad: [3]u8,
 };
 
-/// Twelve-byte fixed head for `vector_quantity`; the record owns no memory and allocates nothing.
+/// The fixed head of a `vector_quantity` payload, twelve bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const VectorQuantityHead = extern struct {
     count: u32,
     structure_len: u16,
@@ -306,7 +363,8 @@ pub const VectorQuantityHead = extern struct {
     _pad: [3]u8,
 };
 
-/// Eight-byte fixed head for `log`; the record owns no memory and allocates nothing.
+/// The fixed head of a `log` payload, eight bytes, read as a `bytesAsValue`
+/// rather than field by field.
 pub const LogHead = extern struct {
     text_len: u32,
     level: u8,
@@ -316,20 +374,27 @@ pub const LogHead = extern struct {
 // ---------------------------------------------------------------------------
 // encode
 
-/// Maximum header, head, padding, and caller-owned slices in an encoding. The
-/// constant owns no memory and allocates nothing.
+/// The most parts any encoded frame is split into for `writev`. The
+/// count covers the frame header, the fixed head, the alignment padding and the
+/// caller's slices, and sizes the fixed array `Encoded` holds.
 pub const max_parts = 12;
 
-/// Largest fixed payload head in bytes. The constant owns no memory; encoding
-/// stores the head inline without allocation.
+/// The size of the largest fixed head, which is the storage `Encoded` reserves
+/// inline so that a head never needs an allocation.
 pub const max_head_size = 12;
 
 const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(0);
 
-/// Borrowing scatter/gather encoding. Header and head storage are owned inline;
-/// variable slices remain caller-owned and must outlive the write. `slices()`
-/// installs self-referential header/head/descriptor views, so `Encoded` must not be
-/// moved or copied after `slices()` (or `writeTo()`) is called. No method allocates.
+/// One encoded frame, as a list of slices to be written in order.
+///
+/// The frame header and the message's fixed head are stored inside this value;
+/// the variable parts, being names, positions, indices and values, remain the
+/// caller's slices and are only pointed at, which is what makes encoding
+/// copy-free. All of them must outlive the write.
+///
+/// `slices` and `writeTo` install views that point into this value's own
+/// storage, so an `Encoded` must not be moved or copied once either has been
+/// called. Build it, write it, and let it go.
 pub const Encoded = struct {
     header: Header,
     head: [max_head_size]u8 align(8),
@@ -339,9 +404,10 @@ pub const Encoded = struct {
     descriptor_count: u8,
     descriptor_part: u8,
 
-    /// Returns borrowed writev slices in wire order without allocation. The
-    /// returned list and its inline header/head slices are invalidated by moving
-    /// or copying this `Encoded`.
+    /// Returns the frame's parts in wire order, ready to hand to `writev`.
+    ///
+    /// The returned list points into this `Encoded`, which must therefore not be
+    /// moved or copied afterwards.
     pub fn slices(self: *Encoded) []const []const u8 {
         self.parts[0] = std.mem.asBytes(&self.header);
         const head_len = encodedHeadLen(self.header.kind);
@@ -352,13 +418,16 @@ pub const Encoded = struct {
         return self.parts[0..self.part_count];
     }
 
-    /// Returns the complete frame byte count without allocation.
+    /// The total size of the frame, header included. Compare it against what a
+    /// write reported to detect a short write.
     pub fn totalLen(self: *const Encoded) usize {
         return @sizeOf(Header) + @as(usize, self.header.len);
     }
 
-    /// Concatenates into caller-owned, 16-aligned `buf` without allocation and
-    /// returns the initialized prefix. `buf` must be at least `totalLen()` bytes.
+    /// Writes the whole frame contiguously into `buf` and returns the portion
+    /// filled. `buf` must be at least `totalLen()` bytes and 16-byte aligned.
+    /// This is for callers that need one buffer rather than a vector of slices,
+    /// such as the in-process path used by dylib mode.
     pub fn writeTo(self: *Encoded, buf: []align(section_alignment) u8) []align(section_alignment) u8 {
         std.debug.assert(buf.len >= self.totalLen());
         var offset: usize = 0;
@@ -371,8 +440,17 @@ pub const Encoded = struct {
     }
 };
 
-/// Writes caller-owned `out`, borrowing `name` through the write. Asserts the
-/// name limit and allocates nothing.
+// The encode functions below each fill an `Encoded` with one frame. They
+// borrow every slice passed to them, so those must outlive the write, and they
+// assert rather than return an error when a name exceeds `max_name_len` or a
+// count exceeds what its field can hold; the client library validates before
+// calling. Where a message carries binary sections, a `*Section` or `*Sections`
+// variant takes each section as either inline bytes or a reference into a
+// shared mapping, which is how the zero-copy path is encoded; the plain form is
+// the inline case spelled out.
+
+/// Encodes the opening frame of a connection, carrying `magic`, `version` and
+/// the source name the viewer displays for this run.
 pub fn encodeHello(out: *Encoded, name: []const u8) void {
     assertName(name);
     initHead(out, .hello, HelloHead{
@@ -383,12 +461,14 @@ pub fn encodeHello(out: *Encoded, name: []const u8) void {
     addPart(out, name);
 }
 
-/// Writes an empty begin-run frame into caller-owned `out` without allocation.
+/// Encodes the start of a run. The viewer releases the previous run's versions
+/// on receiving it.
 pub fn encodeBeginRun(out: *Encoded) void {
     initEmpty(out, .begin_run);
 }
 
-/// Writes caller-owned `out`, borrowing `label` through the write and allocating nothing.
+/// Encodes the start of frame `index`, with an optional label the viewer shows
+/// on the timeline. Pass an empty label for none.
 pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
     std.debug.assert(label.len <= std.math.maxInt(u16));
     initHead(out, .begin_frame, BeginFrameHead{
@@ -399,18 +479,19 @@ pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
     addPart(out, label);
 }
 
-/// Writes an empty end-frame marker into caller-owned `out` without allocation.
+/// Encodes the end of the current frame.
 pub fn encodeEndFrame(out: *Encoded) void {
     initEmpty(out, .end_frame);
 }
 
-/// Writes an empty end-run marker into caller-owned `out` without allocation.
+/// Encodes the end of the run, after which the viewer discards any structure
+/// the run did not register.
 pub fn encodeEndRun(out: *Encoded) void {
     initEmpty(out, .end_run);
 }
 
-/// Writes caller-owned `out`, borrowing every mesh section through the write
-/// and allocating nothing.
+/// Encodes a mesh registration: positions and the triangles indexing them,
+/// under `name`.
 pub fn encodeMesh(
     out: *Encoded,
     name: []const u8,
@@ -430,8 +511,8 @@ pub fn encodeMesh(
     );
 }
 
-/// Writes caller-owned `out` with independently inline or external mesh
-/// sections. Every input is borrowed through the write and no allocation occurs.
+/// Encodes a mesh registration whose positions and topology are each inline or
+/// external, in any combination.
 pub fn encodeMeshSections(
     out: *Encoded,
     name: []const u8,
@@ -456,14 +537,13 @@ pub fn encodeMeshSections(
     });
 }
 
-/// Writes caller-owned `out`, borrowing replacement positions through the
-/// write and allocating nothing.
+/// Encodes a positions-only update to an existing mesh, which keeps the
+/// triangles the mesh already has.
 pub fn encodeMeshPositions(out: *Encoded, name: []const u8, positions: layout.Positions.Const) void {
     encodeMeshPositionsSection(out, name, positions.len(), inlineSection(positions.bytes()));
 }
 
-/// Writes caller-owned `out` from an inline or external positions section. The
-/// section is borrowed through the write and no allocation occurs.
+/// Encodes a positions-only mesh update whose positions are inline or external.
 pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count: u32, positions: Section) void {
     assertName(name);
     initHead(out, .mesh_positions, MeshPositionsHead{
@@ -475,14 +555,12 @@ pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count:
     addSections(out, &.{positions}, &.{layout.Positions.byteSize(vertex_count)});
 }
 
-/// Writes caller-owned `out`, borrowing the point-set inputs through the write
-/// and allocating nothing.
+/// Encodes a point cloud registration under `name`.
 pub fn encodePoints(out: *Encoded, name: []const u8, dim: Dim, positions: layout.Positions.Const) void {
     encodePointsSection(out, name, dim, positions.len(), inlineSection(positions.bytes()));
 }
 
-/// Writes caller-owned `out` from an inline or external positions section. The
-/// section is borrowed through the write and no allocation occurs.
+/// Encodes a point cloud whose positions are inline or external.
 pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32, positions: Section) void {
     assertName(name);
     initHead(out, .points, PointsHead{
@@ -495,8 +573,8 @@ pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32
     addSections(out, &.{positions}, &.{layout.Positions.byteSize(count)});
 }
 
-/// Writes caller-owned `out`, borrowing every line-set section through the
-/// write and allocating nothing.
+/// Encodes a line set registration: vertices and the segments indexing them,
+/// under `name`.
 pub fn encodeLines(
     out: *Encoded,
     name: []const u8,
@@ -516,8 +594,8 @@ pub fn encodeLines(
     );
 }
 
-/// Writes caller-owned `out` with independently inline or external line-set
-/// sections. Every input is borrowed through the write and no allocation occurs.
+/// Encodes a line set whose positions and segments are each inline or external,
+/// in any combination.
 pub fn encodeLinesSections(
     out: *Encoded,
     name: []const u8,
@@ -542,8 +620,8 @@ pub fn encodeLinesSections(
     });
 }
 
-/// Writes caller-owned `out`, borrowing scalar strings and values through the
-/// write and allocating nothing.
+/// Encodes a scalar field attached to `structure`, with one value per element
+/// of `target`.
 pub fn encodeScalarQuantity(
     out: *Encoded,
     structure: []const u8,
@@ -562,8 +640,7 @@ pub fn encodeScalarQuantity(
     );
 }
 
-/// Writes caller-owned `out` from inline or external scalar values. Every
-/// input is borrowed through the write and no allocation occurs.
+/// Encodes a scalar field whose values are inline or external.
 pub fn encodeScalarQuantitySection(
     out: *Encoded,
     structure: []const u8,
@@ -586,8 +663,8 @@ pub fn encodeScalarQuantitySection(
     addSections(out, &.{values}, &.{@as(usize, count) * @sizeOf(f32)});
 }
 
-/// Writes caller-owned `out`, borrowing vector strings and bytes through the
-/// write and allocating nothing.
+/// Encodes a vector field attached to `structure`, with one vector per element
+/// of `target`.
 pub fn encodeVectorQuantity(
     out: *Encoded,
     structure: []const u8,
@@ -605,8 +682,7 @@ pub fn encodeVectorQuantity(
     );
 }
 
-/// Writes caller-owned `out` from inline or external vector positions. Every
-/// input is borrowed through the write and no allocation occurs.
+/// Encodes a vector field whose vectors are inline or external.
 pub fn encodeVectorQuantitySection(
     out: *Encoded,
     structure: []const u8,
@@ -629,8 +705,7 @@ pub fn encodeVectorQuantitySection(
     addSections(out, &.{vectors}, &.{layout.Positions.byteSize(count)});
 }
 
-/// Writes caller-owned `out`, borrowing the log string through the write and
-/// allocating nothing.
+/// Encodes one line for the viewer's console at the given severity.
 pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
     std.debug.assert(text.len <= std.math.maxInt(u32));
     initHead(out, .log, LogHead{
@@ -644,15 +719,26 @@ pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
 // ---------------------------------------------------------------------------
 // decode
 
-/// Parses the first eight caller-owned bytes without allocation.
+/// Reads a frame header from the first eight bytes of `bytes`.
+///
+/// The `len` it reports is how many further bytes make up the payload, which is
+/// what a reader needs before it can wait for a complete frame.
 pub fn decodeHeader(bytes: []const u8) DecodeError!Header {
     if (bytes.len < @sizeOf(Header)) return error.Truncated;
     return readValue(Header, bytes[0..@sizeOf(Header)]);
 }
 
-/// Decodes one exact payload without allocation. Inline views borrow `payload`;
-/// external views borrow `mappings`. The caller keeps both alive while using
-/// the returned message.
+/// Decodes one complete payload into a `Message`.
+///
+/// `payload` must be exactly `header.len` bytes and aligned to at least
+/// `payload_alignment`. `mappings` supplies the shared regions that an external
+/// frame refers to, indexed as its `SectionRef`s say; an inline frame ignores
+/// it.
+///
+/// Nothing is copied and nothing is allocated: every slice in the returned
+/// message points into `payload` or into one of the `mappings`, both of which
+/// the caller must keep alive and unmodified for as long as the message is
+/// used.
 pub fn decode(
     header: Header,
     payload: []align(payload_alignment) const u8,
@@ -693,8 +779,8 @@ pub fn decode(
     };
 }
 
-/// Decodes an inline frame without allocation. This is equivalent to `decode`
-/// with no mappings; non-external frames ignore mappings by protocol.
+/// Decodes a frame that has no external sections, which is `decode` with an
+/// empty set of mappings. Use it where shared memory is not in play at all.
 pub fn decodeInline(header: Header, payload: []align(payload_alignment) const u8) DecodeError!Message {
     return decode(header, payload, &.{});
 }
