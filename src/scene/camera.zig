@@ -91,8 +91,10 @@ pub const Orbit = struct {
     yaw: f32,
     pitch: f32,
     fovy: f32 = 0.8,
-    near: f32 = 0.01,
-    far: f32 = 1000,
+    /// Radius of the scene last fitted, or 0 before any fit. The clip planes
+    /// derive from it and `distance` rather than being stored, so no camera
+    /// move can leave them stale.
+    extent: f32 = 0,
 
     /// Conventional initial orbit pose looking down the negative Z axis.
     pub const default: Orbit = .{
@@ -118,9 +120,24 @@ pub const Orbit = struct {
         return .lookAt(self.eye(), self.target, .init(0, 1, 0));
     }
 
+    /// Near and far clip distances for the *current* pose, both tracking
+    /// `distance`. That is the whole point: planes fixed at fit time clip the
+    /// scene away as soon as the camera leaves that pose — the near plane eats
+    /// the model as you dolly in, the far plane drops it as you dolly out.
+    /// Near is a thousandth of the orbit distance, so you can approach a
+    /// surface arbitrarily closely; far always reaches past the scene, and past
+    /// the target by at least the orbit distance when the scene is small.
+    fn clipPlanes(self: Orbit) struct { near: f32, far: f32 } {
+        return .{
+            .near = @max(self.distance * 1e-3, 1e-5),
+            .far = self.distance + @max(self.extent * 1.2, self.distance),
+        };
+    }
+
     /// Returns the allocation-free perspective projection for `aspect`.
     pub fn proj(self: Orbit, aspect: f32) Mat4 {
-        return .perspective(self.fovy, aspect, self.near, self.far);
+        const planes = self.clipPlanes();
+        return .perspective(self.fovy, aspect, planes.near, planes.far);
     }
 
     /// Returns `projection * view` without allocating.
@@ -164,12 +181,11 @@ pub const Orbit = struct {
         }
         self.target = aabb.center();
         const radius = aabb.radius();
+        self.extent = radius;
         self.distance = if (radius > 0)
             @max(1e-4, radius * 1.05 / @sin(self.fovy * 0.5))
         else
             1;
-        self.near = @max(1e-4, self.distance - radius * 1.2);
-        self.far = @max(self.near + 1, self.distance + radius * 1.2);
     }
 };
 
@@ -282,6 +298,30 @@ test "Orbit fit contains every unit-cube corner" {
                 try testing.expect(@abs(ndc.y) <= 1);
                 try testing.expect(ndc.z >= -1 and ndc.z <= 1);
             }
+        }
+    }
+}
+
+test "Orbit clip planes keep the scene visible across the dolly range" {
+    // The regression this pins: clip planes computed once by `fit` and left
+    // alone by `dolly` clipped the model away at both ends — the near plane
+    // ate it on approach, the far plane dropped it on retreat.
+    const bounds: Aabb = .{ .min = .init(-1, -1, -1), .max = .init(1, 1, 1) };
+    var camera: Orbit = .default;
+    camera.fit(bounds);
+    const fitted = camera.distance;
+
+    const radius = bounds.radius();
+    for ([_]f32{ 1e-3, 1e-2, 0.1, 0.5, 1, 2, 10, 1e3, 1e5 }) |scale| {
+        camera.distance = fitted * scale;
+        const planes = camera.clipPlanes();
+        try testing.expect(planes.near > 0 and planes.near < planes.far);
+        // The far side of the bounding sphere is still inside the frustum.
+        try testing.expect(planes.far > camera.distance + radius);
+        // Outside the sphere, the near side is not clipped either. Inside it
+        // there is no "near side" to preserve — any positive near will do.
+        if (camera.distance > radius) {
+            try testing.expect(planes.near < camera.distance - radius);
         }
     }
 }

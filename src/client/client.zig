@@ -1085,9 +1085,22 @@ test "socket path precedence and optional disconnected sessions" {
         try resolveSocketPath(.empty, null, &storage),
     );
 
+    // Point at a path that cannot have a listener. Resolving to the real
+    // default (`/tmp/vertex.sock`) made this assert that nobody is running a
+    // viewer — which is false exactly when vertex is being used as intended,
+    // since the viewer is meant to stay up for days.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var absent_buf: [64]u8 = undefined;
+    const absent = try std.fmt.bufPrint(
+        &absent_buf,
+        ".zig-cache/tmp/{s}/absent.sock",
+        .{&tmp.sub_path},
+    );
     var connection = try connectWith(testing.io, .empty, .{
         .name = "optional",
         .optional = true,
+        .socket_path = absent,
     });
     try testing.expect(!connection.isConnected());
     try connection.step();
