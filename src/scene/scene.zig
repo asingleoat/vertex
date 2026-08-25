@@ -1,8 +1,31 @@
-//! Pure, allocation-explicit scene storage for decoded protocol messages.
+//! The scene: everything the viewer knows about the geometry it is displaying.
 //!
-//! Structure identity is its interned name. Viewer-owned UI state therefore
-//! survives runs while geometry versions and refcounted, 64-byte-aligned blobs
-//! remain entirely inside this module.
+//! A scene holds named structures. A structure is a mesh, a point cloud or a
+//! line set, identified by the name a sketch registered it under and holding a
+//! chronological list of versions. A version is one snapshot of that structure's
+//! geometry, tagged with the run and frame it arrived in, and is a set of
+//! references into a reference-counted blob store rather than a copy of
+//! anything. Registering a mesh under a name that already exists therefore
+//! appends a version, and a positions-only update appends a version that shares
+//! the previous one's topology blob. This is why the timeline costs memory in
+//! proportion to what actually changed per frame, and why scrubbing it rebinds
+//! existing GPU buffers rather than uploading anything.
+//!
+//! Identity is the interned name, which is what makes viewer state survive a
+//! rebuild: the display settings for "surface" are keyed by that name and are
+//! untouched when a new run replaces the geometry behind it.
+//!
+//! The module is pure. It performs no I/O, holds no globals, and touches
+//! neither sokol nor the socket; the only memory it uses comes from the
+//! allocator passed to `init`. Its inputs are decoded `protocol.Message` values
+//! and its outputs are mutations to its own storage plus lists of blob indices
+//! the render edge drains. Blob bytes are either copied into scene-owned
+//! storage or, on the zero-copy path, adopted as views into a mapping the edge
+//! owns; `Blob` and `Mapping` describe how those two cases differ.
+//!
+//! Nothing here allocates except where an allocator appears in the signature,
+//! so the per-declaration notes below concern ownership and lifetime rather
+//! than allocation.
 const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -17,25 +40,32 @@ const StringTable = std.HashMapUnmanaged(
     std.hash_map.default_max_load_percentage,
 );
 
-/// Typed index into `Scene.structures`; it owns no memory and never allocates.
+/// Identifies a structure. Stable for as long as that structure exists, so it
+/// is what edge code holds between frames rather than a pointer.
 pub const StructureIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
-/// Typed index into `Scene.blobs`; it owns no memory and never allocates.
+/// Identifies a blob. The render edge uses it to index its own parallel array
+/// of GPU buffers, which is how edge state attaches to scene entities.
 pub const BlobIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
-/// Typed index into `Scene.mappings`; it owns no memory, never allocates, and
-/// `.none` marks allocator-owned blob bytes.
+/// Identifies a registered shared mapping, with `.none` meaning that a blob's
+/// bytes are scene-owned rather than a view into someone else's memory.
 pub const MappingIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
-/// Byte offset of a NUL-terminated entry in `Scene.strings`; borrowed string
-/// views are invalidated when the scene interns another string. The index owns
-/// no memory and never allocates.
+/// Identifies an interned string, as a byte offset into one shared buffer.
+///
+/// Names are interned once, on first registration, so comparing two structures'
+/// names is comparing two integers. A `[]const u8` obtained from `string` is
+/// invalidated by interning anything else, because the buffer may move; hold
+/// the index, not the slice.
 pub const StringIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 
-/// Renderable structure kind; this value owns no memory and never allocates.
+/// What a structure is: a triangle mesh, a point cloud or a set of line
+/// segments. It is fixed when the structure is first registered; registering the
+/// same name as a different kind replaces its history rather than appending.
 pub const Kind = enum(u8) { mesh, points, lines };
 
-/// Quantity payload kind; this value owns no memory and never allocates.
+/// Whether a quantity holds one `f32` per element or one vector per element.
 pub const QuantityKind = enum(u8) { scalar, vector };
 
 /// The live-blob limit. The value owns no memory and changing it allocates
@@ -46,8 +76,9 @@ pub const Retention = struct {
     budget_bytes: usize = 2 * 1024 * 1024 * 1024,
 };
 
-/// Allocation-free snapshot of live blob/version accounting. The returned
-/// value owns no memory.
+/// A snapshot of what the scene currently costs: live blob bytes and count,
+/// retained versions, and versions evicted since the run began. The viewer
+/// displays these and the smoke tests assert on them.
 pub const MemoryStats = struct {
     blob_bytes: usize,
     mapped_bytes: usize,
@@ -56,7 +87,12 @@ pub const MemoryStats = struct {
     evicted_versions: u32,
 };
 
-/// Persistent per-name viewer state. It owns no memory and never allocates.
+/// How a structure is displayed, kept per name rather than per structure so
+/// that it survives a rebuild.
+///
+/// A new run replaces geometry but not these settings, which is the point: the
+/// visibility, colormap and sizes chosen while looking at a result are still in
+/// force when the algorithm is edited and run again.
 pub const UiState = struct {
     visible: bool = true,
     wireframe: bool = false,
@@ -67,9 +103,14 @@ pub const UiState = struct {
     vector_scale: f32 = 1.0,
 };
 
-/// One chronological geometry snapshot. The record allocates nothing; blob
-/// references are owned by the containing structure until that version is
-/// dropped or the scene is deinitialized.
+/// One snapshot of a structure's geometry, tagged with the run and frame it
+/// arrived in.
+///
+/// It holds references rather than data: a positions blob, an optional topology
+/// blob, and a range of quantity references in the structure's side array. Two
+/// versions that differ only in vertex positions share one topology blob, which
+/// is what makes a positions-only update cheap. The references are owned by the
+/// containing structure until the version is dropped.
 pub const Version = struct {
     run: u32,
     frame: u32,
@@ -79,8 +120,10 @@ pub const Version = struct {
     quantity_len: u32,
 };
 
-/// One quantity attachment in a version-owned side-array range. Its blob
-/// reference is owned by that version; the record itself never allocates.
+/// One named field attached to a version: which name, what kind, what it
+/// attaches to, how many values, and the blob holding them. These live
+/// contiguously in a per-structure side array, addressed by the range a
+/// `Version` records.
 pub const QuantityRef = struct {
     name: StringIndex,
     blob: BlobIndex,
@@ -90,8 +133,13 @@ pub const QuantityRef = struct {
     kind: QuantityKind,
 };
 
-/// One named renderable. Its unmanaged version and quantity arrays are owned
-/// by `Scene` and are released by `Scene.deinit`.
+/// A named renderable and its history: the interned name, what kind it is, how
+/// many dimensions it claims, every version so far, and the side array those
+/// versions address for their quantities.
+///
+/// A structure with no versions has been discarded by a run that did not
+/// register it; its slot and `UiState` remain so that the name can come back.
+/// The arrays are owned by the scene and released by `Scene.deinit`.
 pub const Structure = struct {
     versions: std.ArrayList(Version) = .empty,
     quantity_refs: std.ArrayList(QuantityRef) = .empty,
@@ -102,34 +150,49 @@ pub const Structure = struct {
     touched: bool = false,
 };
 
-/// Refcounted blob view. The record allocates nothing. Allocator-owned bytes
-/// use `mapping = .none`; mapped bytes borrow their registered mapping until
-/// the final blob release.
+/// A reference-counted run of bytes: the positions, topology or quantity values
+/// that versions point at.
+///
+/// Blobs are shared, which is the mechanism behind the timeline's memory
+/// behaviour: two versions referring to the same topology hold one blob between
+/// them, and it is freed when the last reference goes. The bytes are either
+/// scene-owned, allocated 64-byte aligned, with `mapping` set to `.none`, or a
+/// view into a registered mapping, in which case the blob holds a reference on
+/// that mapping until its own last release.
 pub const Blob = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     refcount: u32,
     mapping: MappingIndex,
 };
 
-/// One edge-owned fd mapping registered with the pure scene. The record
-/// allocates nothing; the scene borrows `bytes` and `fd`, and the edge
-/// unmaps/closes them after their index is released.
+/// A shared memory region that the edge has mapped and the scene may point
+/// into.
+///
+/// This is how the zero-copy path reaches the scene: the socket thread maps a
+/// descriptor the client sent, registers the region here, and blobs then adopt
+/// slices of it as views instead of copying. The scene never unmaps or closes
+/// anything; it counts references and, when a mapping reaches zero, queues its
+/// index in `released_mappings` for the edge to clean up. Ownership stays with
+/// the edge throughout.
 pub const Mapping = struct {
     bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
     fd: i32,
     refcount: u32,
 };
 
-/// Interned log entry. The record allocates nothing; text storage is owned by
-/// the containing scene.
+/// One line in the viewer's console, with its text interned in the scene.
 pub const LogEntry = struct {
     level: protocol.LogLevel,
     text: StringIndex,
 };
 
-/// Errors from applying a decoded message. The error set owns no memory and
-/// allocates nothing. OOM is reported without leaking; all other errors
-/// describe protocol messages that cannot mutate this scene.
+/// The ways applying a message can fail.
+///
+/// Out of memory is reported without leaving the scene inconsistent or leaking.
+/// Every other error describes a message that is well-formed but not applicable,
+/// such as a quantity naming a structure that does not exist or a positions
+/// update whose vertex count disagrees with the mesh it names; the scene is
+/// unchanged in those cases.
 pub const ApplyError = std.mem.Allocator.Error || error{
     UnknownStructure,
     KindMismatch,
@@ -137,9 +200,9 @@ pub const ApplyError = std.mem.Allocator.Error || error{
     NoRunActive,
 };
 
-/// Maximum retained log entries. The constant owns no memory and allocates
-/// nothing. Interned text remains scene-owned even after an old entry is
-/// evicted; the entry array does not grow beyond this cap.
+/// How many console lines the scene retains. Beyond this the oldest entry is
+/// dropped and the array does not grow further. The interned text of a dropped
+/// entry stays in the string buffer, since interning is append-only.
 pub const max_log_entries: usize = 1024;
 
 const empty_blob_storage: [0]u8 align(layout.blob_alignment.toByteUnits()) = .{};
@@ -167,8 +230,16 @@ fn emptyMappingBytes() []align(layout.blob_alignment.toByteUnits()) const u8 {
     return empty_mapping_storage[0..];
 }
 
-/// Owns all scene strings, structures, versions, blobs, notifications, and
-/// logs. Every allocation uses the allocator supplied to `init`.
+/// The scene itself: the structures, their versions, the blob store those
+/// versions point into, the registered mappings, the interned strings and the
+/// console log.
+///
+/// A viewer holds one. Messages go in through `apply`, which is the only way its
+/// contents change; the render edge then reads through `versionAt`,
+/// `positionsOf`, `facesOf` and their neighbours, and drains `new_blobs` and
+/// `freed_blobs` to keep its GPU buffers in step. Every allocation uses the
+/// allocator given to `init`, and `deinit` releases all of it, after the edge
+/// has taken back the mappings it owns.
 pub const Scene = struct {
     gpa: std.mem.Allocator,
     strings: std.ArrayList(u8) = .empty,
@@ -198,15 +269,18 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // Scene lifecycle
 
-    /// Initializes an empty scene without allocating. The caller must keep
-    /// `gpa` valid until `deinit`.
+    /// Returns an empty scene. Nothing is allocated until the first message is
+    /// applied. `gpa` must stay valid until `deinit`.
     pub fn init(gpa: std.mem.Allocator) Scene {
         return .{ .gpa = gpa };
     }
 
-    /// Frees every allocation owned by the scene with the allocator retained
-    /// by `init`. The edge must first call `takeAllMappings`, then unmap and
-    /// close every returned mapping. Borrowed views and indices become invalid.
+    /// Frees everything the scene owns.
+    ///
+    /// The edge must first call `takeAllMappings` and unmap and close what it
+    /// receives, because the scene borrows those regions and cannot release
+    /// them. Every view and index obtained from the scene is invalid
+    /// afterwards.
     pub fn deinit(self: *Scene) void {
         std.debug.assert(self.live_mappings == 0);
         var structures = self.structures.slice();
@@ -244,9 +318,18 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // apply + per-message handlers
 
-    /// Applies one decoded message. Slices inside registered mappings become
-    /// refcounted views; all other retained slices are copied into scene-owned
-    /// storage. Only allocation and semantic errors are returned.
+    /// Applies one decoded message, and is the only way a scene changes.
+    ///
+    /// Geometry messages register or update a structure and append a version;
+    /// quantity messages attach a field to a structure that already exists; the
+    /// run and frame messages advance the lifecycle that versions are tagged
+    /// with. What a message means is described in `protocol.Kind`.
+    ///
+    /// Slices that lie inside a registered mapping are adopted as
+    /// reference-counted views, so the zero-copy path stores nothing new;
+    /// everything else is copied into scene-owned storage before this returns,
+    /// so the caller's payload can be reused immediately. On any error the scene
+    /// is left unchanged.
     pub fn apply(self: *Scene, message: protocol.Message) ApplyError!void {
         switch (message) {
             .hello => |hello| {
@@ -772,15 +855,21 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // blob store
 
-    /// Creates a 64-byte-aligned, refcount-one blob and queues its index in
-    /// `new_blobs`. Registered mapping slices are adopted without allocation;
-    /// all other bytes are copied into scene-owned storage.
+    /// Creates a blob holding `bytes` and returns its index, with one
+    /// reference already held by the caller.
+    ///
+    /// Bytes that lie inside a registered mapping are adopted as a view, taking
+    /// a reference on that mapping; anything else is copied into scene-owned
+    /// storage aligned to 64 bytes. Either way the new index is queued in
+    /// `new_blobs`, which is how the render edge learns it has a buffer to
+    /// upload.
     pub fn createBlob(self: *Scene, bytes: []const u8) std.mem.Allocator.Error!BlobIndex {
         try self.reserveBlobCreates(1);
         return self.createBlobAssumeReserved(bytes);
     }
 
-    /// Adds one owning reference to a live blob without allocation.
+    /// Takes another reference to a live blob. Every version that points at a
+    /// blob holds one, which is what lets versions share topology.
     pub fn retainBlob(self: *Scene, blob_index: BlobIndex) void {
         std.debug.assert(blob_index != .none);
         var blobs = self.blobs.slice();
@@ -789,9 +878,13 @@ pub const Scene = struct {
         refcount.* += 1;
     }
 
-    /// Releases one owning reference without allocating. At zero, owned bytes
-    /// are freed; mapped bytes decrement their mapping and may queue its release.
-    /// The blob index is queued in both `blob_free` and `freed_blobs`.
+    /// Drops one reference to a blob.
+    ///
+    /// At zero, scene-owned bytes are freed, while a view releases its
+    /// reference on the mapping and may queue that mapping for the edge to
+    /// unmap. The index goes onto the free list for reuse and onto
+    /// `freed_blobs`, which the render edge drains to destroy the matching GPU
+    /// buffer.
     pub fn releaseBlob(self: *Scene, blob_index: BlobIndex) void {
         std.debug.assert(blob_index != .none);
         var blobs = self.blobs.slice();
@@ -831,8 +924,8 @@ pub const Scene = struct {
         self.live_blobs -= 1;
     }
 
-    /// Returns immutable scene-owned blob bytes without allocation. The view
-    /// remains valid until the blob's final `releaseBlob` or scene deinit.
+    /// The bytes of a live blob, aligned to 64 bytes. The view is valid until
+    /// that blob's last reference is released or the scene is deinitialized.
     pub fn blobBytes(self: *const Scene, blob_index: BlobIndex) []align(layout.blob_alignment.toByteUnits()) const u8 {
         std.debug.assert(blob_index != .none);
         const blobs = self.blobs.slice();
@@ -913,8 +1006,13 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // mappings
 
-    /// Registers an edge-owned mapping with refcount zero. The scene borrows
-    /// `bytes` and `fd`; registration reserves every future release-queue push.
+    /// Registers a shared region the edge has mapped, so that blobs may adopt
+    /// slices of it instead of copying.
+    ///
+    /// The scene borrows the bytes and the descriptor and never closes either;
+    /// it starts the mapping at zero references, which rise as blobs adopt it.
+    /// Registration reserves the queue space that every future release of this
+    /// mapping will need, so releasing can never fail for want of memory.
     pub fn registerMapping(
         self: *Scene,
         bytes: []align(layout.blob_alignment.toByteUnits()) const u8,
@@ -942,8 +1040,8 @@ pub const Scene = struct {
         return mapping_index;
     }
 
-    /// Returns the borrowed bytes of a registered mapping without allocation.
-    /// The view remains valid until the edge forgets the mapping index.
+    /// The bytes of a registered mapping, borrowed from the edge and valid
+    /// until the edge forgets that mapping.
     pub fn mappingBytes(
         self: *const Scene,
         mapping_index: MappingIndex,
@@ -955,8 +1053,8 @@ pub const Scene = struct {
         return mappings.items(.bytes)[i];
     }
 
-    /// Returns one registered mapping record by value without allocation. The
-    /// record remains edge-owned and must not be closed before `forgetMapping`.
+    /// The record for a registered mapping, copied out. The edge still owns the
+    /// region and must not unmap or close it before calling `forgetMapping`.
     pub fn mappingValue(self: *const Scene, mapping_index: MappingIndex) Mapping {
         std.debug.assert(mapping_index != .none);
         const mappings = self.mappings.slice();
@@ -969,8 +1067,9 @@ pub const Scene = struct {
         };
     }
 
-    /// Queues every registered zero-ref mapping in registration-index order.
-    /// `registerMapping` pre-reserves this operation, so it never allocates.
+    /// Queues every mapping no blob still refers to, in registration order, for
+    /// the edge to unmap and close. The space was reserved at registration, so
+    /// this cannot fail.
     pub fn releaseUnreferencedMappings(self: *Scene) void {
         const mappings = self.mappings.slice();
         const fds = mappings.items(.fd);
@@ -981,8 +1080,9 @@ pub const Scene = struct {
         }
     }
 
-    /// Forgets a zero-ref mapping after the edge has unmapped its bytes and
-    /// closed its fd. The slot is returned to the free list without allocation.
+    /// Drops a mapping the edge has finished unmapping and closing, returning
+    /// its slot for reuse. Call it only after the region is actually gone, since
+    /// any view into it is invalid from this point.
     pub fn forgetMapping(self: *Scene, mapping_index: MappingIndex) void {
         std.debug.assert(mapping_index != .none);
         var mappings = self.mappings.slice();
@@ -1009,9 +1109,12 @@ pub const Scene = struct {
         self.live_mappings -= 1;
     }
 
-    /// Moves every still-registered mapping into caller-owned `out`, using the
-    /// scene allocator only to reserve output capacity. The edge then owns all
-    /// returned fds/mappings and must unmap and close them before `deinit`.
+    /// Hands back every mapping still registered, so that the edge can unmap
+    /// and close them.
+    ///
+    /// This is the required step before `deinit`: the scene cannot release these
+    /// regions itself, so it surrenders them first. `out` is caller-owned and
+    /// the scene's allocator is used only to reserve its capacity.
     pub fn takeAllMappings(self: *Scene, out: *std.ArrayList(Mapping)) std.mem.Allocator.Error!void {
         try out.ensureUnusedCapacity(self.gpa, self.live_mappings);
         var mappings = self.mappings.slice();
@@ -1056,8 +1159,9 @@ pub const Scene = struct {
     // -----------------------------------------------------------------------
     // queries
 
-    /// Finds a structure by borrowed name without allocation. The returned
-    /// index remains stable for the lifetime of that structure.
+    /// Looks up a structure by name, returning null if no structure has ever
+    /// been registered under it. The index stays valid for that structure's
+    /// lifetime, including across runs that do not register it.
     pub fn find(self: *const Scene, name: []const u8) ?StructureIndex {
         if (std.mem.findScalar(u8, name, 0) != null) return null;
         const raw = self.string_table.getKeyAdapted(name, std.hash_map.StringIndexAdapter{
@@ -1066,9 +1170,15 @@ pub const Scene = struct {
         return self.by_name.get(@fromBackingInt(@intCast(raw)));
     }
 
-    /// Selects the latest current-run version at or before `frame` without
-    /// allocating. A structure with no current-run versions falls back to its
-    /// last retained previous-run version; one first registered later returns null.
+    /// Returns the version of `structure_index` that frame `frame` should
+    /// display, or null if the structure had not appeared by then.
+    ///
+    /// Frames are deltas, so this is the latest version at or before `frame`
+    /// rather than one recorded for it: a structure registered once and never
+    /// updated displays that version for the rest of the run. A structure with
+    /// no version in the current run falls back to the last one retained from
+    /// the previous run, which is what keeps geometry on screen between a
+    /// rebuild and the first message of the new run.
     pub fn versionAt(self: *const Scene, structure_index: StructureIndex, frame: u32) ?u32 {
         const structures = self.structures.slice();
         const versions = structures.items(.versions)[indexOf(structure_index)].items;
@@ -1085,8 +1195,9 @@ pub const Scene = struct {
         return @intCast(versions.len - 1);
     }
 
-    /// Reports whether the current run has a version at exactly `frame` for
-    /// `structure_index`. The lookup borrows scene state and never allocates.
+    /// Whether the structure was actually updated at `frame`, as opposed to
+    /// merely being displayed there through an earlier version. The UI uses it
+    /// to mark that a scrubbed frame is showing older geometry.
     pub fn hasExactVersion(self: *const Scene, structure_index: StructureIndex, frame: u32) bool {
         const structures = self.structures.slice();
         const versions = structures.items(.versions)[indexOf(structure_index)].items;
@@ -1096,14 +1207,14 @@ pub const Scene = struct {
         return false;
     }
 
-    /// Returns the number of frames in the current run (frame 0 is implicit,
-    /// so this is 1 right after begin_run); borrows scene state, never allocates.
+    /// The number of frames in the current run. Frame 0 is implicit, so this is
+    /// 1 immediately after a run begins, and it bounds the timeline scrubber.
     pub fn frameCount(self: *const Scene) u32 {
         return @intCast(self.frame_labels.items.len);
     }
 
-    /// Returns live blob bytes/count, retained version count, and evictions
-    /// since the current run began. It scans flat version arrays without allocation.
+    /// Samples what the scene currently costs, by scanning the version arrays.
+    /// See `MemoryStats`.
     pub fn memoryStats(self: *const Scene) MemoryStats {
         var version_count: usize = 0;
         const structures = self.structures.slice();
@@ -1123,35 +1234,35 @@ pub const Scene = struct {
         };
     }
 
-    /// Returns a borrowed interned string without allocation. The `.none`
-    /// sentinel maps to an empty string; other views invalidate on interning.
+    /// The text of an interned string, with `.none` mapping to the empty
+    /// string. The view is invalidated by interning anything else.
     pub fn string(self: *const Scene, string_index: StringIndex) []const u8 {
         if (string_index == .none) return "";
         return std.mem.sliceTo(self.strings.items[indexOf(string_index)..], 0);
     }
 
-    /// Returns a zero-copy positions view over a live scene-owned blob. The
-    /// view borrows the scene and never allocates.
+    /// The vertex positions of a version, as a view over its blob. Nothing is
+    /// copied; the view is valid while that version's blobs are.
     pub fn positionsOf(self: *const Scene, version: Version) layout.Positions.Const {
         return layout.Positions.Const.fromBytes(self.blobBytes(version.positions));
     }
 
-    /// Returns a zero-copy face view over a version's topology blob. The view
-    /// borrows the scene and never allocates.
+    /// The triangles of a mesh version, as a view over its topology blob. Empty
+    /// for a version with no topology.
     pub fn facesOf(self: *const Scene, version: Version) []const [3]u32 {
         if (version.topology == .none) return &.{};
         return std.mem.bytesAsSlice([3]u32, self.blobBytes(version.topology));
     }
 
-    /// Returns a zero-copy segment view over a version's topology blob. The
-    /// view borrows the scene and never allocates.
+    /// The segments of a line-set version, as a view over its topology blob.
     pub fn segmentsOf(self: *const Scene, version: Version) []const [2]u32 {
         if (version.topology == .none) return &.{};
         return std.mem.bytesAsSlice([2]u32, self.blobBytes(version.topology));
     }
 
-    /// Returns the immutable quantity range owned by `version`. The returned
-    /// slice borrows a structure side array and is invalidated by later applies.
+    /// The quantities attached to a version, as a slice of the structure's side
+    /// array. Applying another message may move that array, so do not hold this
+    /// across an `apply`.
     pub fn quantities(self: *const Scene, structure_index: StructureIndex, version: Version) []const QuantityRef {
         const structures = self.structures.slice();
         const refs = structures.items(.quantity_refs)[indexOf(structure_index)].items;
