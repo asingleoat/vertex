@@ -109,6 +109,10 @@ fn configureEnvironment(environ: std.process.Environ) void {
     if (std.process.Environ.getPosix(environ, "VERTEX_SHARED_HUGE")) |value| {
         state.huge_pages = !std.mem.eql(u8, value, "0");
     }
+    // A preference about how shared mappings are backed. With no shared memory
+    // there is nothing to back, so report and carry `off` rather than
+    // advertising a setting this platform could never honour.
+    if (!vertex.platform.shm.supported) state.huge_pages = false;
     if (std.process.Environ.getPosix(environ, "VERTEX_STEP_LIB")) |value| {
         state.report_stepper = value.len != 0;
     }

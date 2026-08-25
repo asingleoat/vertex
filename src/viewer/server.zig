@@ -242,11 +242,22 @@ pub const Server = struct {
 
         while (!self.stopping.load(.acquire)) {
             var received_handles: [28]platform.Handle = undefined;
-            const received = try platform.fdpass.recvWithHandles(
+            const received = if (platform.fdpass.supported) try platform.fdpass.recvWithHandles(
                 stream.socket.handle,
                 &read_buffer,
                 &received_handles,
-            );
+            ) else read: {
+                // Without handle passing a client can never send a shared
+                // section, so a plain readv sees the whole stream. Reading
+                // through recvWithHandles here would be `error.Unsupported`,
+                // i.e. no ingest at all — not even the inline path.
+                var data: [1][]u8 = .{&read_buffer};
+                break :read platform.fdpass.Received{
+                    .bytes = try stream.read(self.io, &data),
+                    .handle_count = 0,
+                    .control_truncated = false,
+                };
+            };
             if (received.bytes == 0) return error.EndOfStream;
             if (self.first_ingest_minflt == null) self.first_ingest_minflt = platform.stats.minorFaults();
             if (fd_len + received.handle_count > fd_fifo.len) {
