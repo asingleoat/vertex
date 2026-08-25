@@ -56,32 +56,57 @@ paths.
 - Tim's global git config sets `worktree.useRelativePaths`; nix's libgit2
   cannot read that extension, so `git worktree add --no-relative-paths`.
 
-## 3. Prep already done on Linux (untested on a Mac — expect to adjust)
+## 3. Prep done on Linux (Step 0 has now tested it on a Mac — see §4)
 
 - `flake.nix` lists `aarch64-darwin`; the dev shell gates Linux-only inputs
-  (glibc headers, X11/GL/ALSA libs, `gdb`, `xvfb-run`) and the glibc pin
-  hook (`ZIG_DYNAMIC_LINKER` etc.) behind `hostPlatform.isLinux`; the
-  `sokol-shdc` derivation picks the `osx_arm64` binary (hash prefetched).
-  `nix eval .#devShells.aarch64-darwin.default.drvPath` evaluates, that is
-  all that could be checked here. (`x86_64-darwin` was dropped: nixpkgs
-  26.11 no longer supports it.)
-- `build.zig`'s target pinning only acts when `ZIG_DYNAMIC_LINKER` is set,
-  so it is inert on macOS. The zig `overrideAttrs` patch (maker
-  `--dynamic-linker` dangling-slice bug) is harmless on macOS.
+  (glibc headers, X11/GL/ALSA libs, `gdb`, `xvfb-run`) behind
+  `hostPlatform.isLinux`; the `sokol-shdc` derivation picks the `osx_arm64`
+  binary (hash prefetched) — ✅ it runs. (`x86_64-darwin` was dropped:
+  nixpkgs 26.11 no longer supports it.) The glibc pin hook was *not*
+  gated — the assumption below was wrong.
+- ~~`build.zig`'s target pinning only acts when `ZIG_DYNAMIC_LINKER` is set,
+  so it is inert on macOS.~~ Wrong: the darwin cc wrapper publishes
+  `nix-support/dynamic-linker` too, so the hook exported it and the pin
+  fired. Both the hook and `resolveTarget` are Linux-gated now (§4 Step 0).
+  The zig `overrideAttrs` patch (maker `--dynamic-linker` dangling-slice
+  bug) is harmless on macOS, as expected.
 
 ## 4. The port, in order (each step has a done-criterion; stop and think if one fails)
 
-**Step 0 — toolchain and pure core.** `nix develop -c zig build test`.
-Expect friction: zig needs the macOS SDK for `-lc`/frameworks — check
-`SDKROOT`/`xcrun` inside the shell (nixpkgs provides `apple-sdk`; zig's
-darwin detection uses `xcrun --show-sdk-path`). Tests that are Linux-only by
-construction and will need a darwin twin or a skip: the shm round trip
-(`platform.zig` → `shm_linux` test), `sockpath_linux.zig`'s long-path test
-(not compiled on darwin), and `client.zig`'s live socket test — it binds a
-**Linux abstract socket** (`"\0name"`); macOS has no abstract namespace, so
-switch it to a short filesystem path under `std.testing.tmpDir`. The shared
-buffer tests (`sharedPositions`, TooManyShared) will see `error.Unsupported`
-until Step 2. Done: all remaining tests green on aarch64-darwin.
+**Step 0 — toolchain and pure core.** ✅ (2026-08-24) `nix develop -c zig
+build test`: 34/34 steps, 66/69 tests, 3 skipped, on `-Dvertex_layout=aos3`,
+`aos4` and `soa`. Every fact is in DESIGN.md's portability table; the two
+that cost the most to find:
+
+- The glibc pin fired here. `flake.nix` gated it on `$NIX_CC/nix-support/
+  dynamic-linker` existing, but nixpkgs' *darwin* cc wrapper ships that file
+  too (holding `/usr/lib/dyld`), so the target got pinned to
+  `aarch64-native-gnu` with a glibc version parsed out of `libSystem-B`.
+  Now gated on `hostPlatform.isLinux`, and `resolveTarget` refuses to pin
+  unless the host is Linux.
+- zig 0.17.0-dev.1857 **skips darwin SDK detection entirely when
+  `NIX_CFLAGS_COMPILE` or `NIX_LDFLAGS` is set** (either alone suffices),
+  after which every `-framework` fails with `searched paths:  none`. The
+  darwin branch of the shell hook unsets both; `DEVELOPER_DIR`/`SDKROOT`
+  from the `apple-sdk` setup hook keep `xcrun` pointed at the pinned SDK.
+  If frameworks ever go missing again, check those two variables first.
+
+The tests went as predicted (abstract socket → a file under
+`std.testing.tmpDir`; the `/proc`-rebasing and shared-memory tests skip),
+with one addition: capability is now a `pub const supported` on the platform
+module rather than an `os.tag` comparison, so Step 2 switches the zero-copy
+path on by writing `shm_darwin.zig`/`fdpass_darwin.zig` — there is no OS
+check left outside `src/platform/` to find.
+
+**Carry into Step 1:** `src/viewer/server.zig:245` reads the socket through
+`platform.fdpass.recvWithHandles`, which is `error.Unsupported` here, so the
+viewer cannot ingest a single byte until that call takes the same
+`platform.fdpass.supported` branch the test's LiveServer now takes
+(`client.zig`, ~line 1124) — or until Step 2 lands a real darwin fdpass.
+Also confirmed while there: `sokol-shdc` (osx_arm64) runs straight from the
+nix store, so the Gatekeeper worry in §5 is a non-issue, and the default
+socket path resolves to `/tmp/vertex.sock` — do **not** switch it to
+`$TMPDIR`, which `nix develop` makes per-shell.
 
 **Step 1 — viewer on Metal, inline path.** sokol-zig's `auto` backend is
 Metal on macOS. Shaders: extend the `shaders` build step to emit both
@@ -137,10 +162,9 @@ table and this file as facts replace guesses.
   all Linux-only; every use is inside `src/platform/*_linux.zig` or a test.
 - The hugetlb notice and `VERTEX_SHARED_HUGE` are meaningless on macOS; the
   stubs report `huge=off` — do not emit the notice there.
-- sokol-shdc darwin binary is unsigned; Gatekeeper may quarantine it — if
-  `sokol-shdc` refuses to run from the nix store, `xattr -d com.apple.quarantine`
-  is not possible on a read-only store; build sokol-tools from source in the
-  flake instead.
+- ~~sokol-shdc darwin binary is unsigned; Gatekeeper may quarantine it~~ —
+  checked 2026-08-24: the `osx_arm64` binary runs from the nix store as-is
+  (`sokol-shdc --help` exits 0). Nothing to do.
 - `scripts/smoke.sh` greps `" debug native"` in the build summary to insist
   on a Debug build; the summary wording may differ for darwin targets.
 

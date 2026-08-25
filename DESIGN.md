@@ -313,23 +313,35 @@ and return `error.Unsupported` so the inline path stays the fallback) or
 inside a viewer edge module with a documented backend assumption. The
 touchpoints and their counterparts:
 
+macOS cells marked ✅ are facts established on aarch64-darwin (macOS 26.5.2,
+M1 Pro, 2026-08-24) while getting `zig build test` green; the rest are still
+the plan.
+
 | Concern | Linux (now) | macOS | Windows |
 |---|---|---|---|
-| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, hugetlbfs via `MFD_HUGETLB` with fallback | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
-| Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | `SCM_RIGHTS` (same API) | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
-| Transport | Unix domain socket via `std.Io.net` | same | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
-| Windowing / GPU | sokol_app X11 + GL 4.3 | sokol_app Cocoa + Metal | sokol_app Win32 + D3D11 |
-| Shaders | `sokol-shdc -l glsl430` | add `metal_macos` | add `hlsl5` |
+| Toolchain | zig from `zig-overlay`, glibc pinned to the shell's (`ZIG_DYNAMIC_LINKER`) | ✅ same zig, no pin: the pin must be Linux-gated because nixpkgs' *darwin* cc wrapper also ships `nix-support/dynamic-linker` (`/usr/lib/dyld`), which used to force `abi=gnu` | — |
+| SDK / frameworks | n/a | ✅ zig 0.17.0-dev.1857 skips its darwin SDK detection (`xcrun --sdk macosx --show-sdk-path`) whenever `NIX_CFLAGS_COMPILE` *or* `NIX_LDFLAGS` is set, and then finds no framework at all (`searched paths:  none`); the dev shell unsets both, leaving `DEVELOPER_DIR`/`SDKROOT` (nixpkgs `apple-sdk` 14.4) to pin the SDK | Win SDK via zig's own headers |
+| Shared memory (`platform.shm`) | `memfd_create` + `mmap`, hugetlbfs via `MFD_HUGETLB` with fallback | `shm_open`/`mmap` (or Mach memory entries); no THP equivalent, so `huge` stays false and the hugetlb notice is silent | `CreateFileMapping`/`MapViewOfFile`; large pages need `SeLockMemoryPrivilege` |
+| Handle passing (`platform.fdpass`) | `SCM_RIGHTS` over the Unix socket | `SCM_RIGHTS` (same API) via `std.c` `sendmsg`/`recvmsg` | no fd passing: `DuplicateHandle` into the viewer process (needs its pid) or a named mapping |
+| Receiving without handle passing | `recvmsg` always | ✅ needed: `recvWithHandles` is `error.Unsupported` here, so a receiver that calls it cannot read the socket at all. Until fdpass lands, read plainly (`Stream.read`) when `platform.fdpass.supported` is false | same, permanently — Windows never passes handles this way |
+| Transport | Unix domain socket via `std.Io.net` | ✅ same; `std.Io.net` binds, connects and accepts on the kqueue `Threaded` backend | `AF_UNIX` exists since Windows 10 1803; `std.Io.net` support to verify |
+| Abstract sockets | `"\0name"`, no file to clean up | ✅ none — Darwin has no abstract namespace; bind a real file | none |
+| Windowing / GPU | sokol_app X11 + GL 4.3 | sokol_app Cocoa + Metal (sokol links `AppKit`, `QuartzCore`, `AudioToolbox`, and `OpenGL` while `-Dgl` is on) | sokol_app Win32 + D3D11 |
+| Shaders | `sokol-shdc -l glsl430` | add `metal_macos`; ✅ the `osx_arm64` sokol-shdc binary runs straight from the nix store — no Gatekeeper quarantine, so sokol-tools need not be built from source | add `hlsl5` |
 | Pick readback (`pick.zig`) | raw `glReadPixels` inside the pass | Metal: blit to a shared `MTLBuffer` + `waitUntilCompleted` | D3D11: `CopySubresourceRegion` to a staging texture + `Map` |
 | Face scalars | GL 4.3 SSBO by `gl_PrimitiveID` | Metal storage buffer + `primitive_id` | D3D11 `StructuredBuffer` + `SV_PrimitiveID` |
-| Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | `$TMPDIR/vertex.sock` | `\\.\pipe` or a temp-dir `AF_UNIX` path |
+| Socket path | `$XDG_RUNTIME_DIR/vertex.sock` | ✅ `/tmp/vertex.sock` — the existing fallback, because `XDG_RUNTIME_DIR` is unset and `$TMPDIR` is *per `nix develop` shell* (`/tmp/nix-shell.XXXXXX/nix-shell.YYYYYY`), which would put viewer and sketch on different sockets | `\\.\pipe` or a temp-dir `AF_UNIX` path |
+| `sun_path` limit | 107 usable bytes, longer ones rebased via `/proc/self/fd/<fd>` | ✅ `sun_path` is `char[104]` (SDK `sys/un.h`) → 103 usable, and there is no `/proc` to rebase on, so longer paths are rejected naming the limit | 107 usable, no rebasing |
 | Measurement (`platform.stats`) | `getrusage`, `/proc/self/status` | `getrusage`, `task_info` | `GetProcessMemoryInfo` |
 
 Rules that keep this cheap: no `std.os.linux` or raw GL call outside
 `src/platform/*` and `pick.zig`; the scene and protocol never see handles as
 anything but opaque `platform.Handle` values; a port starts by filling in one
 row of this table at a time, with the inline payload path working before
-shared memory does.
+shared memory does. Whether a capability exists is a `pub const supported`
+on the platform module (`platform.shm.supported`, `platform.fdpass.supported`)
+that the decl-parity test keeps in sync — callers branch on that, never on
+`builtin.os.tag`, so a port switches a path on by writing the module.
 
 ## Dylib mode — viewer-driven stepping
 
