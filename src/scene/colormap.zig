@@ -1,18 +1,40 @@
-//! Allocation-free scalar range and compile-time color lookup tables.
+//! Turning scalar values into colors.
+//!
+//! A scalar quantity is one number per vertex, face or point, and the viewer
+//! displays it by mapping the range of those numbers onto a color ramp. This
+//! module provides the ramps and the range computation; the mapping itself
+//! happens in the shader, which samples the ramp as a texture.
+//!
+//! The ramps are perceptually uniform where possible, so that equal steps in
+//! value look like equal steps in color and the eye is not misled by artefacts
+//! of the palette. They are computed at compile time and cost no runtime work
+//! and no allocation.
 const std = @import("std");
 
-/// Scalar color palette selector. The value owns no memory and never allocates.
+/// Which color ramp to display a scalar quantity through.
+///
+/// `viridis` is the perceptually uniform default and reads correctly in
+/// greyscale and with the common forms of color blindness. `plasma` is a
+/// similar ramp with a warmer range. `turbo` spans more distinguishable hues,
+/// which suits picking out fine structure at the cost of implying boundaries
+/// that the data may not have. `coolwarm` is diverging, with a neutral middle,
+/// and suits values that are meaningfully signed about zero.
 pub const Colormap = enum(u8) { viridis, turbo, coolwarm, plasma };
 
-/// Returns a pointer to a process-lifetime RGBA8 table computed at compile time.
-/// The caller owns nothing and the function never allocates.
+/// The 256-entry RGBA8 ramp for a colormap, as a pointer to compile-time
+/// constant data that lives for the process. The viewer uploads it as a
+/// one-dimensional texture.
 pub fn table(cm: Colormap) *const [256][4]u8 {
     return &tables[@backingInt(cm)];
 }
 
-/// Computes a finite scalar range without allocating. Non-finite inputs are
-/// ignored; empty, entirely non-finite, and otherwise degenerate inputs are
-/// mapped to a usable non-zero interval.
+/// Computes the range to map a set of scalar values onto a ramp.
+///
+/// Returns the minimum and maximum of the finite values, ignoring NaN and
+/// infinity so that one bad element does not collapse the display of all the
+/// others. Degenerate cases — no values, no finite values, or every value
+/// identical — return an interval of non-zero width, so that the caller can
+/// always divide by it.
 pub fn range(values: []const f32) [2]f32 {
     var minimum = std.math.inf(f32);
     var maximum = -std.math.inf(f32);

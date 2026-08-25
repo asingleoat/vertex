@@ -13,8 +13,9 @@ const Sink = session.Sink;
 const SendError = session.SendError;
 const Error = session.Error;
 
-/// Errors while creating a connection-owned shared buffer. On success the
-/// connection owns both fd and mapping until a send consumes them or close.
+/// Errors from requesting a shared buffer. `Unsupported` means the platform has
+/// no shared memory at all, in which case the caller should fill an ordinary
+/// slice instead; `TooManyShared` means eight are already outstanding.
 pub const SharedError = platform.shm.Error || error{
     Finished,
     NotConnected,
@@ -23,14 +24,22 @@ pub const SharedError = platform.shm.Error || error{
     SharedTooLarge,
 };
 
-/// Errors from resolving and opening the Unix-domain socket plus starting a
-/// run. Connection setup allocates nothing and owns no error payload.
+/// Errors from locating the socket, connecting to it and opening a run. A
+/// connection asked to be optional turns all of these into a disconnected
+/// connection instead.
 pub const ConnectError = platform.sockpath.Error || Error || std.Io.net.UnixAddress.InitError ||
     std.Io.net.UnixAddress.ConnectError;
 
-/// One writable shared mapping owned by its connection until sent. `len` is
-/// the requested logical byte count; `map` includes rounded trailing bytes and
-/// `huge` records whether hugetlb pages were actually obtained.
+/// A writable region mapped into both this process and the viewer, which is how
+/// a payload reaches the viewer without being copied.
+///
+/// `len` is the number of bytes that were asked for, while `map` covers the
+/// whole mapping and so may be longer, since a mapping is a whole number of
+/// pages. `huge` records whether the kernel actually provided huge pages, which
+/// is a request rather than a guarantee.
+///
+/// The connection owns this until the message that sends it succeeds, which
+/// consumes it.
 pub const Shared = struct {
     fd: platform.Handle,
     map: []align(std.heap.page_size_min) u8,
@@ -38,6 +47,9 @@ pub const Shared = struct {
     huge: bool,
 };
 
+/// How many shared buffers one connection may hold at a time. The bound exists
+/// because each is a descriptor and a mapping, and a sketch that leaks them
+/// would otherwise exhaust both silently.
 pub const max_outstanding_shared = 8;
 
 const max_consumed_ranges = 8;
@@ -47,6 +59,14 @@ const ConsumedRange = struct {
     len: usize,
 };
 
+/// Tracks the shared buffers a connection has handed out but not yet sent.
+///
+/// A buffer must be recognised again when it comes back as a slice inside a
+/// message, so that the encoder can refer to it rather than copying it, which is
+/// what `findOutstanding` does by address range. Once a send consumes a buffer
+/// the tracker also remembers the range briefly, so that a second attempt to
+/// send the same buffer is reported as `SharedConsumed` rather than silently
+/// referring to memory that has been unmapped.
 pub const SharedTracker = struct {
     outstanding: [max_outstanding_shared]Shared = undefined,
     outstanding_len: u8 = 0,
@@ -140,16 +160,20 @@ fn sharedRegion(shared: Shared) platform.shm.Region {
     return .{ .handle = shared.fd, .map = shared.map, .huge = shared.huge };
 }
 
-/// An open Unix-domain socket sink. It owns the socket until `close`; message
-/// encoding and vectored writes borrow caller data and allocate nothing.
+/// A `Sink` that encodes each message and writes it to a Unix-domain socket.
+///
+/// This is the transport a socket-mode sketch uses. A message with no shared
+/// sections is written with one `writev` straight from the caller's slices; a
+/// message that refers to shared buffers is written with `sendmsg`, carrying
+/// the descriptors alongside. It owns the socket until `close`.
 pub const SocketSink = struct {
     io: std.Io,
     stream: std.Io.net.Stream,
     shared_tracker: ?*SharedTracker = null,
     closed: bool = false,
 
-    /// Opens `path` as a Unix-domain stream. The returned sink owns the socket;
-    /// `path` is borrowed for this call and no allocation occurs.
+    /// Connects to the socket at `path`, which is borrowed for the call. The
+    /// returned sink owns the socket.
     pub fn connect(io: std.Io, path: []const u8) (platform.sockpath.Error || std.Io.net.UnixAddress.InitError || std.Io.net.UnixAddress.ConnectError)!SocketSink {
         // Paths longer than sockaddr_un allows are rebased on a directory
         // handle where the platform supports it (see platform.sockpath).
@@ -166,21 +190,20 @@ pub const SocketSink = struct {
         };
     }
 
-    /// Wraps an already-open stream. Ownership transfers to the returned sink;
-    /// no allocation occurs.
+    /// Wraps a stream that is already open, taking ownership of it. Used by
+    /// tests, which connect the two ends themselves.
     pub fn fromStream(io: std.Io, stream: std.Io.net.Stream) SocketSink {
         return .{ .io = io, .stream = stream };
     }
 
-    /// Returns a sink borrowing `self`; it is invalid after `self` is moved or
-    /// closed. Creating the interface allocates nothing.
+    /// Returns the `Sink` interface over this socket. It points at `self`, so
+    /// it is invalid once `self` has been moved or closed.
     pub fn sink(self: *SocketSink) Sink {
         std.debug.assert(!self.closed);
         return .{ .context = self, .vtable = &socket_vtable };
     }
 
-    /// Closes the owned socket once. It is safe to call repeatedly and allocates
-    /// no memory.
+    /// Closes the socket. Calling it again does nothing.
     pub fn close(self: *SocketSink) void {
         if (self.closed) return;
         self.stream.close(self.io);
@@ -335,8 +358,13 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
     }
 }.send };
 
-/// Resolves explicit, `VERTEX_SOCK`, runtime-dir, then `/tmp` precedence into
-/// caller-owned storage. The returned slice borrows `storage` and no allocation occurs.
+/// Determines which socket to use, writing the answer into `storage` and
+/// returning the portion filled.
+///
+/// The order of precedence is an explicit path, then `$VERTEX_SOCK`, then
+/// `$XDG_RUNTIME_DIR/vertex.sock`, then `/tmp/vertex.sock`. Both the viewer's
+/// bind and the client's connect resolve through this, which is what makes them
+/// agree without either being configured.
 pub fn resolveSocketPath(
     environ: std.process.Environ,
     explicit_path: ?[]const u8,
@@ -372,6 +400,10 @@ fn copySocketPath(path: []const u8, storage: *[std.Io.Dir.max_path_bytes]u8) err
     return storage[0..path.len];
 }
 
+/// Decides whether shared buffers should ask for huge pages: an explicit choice
+/// if one was made, otherwise `VERTEX_SHARED_HUGE`, otherwise enabled. Always
+/// false on a platform with no huge-page class, since the preference could not
+/// be honoured.
 pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
     // Not a preference anyone can hold on a platform with no huge-page class.
     if (!platform.shm.huge_supported) return false;
@@ -382,6 +414,8 @@ pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
     return !std.mem.eql(u8, value, "0");
 }
 
+/// A sink that accepts every message and does nothing, which is what backs a
+/// connection opened with `.optional` when no viewer is listening.
 pub fn noopSink() Sink {
     return .{ .context = null, .vtable = &noop_vtable };
 }

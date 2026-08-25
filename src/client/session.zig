@@ -12,16 +12,19 @@ const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
 
-/// Errors a sink may return while synchronously delivering one borrowed
-/// message. No error owns memory and delivery allocates nothing in `SocketSink`.
+/// Errors a sink may return while delivering one message. These are the
+/// transport's failures — a socket write that failed or was short, or a shared
+/// section that cannot be sent — rather than anything about the message.
 pub const SendError = std.Io.net.Stream.Writer.Error || platform.fdpass.Error || error{
     ShortWrite,
     MisalignedShared,
     SharedConsumed,
 };
 
-/// Errors from client state validation or synchronous message delivery. No
-/// error owns memory, and client operations allocate nothing.
+/// Everything a message call can return: the transport failures in `SendError`,
+/// plus the argument and ordering checks made before anything is sent.
+/// `Finished` means the run has already ended; the rest report an argument the
+/// protocol cannot express.
 pub const Error = SendError || error{
     Finished,
     FrameIndexOverflow,
@@ -31,38 +34,59 @@ pub const Error = SendError || error{
     TextTooLong,
 };
 
-/// Dimension option shared by meshes, points, and lines. It owns no memory
-/// and causes no allocation.
+/// Options accepted when registering a mesh, a point cloud or a line set.
+/// `dim` marks a structure as planar, which the viewer uses to choose an
+/// orthographic camera once every live structure is two-dimensional.
 pub const GeometryOptions = struct {
     dim: protocol.Dim = .d3,
 };
 
-/// A borrowed, type-erased destination for semantic protocol messages.
-/// The implementor owns `context`; `send` is synchronous and allocates nothing.
+/// Where a session sends its messages: a type-erased destination that accepts
+/// one `protocol.Message` at a time.
+///
+/// This is the seam that lets the same sketch code run over a socket or inside
+/// the viewer. `SocketSink` in `transport.zig` encodes each message and writes
+/// it; `DirectSink` in `dylib.zig` encodes it and hands the bytes to the viewer
+/// in-process. A test can supply a sink that merely records, which is how the
+/// message sequencing is tested without any I/O at all.
+///
+/// The implementation owns whatever `context` points at; `send` is synchronous
+/// and borrows the message and its slices for the duration of the call.
 pub const Sink = struct {
     context: ?*anyopaque,
     vtable: *const VTable,
 
-    /// Operations supplied by a sink implementor. The table owns no memory;
-    /// `send` borrows the message and every slice within it for the call only.
+    /// The operations a sink must provide, which is delivery and nothing
+    /// else.
     pub const VTable = struct {
         send: *const fn (context: ?*anyopaque, message: protocol.Message) SendError!void,
     };
 
-    /// Delivers one borrowed semantic message synchronously without allocation.
+    /// Delivers one message, returning once the sink has taken it.
     pub fn send(self: Sink, message: protocol.Message) SendError!void {
         return self.vtable.send(self.context, message);
     }
 };
 
-/// A protocol session over a caller-owned sink. The session borrows the sink
-/// for its lifetime, owns no heap memory, and allocates nothing.
+/// Sends messages to a sink in a valid order, and is the client API when the
+/// transport belongs to someone else.
+///
+/// A stepping sketch under `steps/` is handed one of these, because in that
+/// mode the viewer already owns the transport. A socket client instead holds a
+/// `Connection`, which wraps a `Session` around a socket it owns. The calls and
+/// the rules are identical, and what each message means to the viewer is
+/// documented on `Connection` in `api/sketch.zig`.
+///
+/// The session tracks the run and frame lifecycle, so that `step` and `finish`
+/// emit the right boundaries and a call after the run has ended is refused
+/// rather than sent. It borrows the sink for its lifetime and allocates
+/// nothing.
 pub const Session = struct {
     destination: Sink,
     state: State,
 
-    /// Sends hello and begin-run to `destination`. The returned session borrows
-    /// the sink, retains no input slices, and allocates nothing.
+    /// Opens a run on `destination`, sending the handshake and the run marker.
+    /// `name` labels the run in the viewer and is borrowed for the call.
     pub fn init(destination: Sink, name: []const u8) Error!Session {
         try validateName(name);
         try destination.send(.{ .hello = .{ .name = name } });
@@ -70,8 +94,8 @@ pub const Session = struct {
         return .{ .destination = destination, .state = .{} };
     }
 
-    /// Synchronously sends a mesh. Inputs remain caller-owned and are borrowed
-    /// only until this allocation-free call returns.
+    /// Registers a triangle mesh under `name`, replacing anything registered
+    /// under it before.
     pub fn mesh(
         self: *Session,
         name: []const u8,
@@ -82,14 +106,12 @@ pub const Session = struct {
         return self.state.mesh(self.destination, name, positions, faces, options);
     }
 
-    /// Synchronously sends topology-preserving mesh positions. Inputs remain
-    /// caller-owned and are borrowed only for this allocation-free call.
+    /// Updates the vertices of an existing mesh, keeping its triangles.
     pub fn meshPositions(self: *Session, name: []const u8, positions: layout.Positions.Const) Error!void {
         return self.state.meshPositions(self.destination, name, positions);
     }
 
-    /// Synchronously sends a point set. Inputs remain caller-owned and are
-    /// borrowed only until this allocation-free call returns.
+    /// Registers a point cloud under `name`.
     pub fn points(
         self: *Session,
         name: []const u8,
@@ -99,8 +121,7 @@ pub const Session = struct {
         return self.state.points(self.destination, name, positions, options);
     }
 
-    /// Synchronously sends line vertices and segments. Inputs remain
-    /// caller-owned and are borrowed only for this allocation-free call.
+    /// Registers a set of line segments under `name`.
     pub fn lines(
         self: *Session,
         name: []const u8,
@@ -111,8 +132,7 @@ pub const Session = struct {
         return self.state.lines(self.destination, name, positions, segments, options);
     }
 
-    /// Synchronously sends a scalar quantity. All slices remain caller-owned,
-    /// are borrowed only for the call, and no allocation occurs.
+    /// Attaches a named scalar field to an already registered structure.
     pub fn scalar(
         self: *Session,
         structure: []const u8,
@@ -123,8 +143,7 @@ pub const Session = struct {
         return self.state.scalar(self.destination, structure, name, target, values);
     }
 
-    /// Synchronously sends a vector quantity. All inputs remain caller-owned,
-    /// are borrowed only for the call, and no allocation occurs.
+    /// Attaches a named vector field to an already registered structure.
     pub fn vector(
         self: *Session,
         structure: []const u8,
@@ -135,31 +154,38 @@ pub const Session = struct {
         return self.state.vector(self.destination, structure, name, target, vectors);
     }
 
-    /// Synchronously sends a log entry, borrowing `message` for this
-    /// allocation-free call only.
+    /// Writes one line to the viewer's console.
     pub fn log(self: *Session, level: protocol.LogLevel, message: []const u8) Error!void {
         return self.state.log(self.destination, level, message);
     }
 
-    /// Ends the current frame and begins the next unlabeled frame. The session
-    /// owns no frame storage and allocates nothing.
+    /// Ends the current frame and opens the next, which is what divides a run
+    /// into the states the viewer's timeline moves between.
     pub fn step(self: *Session) Error!void {
         return self.state.step(self.destination, "");
     }
 
-    /// Ends the current frame and begins the next frame with borrowed `label`.
-    /// The label is not retained and no allocation occurs.
+    /// Ends the current frame and opens the next with a label, shown on the
+    /// timeline.
     pub fn stepLabeled(self: *Session, label: []const u8) Error!void {
         return self.state.step(self.destination, label);
     }
 
-    /// Ends the active frame and run. The borrowed sink remains caller-owned;
-    /// repeated calls are harmless and no allocation occurs.
+    /// Ends the frame and the run, after which the viewer discards any
+    /// structure this run did not register. Calling it again does nothing.
     pub fn finish(self: *Session) Error!void {
         return self.state.finish(self.destination);
     }
 };
 
+/// The run and frame lifecycle a session enforces: which frame is open,
+/// whether one is open at all, and whether the run has finished.
+///
+/// Every message call goes through here, which is where the protocol's ordering
+/// rules are applied and where argument validation happens, so that a malformed
+/// call is refused before anything reaches the sink. `Connection` holds one of
+/// these too, which is how the two client shapes share exactly one
+/// implementation of the rules.
 pub const State = struct {
     frame_index: u32 = 0,
     frame_open: bool = true,
@@ -310,8 +336,13 @@ pub const State = struct {
     }
 };
 
-/// Encodes one borrowed semantic message into caller-owned scatter/gather
-/// storage. The output borrows all message slices and no allocation occurs.
+/// Encodes one message into `out`, dispatching to the matching `protocol`
+/// encoder.
+///
+/// This is the inline path: every section is written as bytes rather than
+/// referred to. `SocketSink` uses it for messages with no shared sections, and
+/// `DirectSink` uses it for all of them, since the in-process path has no
+/// descriptors to pass.
 pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     switch (message) {
         .hello => |value| protocol.encodeHello(out, value.name),

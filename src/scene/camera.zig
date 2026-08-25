@@ -1,4 +1,21 @@
-//! Allocation-free camera and column-major matrix math for the pure core.
+//! Cameras and the matrix arithmetic behind them.
+//!
+//! Two cameras are provided, because the project addresses two kinds of work.
+//! `Orbit` is a turntable for three-dimensional geometry: it looks at a target
+//! from a distance and an orientation, which is the model that matches
+//! inspecting an object. `Ortho2D` is a plane view for two-dimensional
+//! geometry, panning and zooming without perspective, which is the model that
+//! matches inspecting a diagram. The viewer selects between them and either can
+//! be driven directly.
+//!
+//! Both are values: they hold a pose and nothing else, allocate nothing, and
+//! produce matrices on demand. That makes the pose trivially persistable, which
+//! is what lets the viewer keep the camera where the user left it across a
+//! rebuild.
+//!
+//! Matrices are column-major `[16]f32`, matching what the shaders expect as a
+//! uniform, and the projections produce OpenGL-style clip space with depth in
+//! [-1, 1].
 const std = @import("std");
 const geometry = @import("../geometry/geometry.zig");
 const layout = @import("../geometry/layout.zig");
@@ -6,12 +23,12 @@ const layout = @import("../geometry/layout.zig");
 const Vec3 = layout.Vec3;
 const Aabb = geometry.current.Aabb;
 
-/// Column-major 4x4 matrix matching the shader's `[16]f32` uniform. Values
-/// own no memory and every operation is allocation-free.
+/// A 4x4 transform in column-major order, laid out exactly as the shaders
+/// consume it, so a `Mat4` can be handed to a uniform without conversion.
 pub const Mat4 = extern struct {
     m: [16]f32,
 
-    /// Multiplicative identity; it owns no memory and never allocates.
+    /// The identity transform.
     pub const identity: Mat4 = .{ .m = .{
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -19,7 +36,7 @@ pub const Mat4 = extern struct {
         0, 0, 0, 1,
     } };
 
-    /// Multiplies two column-major matrices without allocating.
+    /// Returns `a * b`, applying `b` first.
     pub fn mul(a: Mat4, b: Mat4) Mat4 {
         var result: Mat4 = .{ .m = @splat(0) };
         for (0..4) |column| {
@@ -32,8 +49,13 @@ pub const Mat4 = extern struct {
         return result;
     }
 
-    /// Builds a right-handed OpenGL perspective projection without allocating.
-    /// NDC depth is `[-1, 1]`; inputs must satisfy `aspect, near > 0` and `far > near`.
+    /// Builds a right-handed perspective projection with a vertical field of
+    /// view of `fovy_rad`.
+    ///
+    /// Depth maps to [-1, 1]. `aspect` and `near` must be positive and `far`
+    /// greater than `near`. The ratio between `near` and `far` governs depth
+    /// precision, which is why `Orbit` derives both from its current distance
+    /// rather than fixing them.
     pub fn perspective(fovy_rad: f32, aspect: f32, near: f32, far: f32) Mat4 {
         std.debug.assert(fovy_rad > 0 and fovy_rad < std.math.pi);
         std.debug.assert(aspect > 0 and near > 0 and far > near);
@@ -46,7 +68,9 @@ pub const Mat4 = extern struct {
         } };
     }
 
-    /// Builds a right-handed OpenGL orthographic projection without allocating.
+    /// Builds a right-handed orthographic projection of the given box, with
+    /// depth mapping to [-1, 1]. Used for two-dimensional scenes, where
+    /// perspective would only distort the geometry being examined.
     pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) Mat4 {
         std.debug.assert(right != left and top != bottom and far != near);
         return .{ .m = .{
@@ -57,8 +81,10 @@ pub const Mat4 = extern struct {
         } };
     }
 
-    /// Builds a right-handed view matrix without allocating. `up` must not be
-    /// parallel to the eye-to-target direction.
+    /// Builds the view transform for a camera at `eye_position` looking at
+    /// `target`, with `up_hint` giving the roll. The hint must not be parallel
+    /// to the direction of view, which is why `Orbit` clamps its pitch away from
+    /// straight up and down.
     pub fn lookAt(eye_position: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
         const forward = target.sub(eye_position).normalize();
         const right = forward.cross(up_hint).normalize();
@@ -72,7 +98,9 @@ pub const Mat4 = extern struct {
         } };
     }
 
-    /// Transforms a point and performs homogeneous divide without allocating.
+    /// Transforms a point and divides through by w, giving normalized device
+    /// coordinates when `matrix` is a view-projection. This is how the viewer
+    /// projects a vertex to find what the cursor is near.
     pub fn transformPoint(matrix: Mat4, point: Vec3) Vec3 {
         const x = matrix.m[0] * point.x + matrix.m[4] * point.y + matrix.m[8] * point.z + matrix.m[12];
         const y = matrix.m[1] * point.x + matrix.m[5] * point.y + matrix.m[9] * point.z + matrix.m[13];
@@ -83,8 +111,17 @@ pub const Mat4 = extern struct {
     }
 };
 
-/// Persistent 3D turntable camera. It owns no memory; all controls and matrix
-/// queries are deterministic and allocation-free.
+/// A turntable camera: a target, a distance from it, and a yaw and pitch about
+/// it.
+///
+/// The controls map to the gestures they serve. `rotate` swings the eye around
+/// the target, `pan` moves the target across the view plane, and `dolly` moves
+/// the eye toward or away from it, each scaled so that the geometry appears to
+/// follow the cursor at any zoom level. `fit` frames a bounding box.
+///
+/// The pose is the whole state, so storing it across runs keeps the view
+/// exactly where it was. The clip planes are not part of it and are derived per
+/// projection; see `clipPlanes`.
 pub const Orbit = struct {
     target: Vec3,
     distance: f32,
@@ -96,7 +133,8 @@ pub const Orbit = struct {
     /// camera movement can leave them out of date.
     extent: f32 = 0,
 
-    /// Conventional initial orbit pose looking down the negative Z axis.
+    /// The starting pose: looking down the negative Z axis at the origin from a
+    /// distance of five, used before any data has arrived to fit.
     pub const default: Orbit = .{
         .target = .zero,
         .distance = 5,
@@ -104,7 +142,8 @@ pub const Orbit = struct {
         .pitch = 0,
     };
 
-    /// Returns the world-space eye position without allocating.
+    /// The position of the eye in world space, derived from the target,
+    /// distance, yaw and pitch.
     pub fn eye(self: Orbit) Vec3 {
         const cos_pitch = @cos(self.pitch);
         const offset = Vec3.init(
@@ -115,7 +154,7 @@ pub const Orbit = struct {
         return self.target.add(offset.scale(self.distance));
     }
 
-    /// Returns the allocation-free right-handed view matrix for this pose.
+    /// The view transform for the current pose.
     pub fn view(self: Orbit) Mat4 {
         return .lookAt(self.eye(), self.target, .init(0, 1, 0));
     }
