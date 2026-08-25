@@ -1,5 +1,4 @@
-//! The viewer process: startup, the frame loop, and the state everything else
-//! hangs off.
+//! The viewer process: startup, the frame loop, and the state they share.
 //!
 //! This is the outermost edge. It owns the window through sokol_app, the scene,
 //! the renderer, the socket server and the stepper, and it runs the frame

@@ -108,7 +108,7 @@ pub const Mat4 = extern struct {
 /// A turntable camera. Its pose is a target point, a distance from that target,
 /// and a yaw and pitch about it.
 /// ---
-/// `rotate` swings the eye around the target, `pan` moves the target across the
+/// `rotate` moves the eye around the target, `pan` moves the target across the
 /// view plane, and `dolly` moves the eye toward or away from it. All three
 /// scale their effect with the current distance, so a drag moves the geometry
 /// under the cursor by the same amount at any zoom level. `fit` frames a

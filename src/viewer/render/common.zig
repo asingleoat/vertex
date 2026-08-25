@@ -1,7 +1,7 @@
 //! The GPU mirror of the scene: buffers, textures and samplers, indexed the way
 //! the scene indexes its own data.
 //!
-//! The scene knows nothing of sokol, so the correspondence is kept here as a
+//! The scene does not import sokol, so the correspondence is kept here as a
 //! parallel array of GPU buffers indexed by `BlobIndex`. Each frame the renderer
 //! drains the scene's lists of newly created and newly freed blobs and brings
 //! that array into step. Neither side holds a pointer to the other; the shared

@@ -159,11 +159,10 @@ pub const Input = struct {
                     self.orbit.pan(ev.mouse_dx, ev.mouse_dy, viewport_height);
                 } else if (left) {
                     self.camera_touched = true;
-                    // Both axes follow the cursor, as if the scene were a
-                    // trackball under it: dragging down rotates the front of
-                    // the model downwards and brings its top into view. This
-                    // matches the sign both pan operations already use for
-                    // `dy`.
+                    // Both axes move the geometry with the cursor. Dragging
+                    // down rotates the front of the model downwards and brings
+                    // its top into view, matching the sign both pan operations
+                    // use for `dy`.
                     self.orbit.rotate(-ev.mouse_dx * 0.01, ev.mouse_dy * 0.01);
                 }
             },

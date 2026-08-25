@@ -103,9 +103,10 @@ pub const UiState = struct {
 /// ---
 /// It holds references rather than data: a positions blob, an optional topology
 /// blob, and a range of quantity references in the structure's side array. Two
-/// versions that differ only in vertex positions share one topology blob, which
-/// is what makes a positions-only update cheap. The references are owned by the
-/// containing structure until the version is dropped.
+/// versions that differ only in vertex positions share one topology blob, so a
+/// positions-only update stores and uploads only the new positions. The
+/// references are owned by the containing structure until the version is
+/// dropped.
 pub const Version = struct {
     run: u32,
     frame: u32,
@@ -439,7 +440,7 @@ pub const Scene = struct {
 
     /// Ends the run, discarding every structure that the run did not register.
     ///
-    /// A structure with no versions is invisible to `versionAt`, so it is
+    /// `versionAt` returns null for a structure with no versions, so it is
     /// neither drawn nor listed. Its slot and `UiState` remain keyed by name, so
     /// registering that name again restores the structure with its previous
     /// viewer settings.
@@ -1106,9 +1107,9 @@ pub const Scene = struct {
     /// Hands back every mapping still registered, for the edge to unmap and
     /// close.
     ///
-    /// This is the required step before `deinit`: the scene cannot release these
-    /// regions itself, so it surrenders them first. `out` is caller-owned and
-    /// the scene's allocator is used only to reserve its capacity.
+    /// Required before `deinit`, because the scene cannot release these regions
+    /// itself. `out` is caller-owned, and the scene's allocator is used only to
+    /// reserve its capacity.
     pub fn takeAllMappings(self: *Scene, out: *std.ArrayList(Mapping)) std.mem.Allocator.Error!void {
         try out.ensureUnusedCapacity(self.gpa, self.live_mappings);
         var mappings = self.mappings.slice();

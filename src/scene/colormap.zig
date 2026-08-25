@@ -21,8 +21,8 @@ const std = @import("std");
 pub const Colormap = enum(u8) { viridis, turbo, coolwarm, plasma };
 
 /// The 256-entry RGBA8 ramp for a colormap, as a pointer to compile-time
-/// constant data that lives for the process. The viewer uploads it as a
-/// one-dimensional texture.
+/// constant data valid for the lifetime of the process. The viewer uploads it
+/// as a one-dimensional texture.
 pub fn table(cm: Colormap) *const [256][4]u8 {
     return &tables[@backingInt(cm)];
 }

@@ -357,7 +357,7 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
     }
 }.send };
 
-/// Determines which socket to use, writing the answer into `storage` and
+/// Determines which socket to use, writing the path into `storage` and
 /// returning the portion filled.
 ///
 /// The order of precedence is an explicit path, then `$VERTEX_SOCK`, then

@@ -74,7 +74,7 @@ pub const SharedError = transport.SharedError;
 
 /// A writable shared mapping, owned by its connection until a message consumes
 /// it. `sharedPositions`, `sharedScalars` and `sharedVectors` return typed views
-/// over the same memory and are usually more convenient.
+/// over the same memory, already sized for their element type.
 pub const Shared = transport.Shared;
 
 /// Options for opening a connection.
@@ -145,7 +145,7 @@ pub const Connection = struct {
     /// Returns `error.Unsupported` on platforms without shared memory. The
     /// caller should then fill an ordinary slice and send it as usual, which
     /// produces the same result over the wire at a higher cost. The typed
-    /// functions below are usually more convenient than this one.
+    /// functions below size and type the buffer for their element.
     pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
         if (!platform.shm.supported) return error.Unsupported;
         if (self.state.finished) return error.Finished;
@@ -586,8 +586,8 @@ test "live unix socket round-trip delivers the frame sequence" {
     const positions = layout.Positions.fromSlice(&position_data);
     positions.setAll(&.{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) });
     try connection.mesh("tri", positions.toConst(), &.{.{ 0, 1, 2 }}, .{});
-    // The positions update travels zero-copy where shared memory exists and
-    // inline from caller memory where it does not; the frame sequence the
+    // The positions update is sent zero-copy where shared memory exists and
+    // inline from caller memory where it does not. The frame sequence the
     // server sees is the same either way.
     const updated: [3]layout.Vec3 = .{ .init(3, 4, 5), .init(6, 7, 8), .init(9, 10, 11) };
     if (platform.shm.supported) {

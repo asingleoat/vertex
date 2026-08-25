@@ -272,9 +272,9 @@ pub const Stepper = struct {
         self.mutex.unlock(self.io);
     }
 
-    /// Called once per rendered frame by the render thread: grants a step
-    /// credit to a frame-paced running worker. Cheap when idle (one
-    /// uncontended lock).
+    /// Called once per rendered frame by the render thread, granting a step
+    /// credit to a frame-paced running worker. When idle it costs one
+    /// uncontended lock.
     pub fn frameTick(self: *Stepper) void {
         if (self.status() != .running or self.paceMode() != .frame) return;
         self.mutex.lockUncancelable(self.io);

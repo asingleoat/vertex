@@ -24,7 +24,8 @@ const geometry = @import("../geometry/geometry.zig");
 const fixtures = @import("../geometry/fixtures.zig");
 
 /// A point or direction in three dimensions, and the value type every stream
-/// accessor speaks. Construct one with `Vec3.init(x, y, z)` or `Vec3.zero`.
+/// accessor takes and returns. Construct one with `Vec3.init(x, y, z)` or
+/// `Vec3.zero`.
 /// Two-dimensional sketches use it with `z` left at zero.
 pub const Vec3 = layout.Vec3;
 

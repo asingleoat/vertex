@@ -133,7 +133,7 @@ pub const LogLevel = enum(u8) { info, warn, err };
 /// Where the bytes of one binary section come from.
 /// ---
 /// An inline section is a slice the encoder writes into the frame, so its bytes
-/// travel through the socket and must outlive the write. An external section is
+/// are sent through the socket and must outlive the write. An external section is
 /// a region of a shared mapping that the frame only refers to, by descriptor
 /// index, offset and length, so its bytes are never copied and the descriptor
 /// accompanies the frame. Choosing between them is the difference between the

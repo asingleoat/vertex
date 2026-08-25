@@ -45,11 +45,11 @@ pub const GeometryOptions = struct {
 /// Where a session sends its messages: a type-erased destination that accepts
 /// one `protocol.Message` at a time.
 /// ---
-/// This is the seam that lets the same sketch code run over a socket or inside
-/// the viewer. `SocketSink` in `transport.zig` encodes each message and writes
-/// it; `DirectSink` in `dylib.zig` encodes it and hands the bytes to the viewer
-/// in-process. A test can supply a sink that merely records, which is how the
-/// message sequencing is tested without any I/O at all.
+/// The same sketch code therefore runs over a socket or inside the viewer.
+/// `SocketSink` in `transport.zig` encodes each message and writes it, and
+/// `DirectSink` in `dylib.zig` encodes it and hands the bytes to the viewer
+/// in-process. A test supplies a sink that records what it is given, which is
+/// how the message sequencing is tested without I/O.
 /// ---
 /// The implementation owns whatever `context` points at; `send` is synchronous
 /// and borrows the message and its slices for the duration of the call.

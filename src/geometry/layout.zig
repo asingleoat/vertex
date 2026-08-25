@@ -4,8 +4,8 @@
 //! A vertex stream is a run of `n` positions in three dimensions. It is what a
 //! mesh's vertices are, what a point cloud is, and what the values of a vector
 //! quantity are; it carries no connectivity and no other attributes, which
-//! travel alongside it as plain slices. `Positions` is the type every part of
-//! the program uses for one, and this module defines it.
+//! are passed alongside it as plain slices. `Positions` is the type every part
+//! of the program uses for one, and this module defines it.
 //!
 //! The memory layout is chosen once, at build time, by `-Dvertex_layout`.
 //! Callers address vertices through the named accessors `get`, `set`, `x`, `y`
@@ -359,9 +359,9 @@ pub fn PositionsOf(comptime l: Layout) type {
 /// owning that memory; `fromBytes` and `fromSlice` wrap memory that already
 /// exists, such as a blob, a shared buffer or a stack array.
 /// ---
-/// The layout in memory is selected at build time and is invisible to callers,
-/// who address vertices through `get`, `set`, `x`, `y` and `z`. See `Layout`
-/// for the available choices and the reasons they exist.
+/// The layout in memory is selected at build time. Callers address vertices
+/// through `get`, `set`, `x`, `y` and `z` and do not depend on it. See `Layout`
+/// for the available choices.
 pub const Positions = PositionsOf(layout);
 
 // ---------------------------------------------------------------------------
