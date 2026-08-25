@@ -269,7 +269,10 @@ Neither is used yet, but the code is shaped so that both remain available.
   Autodoc renders such a declaration with its "short" form, which stops at the
   first zero-length doc line, so an empty line silently hides everything below
   it; a separator of three or more `-`, `_` or `*` is a thematic break and does
-  not. Functions, containers and module headers are rendered in full and may use
+  not. A line of `///` followed by a space would also work, being non-empty to
+  autodoc and blank to the markdown parser, but `zig fmt` strips the trailing
+  space and turns it back into the truncating form, so the rendered docs would
+  lose half of every comment the next time anyone formatted the file. Functions, containers and module headers are rendered in full and may use
   empty lines as ordinary paragraph breaks.
 - The definition site carries the documentation. A re-export summarises what the
   declaration is for and when to reach for it, because the generated docs follow
