@@ -60,7 +60,7 @@ pub const internal = struct {
     pub const geometry = @import("geometry/geometry.zig");
     /// Pure: procedural meshes and point sets, parameterized by layout.
     pub const fixtures = @import("geometry/fixtures.zig");
-    /// Pure: the wire format — message types, encode and decode.
+    /// Pure: the wire format, its message types, and encode and decode.
     pub const protocol = @import("protocol/protocol.zig");
     /// Pure: the viewer's structure store, versions and timeline.
     pub const scene = @import("scene/scene.zig");

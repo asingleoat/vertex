@@ -252,10 +252,10 @@ pub const Stepper = struct {
         };
     }
 
-    /// Run pacing. `frame`: one step per rendered frame (watch the algorithm);
-    /// `rate`: `maxStepsPerSecond` steps per second; `max`: free-wheel until
-    /// the sketch finishes, errors, or is paused — the batch mode whose output
-    /// is then scrubbed on the timeline.
+    /// How fast a running sketch is stepped. `frame` runs one step per rendered
+    /// frame, so every step is seen. `rate` runs `maxStepsPerSecond` steps per
+    /// second. `max` runs freely until the sketch finishes, errors or is paused,
+    /// which suits generating the frames quickly and scrubbing them afterwards.
     pub const PaceMode = enum(u8) { frame, rate, max };
 
     pub fn paceMode(self: *const Stepper) PaceMode {

@@ -388,8 +388,8 @@ const zero_padding: [section_alignment - 1]u8 align(section_alignment) = @splat(
 /// One encoded frame, as a list of slices to be written in order.
 /// ---
 /// The frame header and the message's fixed head are stored inside this value.
-/// The variable parts — names, positions, indices and values — are pointed at
-/// rather than copied, so they must outlive the write.
+/// The variable parts, being the names, positions, indices and values, are
+/// pointed at rather than copied, so they must outlive the write.
 /// ---
 /// `slices` and `writeTo` install views that point into this value's own
 /// storage, so an `Encoded` must not be moved or copied once either has been

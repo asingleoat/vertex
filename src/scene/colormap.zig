@@ -30,11 +30,11 @@ pub fn table(cm: Colormap) *const [256][4]u8 {
 
 /// Computes the range to map a set of scalar values onto a ramp.
 ///
-/// Returns the minimum and maximum of the finite values, ignoring NaN and
-/// infinity so that one bad element does not collapse the display of all the
-/// others. Degenerate cases — no values, no finite values, or every value
-/// identical — return an interval of non-zero width, so that the caller can
-/// always divide by it.
+/// Returns the minimum and maximum of the finite values. NaN and infinity are
+/// ignored, so one bad element does not collapse the display of the others.
+/// Three degenerate cases return an interval of non-zero width instead: no
+/// values, no finite values, and every value identical. The caller can
+/// therefore always divide by the width.
 pub fn range(values: []const f32) [2]f32 {
     var minimum = std.math.inf(f32);
     var maximum = -std.math.inf(f32);

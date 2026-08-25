@@ -51,9 +51,9 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// The grid spans `size` in both x and y, is centred on the origin and
         /// lies at z = 0. It has `nx` by `ny` quads, so `(nx+1)·(ny+1)` vertices
         /// and `2·nx·ny` triangles, wound counter-clockwise as seen from +Z.
-        /// Vertices are in row-major order, which makes the index of the vertex
-        /// at column x and row y equal to `y * (nx + 1) + x` — useful when
-        /// setting a height field or applying a parameterization.
+        /// Vertices are in row-major order, so the vertex at column x and row y
+        /// has index `y * (nx + 1) + x`. Setting a height field or applying a
+        /// parameterization uses that mapping.
         ///
         /// Allocates the positions and the faces from `gpa`; the caller owns the
         /// returned mesh and releases it with `deinit`. This is the usual

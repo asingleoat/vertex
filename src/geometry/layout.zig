@@ -145,9 +145,9 @@ pub fn PositionsOf(comptime l: Layout) type {
         pub const Const = ConstView;
 
         /// The element the stream is stored as: `Vec3` for `.aos3`,
-        /// `Vec3Padded` for `.aos4`, and `f32` for `.soa`, where the stream is
-        /// three planar runs — all x, then all y, then all z — within one
-        /// slice. Callers rarely name this type; the accessors take and return
+        /// `Vec3Padded` for `.aos4`, and `f32` for `.soa`, where one slice holds
+        /// three planar runs, all x followed by all y followed by all z.
+        /// Callers rarely name this type, because the accessors take and return
         /// `Vec3` in every layout.
         pub const Elem = switch (l) {
             .aos3 => Vec3,
@@ -353,11 +353,10 @@ pub fn PositionsOf(comptime l: Layout) type {
 
 /// The vertex stream type this build uses, being `PositionsOf(layout)`.
 /// ---
-/// A `Positions` carries the coordinates of `n` vertices and nothing else: the
-/// vertices of a mesh, the locations of a point cloud, or the values of a
-/// vector quantity, which are stored the same way. Connectivity and attributes
-/// travel beside it as plain slices — triangles as `[]const [3]u32`, segments
-/// as `[]const [2]u32`, scalar quantities as `[]const f32`.
+/// A `Positions` value provides a stream of vertex coordinates. Any additional
+/// structure, such as connectivity information for segments `[]const [2]u32` or
+/// triangles `[]const [3]u32`, or scalar values `[]const f32` attached to the
+/// vertices, must be carried alongside it.
 /// ---
 /// The same representation is used in memory, on the wire and on the GPU, so
 /// no destination requires a conversion.

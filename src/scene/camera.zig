@@ -111,16 +111,17 @@ pub const Mat4 = extern struct {
     }
 };
 
-/// A turntable camera: a target, a distance from it, and a yaw and pitch about
-/// it.
+/// A turntable camera. Its pose is a target point, a distance from that target,
+/// and a yaw and pitch about it.
 /// ---
-/// The controls map to the gestures they serve. `rotate` swings the eye around
-/// the target, `pan` moves the target across the view plane, and `dolly` moves
-/// the eye toward or away from it, each scaled so that the geometry appears to
-/// follow the cursor at any zoom level. `fit` frames a bounding box.
+/// `rotate` swings the eye around the target, `pan` moves the target across the
+/// view plane, and `dolly` moves the eye toward or away from it. All three
+/// scale their effect with the current distance, so a drag moves the geometry
+/// under the cursor by the same amount at any zoom level. `fit` frames a
+/// bounding box.
 /// ---
-/// The pose is the whole state, so storing it across runs keeps the view
-/// exactly where it was. The clip planes are not part of it and are derived per
+/// The pose is the entire state, so storing and restoring it reproduces the
+/// view exactly. The clip planes are not part of it and are computed per
 /// projection; see `clipPlanes`.
 pub const Orbit = struct {
     target: Vec3,

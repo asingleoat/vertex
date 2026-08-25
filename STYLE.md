@@ -270,6 +270,12 @@ Neither is used yet, but the code is shaped so that both remain available.
   in a third of the words. Constructions like "which is what makes", "this is
   the one to use when" and lists that exist for their rhythm are all signs of
   the fact being circled rather than stated.
+- Say what a thing is and what a caller must do, in ordinary declarative
+  sentences. Avoid the emphatic devices that stand in for saying it: "X and
+  nothing else" followed by a colon and three illustrations, an aside between em
+  dashes, or a definition given as a list of parts. "A `Positions` value provides
+  a stream of vertex coordinates. Any additional structure, such as connectivity
+  information, must be carried alongside it" needs none of them.
 - A doc comment on a value declaration must contain no empty `///` line.
   Separate its paragraphs with `/// ---`, which renders as a horizontal rule.
   Autodoc renders such a declaration with its "short" form, which stops at the

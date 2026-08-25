@@ -12,9 +12,10 @@ const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
 
-/// Errors a sink may return while delivering one message. These are the
-/// transport's failures — a socket write that failed or was short, or a shared
-/// section that cannot be sent — rather than anything about the message.
+/// Errors a sink may return while delivering one message. These report
+/// transport failures: a socket write that failed or was short, or a shared
+/// section that cannot be sent. Problems with the message itself are reported
+/// by `Error`.
 pub const SendError = std.Io.net.Stream.Writer.Error || platform.fdpass.Error || error{
     ShortWrite,
     MisalignedShared,
