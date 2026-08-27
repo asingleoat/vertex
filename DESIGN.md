@@ -276,12 +276,23 @@ The `epsilon` this seam exposes is Manifold's, not a tolerance chosen here.
 this one is borrowed from a dependency rather than invented is part of the case
 for being able to replace it.
 
-The seam is two modules over one C++ file. `geometry/triangulate.zig` takes
+The seam is three modules over one C++ file. `geometry/triangulate.zig` takes
 projected points and returns triangle indices; `geometry/boolean.zig` takes two
-closed meshes and returns their union, difference or intersection. Both go
-through `geometry/manifold_shim.cpp`, and nothing else names `manifoldc.h`. They
-are separate modules because the seam is drawn per operation: writing a
-triangulator here would leave booleans untouched, and the reverse. Everything above it is pure and `f32`. Replacing
+closed meshes and returns their union, difference or intersection;
+`geometry/offset.zig` moves a closed curve's boundary, which is Clipper2 reached
+through Manifold's `CrossSection`. All three go through
+`geometry/manifold_shim.cpp`, and nothing else names `manifoldc.h`. They are
+separate modules because the seam is drawn per operation: writing any one of
+them here would leave the other two untouched.
+
+Offsetting is the operation of the three that is hardest to do naively. Moving
+each vertex along its angle bisector is correct only while the result does not
+touch itself, and a curve offset far enough inward will collapse, split or
+vanish; Clipper2 resolves those cases rather than returning a self-intersecting
+ring. Its `join`, `miter_limit` and `circular_segments` are geometric parameters
+rather than tolerances: how a convex corner is filled, how far a miter may run
+before it is cut, and how finely an arc is approximated are all questions an
+offset genuinely has to answer. Everything above it is pure and `f32`. Replacing
 Manifold, whole or one operation at a time, is a matter of reimplementing that
 signature, and the seam is drawn per operation for that reason.
 

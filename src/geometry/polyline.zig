@@ -2,6 +2,7 @@
 const std = @import("std");
 const layout = @import("layout.zig");
 const mesh_mod = @import("mesh.zig");
+const polygon = @import("polygon.zig");
 
 const Vec3 = layout.Vec3;
 const Mesh = mesh_mod.Mesh;
@@ -239,6 +240,22 @@ pub fn areaVector(profile: Polyline) Vec3 {
     return sum.scale(0.5);
 }
 
+/// Chains a polyline's segments into the closed loops they form.
+///
+/// Every vertex a segment leaves must be left by exactly one, and every chain
+/// must close, so this is also the test for a polyline being a set of closed
+/// rings rather than paths. The loops are returned in the direction the
+/// segments run and the caller releases them with `deinit`.
+///
+/// A polyline holds no more than its segments, so several disjoint rings are as
+/// ordinary a value as one, and this is how they are told apart.
+pub fn loops(
+    gpa: std.mem.Allocator,
+    profile: Polyline,
+) polygon.BoundaryError!polygon.Loops {
+    return polygon.chain(gpa, @intCast(profile.vertices.len), profile.segments);
+}
+
 /// Marks a vertex that no surviving face refers to.
 const unused = std.math.maxInt(u32);
 
@@ -382,7 +399,6 @@ test "two collapsed polylines loft to nothing" {
 }
 
 test "a capped loft encloses the volume of its prism" {
-    const polygon = @import("polygon.zig");
     const sides = 8;
     const height = 2.0;
     const bottom = try circle(testing.allocator, 1, sides);
@@ -466,7 +482,6 @@ test "areaVector does not depend on the order the segments are listed in" {
 }
 
 test "extruding a closed profile winds outward whichever way it runs" {
-    const polygon = @import("polygon.zig");
     for ([_]f32{ 2, -2 }) |height| {
         const profile = try rectangle(testing.allocator, 2, 2, .centered);
         defer profile.deinit(testing.allocator);

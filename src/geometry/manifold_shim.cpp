@@ -43,6 +43,10 @@ extern "C" {
 // this shim does not know how to hand back.
 #define VERTEX_BOOLEAN_UNEXPECTED_PROPERTIES 4
 
+#define VERTEX_OFFSET_OK 0
+#define VERTEX_OFFSET_THREW 1
+#define VERTEX_OFFSET_OUT_OF_MEMORY 2
+
 // Triangulates one simple polygon.
 //
 // `xy` holds `point_count` points as consecutive x, y pairs, in order around
@@ -238,6 +242,141 @@ int vertexBooleanBegin(const float *a_vertices, size_t a_vertex_count,
   } else {
     if (out_mesh != nullptr) manifold_destruct_meshgl(out_mesh);
     std::free(out_mesh_mem);
+    std::free(result);
+  }
+  return status;
+}
+
+// One offset result, held between `vertexOffsetBegin` reporting its size and
+// `vertexOffsetTake` copying it out. Offsetting may split one ring into several
+// or merge several into one, so neither count is known until it has run.
+struct VertexOffsetResult {
+  void *polygons_mem;
+  ManifoldPolygons *polygons;
+};
+
+// Frees everything a `VertexOffsetResult` holds. Safe on a null handle.
+void vertexOffsetRelease(void *handle) {
+  if (handle == nullptr) return;
+  VertexOffsetResult *result = static_cast<VertexOffsetResult *>(handle);
+  if (result->polygons != nullptr) manifold_destruct_polygons(result->polygons);
+  std::free(result->polygons_mem);
+  std::free(result);
+}
+
+// Copies the result out: `point_count * 2` doubles as consecutive x, y pairs,
+// and `loop_count` lengths saying how those points divide into rings.
+void vertexOffsetTake(void *handle, double *xy, uint32_t *loop_lengths) {
+  VertexOffsetResult *result = static_cast<VertexOffsetResult *>(handle);
+  const size_t loops = manifold_polygons_length(result->polygons);
+  size_t written = 0;
+  for (size_t i = 0; i < loops; ++i) {
+    const size_t length = manifold_polygons_simple_length(result->polygons, i);
+    loop_lengths[i] = static_cast<uint32_t>(length);
+    for (size_t j = 0; j < length; ++j) {
+      ManifoldVec2 point = manifold_polygons_get_point(result->polygons, i, j);
+      xy[2 * written] = point.x;
+      xy[2 * written + 1] = point.y;
+      ++written;
+    }
+  }
+}
+
+// Offsets a set of closed rings and reports the size of the result.
+//
+// `xy` holds the rings end to end as consecutive x, y pairs, divided by
+// `loop_lengths`. `delta` is the distance to move the boundary, outward when
+// positive. `join`, `miter_limit` and `circular_segments` are Clipper2's, and
+// mean what they mean there: how a convex corner is filled, how far a miter may
+// run before it is cut, and how finely a round join is approximated.
+//
+// The rings are taken under the non-zero fill rule, so a clockwise ring inside a
+// counter-clockwise one is a hole rather than a second island.
+int vertexOffsetBegin(const double *xy, const uint32_t *loop_lengths,
+                      size_t loop_count, double delta, int join,
+                      double miter_limit, int circular_segments, void **handle,
+                      size_t *point_count, size_t *out_loop_count) {
+  *handle = nullptr;
+  *point_count = 0;
+  *out_loop_count = 0;
+
+  void *polygons_mem = std::malloc(manifold_polygons_size());
+  void *section_mem = std::malloc(manifold_cross_section_size());
+  void *offset_mem = std::malloc(manifold_cross_section_size());
+  void *out_polygons_mem = std::malloc(manifold_polygons_size());
+  VertexOffsetResult *result =
+      static_cast<VertexOffsetResult *>(std::malloc(sizeof(VertexOffsetResult)));
+  ManifoldSimplePolygon **rings = static_cast<ManifoldSimplePolygon **>(
+      std::malloc(loop_count * sizeof(ManifoldSimplePolygon *)));
+  void *rings_mem = std::malloc(loop_count * manifold_simple_polygon_size());
+
+  if (polygons_mem == nullptr || section_mem == nullptr || offset_mem == nullptr ||
+      out_polygons_mem == nullptr || result == nullptr || rings == nullptr ||
+      rings_mem == nullptr) {
+    std::free(polygons_mem);
+    std::free(section_mem);
+    std::free(offset_mem);
+    std::free(out_polygons_mem);
+    std::free(result);
+    std::free(rings);
+    std::free(rings_mem);
+    return VERTEX_OFFSET_OUT_OF_MEMORY;
+  }
+
+  size_t built = 0;
+  ManifoldPolygons *polygons = nullptr;
+  ManifoldCrossSection *section = nullptr;
+  ManifoldCrossSection *offset = nullptr;
+  ManifoldPolygons *out_polygons = nullptr;
+  int status = VERTEX_OFFSET_OK;
+
+  try {
+    const double *cursor = xy;
+    const size_t ring_size = manifold_simple_polygon_size();
+    for (size_t i = 0; i < loop_count; ++i) {
+      void *slot = static_cast<char *>(rings_mem) + i * ring_size;
+      rings[i] = manifold_simple_polygon(
+          slot, reinterpret_cast<ManifoldVec2 *>(const_cast<double *>(cursor)),
+          loop_lengths[i]);
+      cursor += 2 * loop_lengths[i];
+      ++built;
+    }
+    polygons = manifold_polygons(polygons_mem, rings, loop_count);
+    section = manifold_cross_section_of_polygons(section_mem, polygons,
+                                                 MANIFOLD_FILL_RULE_NON_ZERO);
+    offset = manifold_cross_section_offset(offset_mem, section, delta,
+                                           static_cast<ManifoldJoinType>(join),
+                                           miter_limit, circular_segments);
+    out_polygons = manifold_cross_section_to_polygons(out_polygons_mem, offset);
+
+    const size_t loops = manifold_polygons_length(out_polygons);
+    size_t points = 0;
+    for (size_t i = 0; i < loops; ++i) {
+      points += manifold_polygons_simple_length(out_polygons, i);
+    }
+    *out_loop_count = loops;
+    *point_count = points;
+  } catch (...) {
+    status = VERTEX_OFFSET_THREW;
+  }
+
+  if (offset != nullptr) manifold_destruct_cross_section(offset);
+  if (section != nullptr) manifold_destruct_cross_section(section);
+  if (polygons != nullptr) manifold_destruct_polygons(polygons);
+  for (size_t i = 0; i < built; ++i) manifold_destruct_simple_polygon(rings[i]);
+  std::free(rings_mem);
+  std::free(rings);
+  std::free(offset_mem);
+  std::free(section_mem);
+  std::free(polygons_mem);
+
+  if (status == VERTEX_OFFSET_OK) {
+    result->polygons_mem = out_polygons_mem;
+    result->polygons = out_polygons;
+    *handle = result;
+  } else {
+    if (out_polygons != nullptr) manifold_destruct_polygons(out_polygons);
+    std::free(out_polygons_mem);
     std::free(result);
   }
   return status;

@@ -143,6 +143,13 @@ pub const box = @import("../geometry/solids.zig").box;
 /// `.corner` or `.on_plane`.
 pub const Placement = mesh.Placement;
 
+/// Offsetting closed curves, outward or inward.
+/// ---
+/// `offset.apply(gpa, profile, delta, .{})`. The profile lies in the z = 0
+/// plane and its rings must be closed. The result may hold a different number
+/// of rings: growing merges them, shrinking splits or empties them.
+pub const offset = @import("../geometry/offset.zig");
+
 /// Mesh booleans: union, difference and intersection over closed surfaces.
 /// ---
 /// `boolean.apply(gpa, a, b, .subtract)` and its two siblings. Each operand

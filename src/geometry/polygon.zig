@@ -116,43 +116,60 @@ pub fn boundaryLoops(
     const used = halves[0..written];
     std.mem.sort([2]u32, used, {}, undirectedLessThan);
 
-    // next[v] is the vertex following v along the boundary, so a walk needs no
-    // search.
-    const next = try gpa.alloc(u32, vertex_count);
-    defer gpa.free(next);
-    @memset(next, no_vertex);
-
-    var origins: std.ArrayList(u32) = .empty;
-    defer origins.deinit(gpa);
-
+    // One use is a boundary edge and two are an interior edge. More is an edge
+    // shared by three or more triangles, around which the surface has no
+    // consistent inside.
+    var boundary: std.ArrayList([2]u32) = .empty;
+    defer boundary.deinit(gpa);
     var i: usize = 0;
     while (i < used.len) {
         var j = i + 1;
         while (j < used.len and undirectedEqual(used[i], used[j])) j += 1;
-        // One use is a boundary edge and two are an interior edge. More is an
-        // edge shared by three or more triangles, around which the surface has
-        // no consistent inside.
         if (j - i > 2) return error.NonManifoldBoundary;
-        if (j - i == 1) {
-            const edge = used[i];
-            if (next[edge[0]] != no_vertex) return error.NonManifoldBoundary;
-            next[edge[0]] = edge[1];
-            try origins.append(gpa, edge[0]);
-        }
+        if (j - i == 1) try boundary.append(gpa, used[i]);
         i = j;
     }
-    if (origins.items.len == 0) return .empty;
+    return chain(gpa, vertex_count, boundary.items);
+}
+
+/// Chains directed edges into the closed loops they form.
+///
+/// Every vertex an edge leaves must be left by exactly one, and every chain
+/// must return to where it started; either failing is `NonManifoldBoundary`,
+/// since a vertex with two ways out has no unambiguous traversal and a chain
+/// that runs out is a path rather than a loop. `vertex_count` bounds the
+/// indices and sizes an internal table.
+///
+/// This is what `boundaryLoops` does with the edges it finds, and what
+/// `polyline.loops` does with a polyline's segments, which are already the
+/// edges in question.
+pub fn chain(
+    gpa: std.mem.Allocator,
+    vertex_count: u32,
+    edges: []const [2]u32,
+) BoundaryError!Loops {
+    if (edges.len == 0) return .empty;
+
+    // next[v] is the vertex following v, so a walk needs no search.
+    const next = try gpa.alloc(u32, vertex_count);
+    defer gpa.free(next);
+    @memset(next, no_vertex);
+    for (edges) |edge| {
+        if (next[edge[0]] != no_vertex) return error.NonManifoldBoundary;
+        next[edge[0]] = edge[1];
+    }
 
     // Walking consumes each entry, so a vertex still present in `next` is one
-    // no earlier loop has reached. Every boundary edge is consumed exactly
-    // once, which is the capacity reserved here.
-    var vertices = try std.ArrayList(u32).initCapacity(gpa, origins.items.len);
+    // no earlier loop has reached. Every edge is consumed exactly once, which
+    // is the capacity reserved here.
+    var vertices = try std.ArrayList(u32).initCapacity(gpa, edges.len);
     errdefer vertices.deinit(gpa);
     var starts = try std.ArrayList(u32).initCapacity(gpa, 2);
     errdefer starts.deinit(gpa);
     starts.appendAssumeCapacity(0);
 
-    for (origins.items) |first| {
+    for (edges) |edge| {
+        const first = edge[0];
         if (next[first] == no_vertex) continue;
         var v = first;
         while (true) {

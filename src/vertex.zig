@@ -82,6 +82,8 @@ pub const internal = struct {
     pub const polyline = @import("geometry/polyline.zig");
     /// Pure: closed primitive solids, built from the operations above.
     pub const solids = @import("geometry/solids.zig");
+    /// Edge: offsetting closed curves, which is Clipper2 through Manifold.
+    pub const offset = @import("geometry/offset.zig");
     /// Edge: mesh booleans, which are Manifold behind a C ABI.
     pub const boolean = @import("geometry/boolean.zig");
     /// Pure: recovering an index array from a triangle soup by exact equality.
