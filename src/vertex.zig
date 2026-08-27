@@ -30,6 +30,7 @@ pub const sketch = @import("api/sketch.zig");
 
 // ---- the sketch-facing surface, flattened for convenience ----
 
+
 /// Opens a connection to the viewer; see `sketch.connect`.
 pub const connect = sketch.connect;
 /// Opens a connection with explicit I/O and environment; see `sketch.connectWith`.
@@ -69,6 +70,10 @@ pub const internal = struct {
     pub const geometry = @import("geometry/geometry.zig");
     /// Pure: procedural meshes and point sets, parameterized by layout.
     pub const fixtures = @import("geometry/fixtures.zig");
+    /// Pure: boundary recovery and capping of open surfaces.
+    pub const polygon = @import("geometry/polygon.zig");
+    /// Edge: polygon triangulation, which is Manifold behind a C ABI.
+    pub const triangulate = @import("geometry/triangulate.zig");
     /// Pure: the wire format, its message types, and encode and decode.
     pub const protocol = @import("protocol/protocol.zig");
     /// Pure: the viewer's structure store, versions and timeline.

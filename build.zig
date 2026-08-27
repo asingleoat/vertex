@@ -41,8 +41,14 @@ pub fn build(b: *Build) !void {
         .root_source_file = b.path("src/vertex.zig"),
         .target = target,
         .optimize = optimize,
+        // Polygon triangulation is Manifold behind the C++ shim below, which
+        // reaches every consumer of this module: the viewer, sketches and the
+        // stepping libraries all link libc, libc++ and libmanifoldc.
+        .link_libc = true,
+        .link_libcpp = true,
     });
     mod_vertex.addImport("build_options", options_module);
+    addManifold(b, mod_vertex);
 
     // ---- tests ----
     const test_step = b.step("test", "Run unit tests");
@@ -226,6 +232,30 @@ fn resolveTarget(b: *Build) Build.ResolvedTarget {
         while (prefixes.next()) |prefix| b.addSearchPrefix(prefix);
     };
     return b.resolveTargetQuery(query);
+}
+
+/// Links Manifold and compiles the shim that confines it; see "Polygon
+/// triangulation and caps" in DESIGN.md.
+///
+/// The prefix comes from MANIFOLD_PREFIX, which flake.nix exports on every
+/// platform. The two mechanisms already in this file cannot carry it: darwin
+/// unsets NIX_CFLAGS_COMPILE and NIX_LDFLAGS to restore zig's SDK detection,
+/// and ZIG_SEARCH_PREFIXES is exported only on linux, where it also feeds the
+/// glibc pin. The lib directory is added as an rpath as well as a search path,
+/// so a sketch built here runs outside the dev shell.
+fn addManifold(b: *Build, mod: *Build.Module) void {
+    const prefix = nonEmpty(b.graph.environ_map.get("MANIFOLD_PREFIX")) orelse
+        std.debug.panic("MANIFOLD_PREFIX is not set; build inside `nix develop`", .{});
+    const include_dir = std.fs.path.join(b.allocator, &.{ prefix, "include" }) catch @panic("OOM");
+    const lib_dir = std.fs.path.join(b.allocator, &.{ prefix, "lib" }) catch @panic("OOM");
+    mod.addIncludePath(.{ .cwd_relative = include_dir });
+    mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+    mod.addRPath(.{ .cwd_relative = lib_dir });
+    mod.linkSystemLibrary("manifoldc", .{});
+    mod.addCSourceFile(.{
+        .file = b.path("src/geometry/manifold_shim.cpp"),
+        .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },
+    });
 }
 
 /// The viewer links nix-provided GL/X11 libraries; embed their lib dirs as

@@ -22,6 +22,7 @@ const std = @import("std");
 const layout = @import("../geometry/layout.zig");
 const geometry = @import("../geometry/geometry.zig");
 const fixtures = @import("../geometry/fixtures.zig");
+const polygon = @import("../geometry/polygon.zig");
 
 /// A point or direction in three dimensions, and the value type every stream
 /// accessor takes and returns. Construct one with `Vec3.init(x, y, z)` or
@@ -66,6 +67,47 @@ pub const vertexNormals = geometry.current.vertexNormals;
 /// list, which it clears and refills. Use it for wireframes and for walking a
 /// mesh's connectivity.
 pub const uniqueEdges = geometry.current.uniqueEdges;
+
+/// The boundary of a triangle mesh as oriented loops of vertex indices,
+/// returned by `boundaryLoops` and released with `deinit`.
+pub const Loops = polygon.Loops;
+
+/// Recovers the boundary of a triangle mesh: the edges used by exactly one
+/// triangle, chained into loops in the direction the mesh traverses them. Use
+/// it to find open edges, to test whether a mesh is closed, or to drive
+/// `capBoundaries`.
+pub const boundaryLoops = polygon.boundaryLoops;
+
+/// Triangulates every boundary loop of a mesh and appends the faces, closing
+/// it. Use it to cap a lofted or extruded surface. The mesh is passed as
+/// growable lists of `Vec3` and triangles, since one strategy adds a vertex.
+pub const capBoundaries = polygon.capBoundaries;
+
+/// How `capBoundaries` triangulates a loop, which states what the caller knows
+/// about its shape. The default handles any simple polygon; the others are
+/// closed forms for a convex loop, of which `.centroid` gives the best
+/// triangles on a circle.
+pub const CapStrategy = polygon.Strategy;
+
+/// Options for `capBoundaries`: the strategy and the coincidence tolerance.
+pub const CapOptions = polygon.CapOptions;
+
+
+
+
+
+
+
+
+
+
+
+
+/// Computes the normal of a possibly non-planar loop by Newell's method. Use it
+/// for the plane of a polygon, where a cross product of two edges is not
+/// defined or is ill-conditioned.
+pub const newellNormal = polygon.newellNormal;
+
 
 /// A generated mesh owning its `positions` and its `faces`, returned by the
 /// generators below and released with `deinit`.

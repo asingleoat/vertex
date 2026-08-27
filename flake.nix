@@ -96,6 +96,14 @@
           # is on the platform instead.
           shellHook = ''
             export ZIG_LOCAL_CACHE_DIR="$PWD/.zig-cache"
+
+            # Polygon triangulation is Manifold, reached through its C ABI; see
+            # "Polygon triangulation and caps" in DESIGN.md. build.zig takes the
+            # include and library directories from this prefix rather than from
+            # NIX_CFLAGS_COMPILE or ZIG_SEARCH_PREFIXES, neither of which is set
+            # on both platforms: the first is unset below on darwin, and the
+            # second is exported only on linux.
+            export MANIFOLD_PREFIX="${pkgs.manifold}"
           '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
             # In zig 0.17.0-dev.1857, setting either NIX_CFLAGS_COMPILE or
             # NIX_LDFLAGS causes zig to skip its Darwin SDK detection, which
