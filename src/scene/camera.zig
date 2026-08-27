@@ -31,6 +31,8 @@ pub const Mat4 = extern struct {
     } };
 
     /// Returns `a * b`, applying `b` first.
+    ///
+    /// O(1).
     pub fn mul(a: Mat4, b: Mat4) Mat4 {
         var result: Mat4 = .{ .m = @splat(0) };
         for (0..4) |column| {
@@ -50,6 +52,8 @@ pub const Mat4 = extern struct {
     /// greater than `near`. Depth precision falls as the ratio between `near`
     /// and `far` grows, so `Orbit` derives both from its current distance
     /// instead of fixing them.
+    ///
+    /// O(1).
     pub fn perspective(fovy_rad: f32, aspect: f32, near: f32, far: f32) Mat4 {
         std.debug.assert(fovy_rad > 0 and fovy_rad < std.math.pi);
         std.debug.assert(aspect > 0 and near > 0 and far > near);
@@ -65,6 +69,8 @@ pub const Mat4 = extern struct {
     /// Builds a right-handed orthographic projection of the given box, with
     /// depth mapping to [-1, 1]. Used for two-dimensional scenes, where
     /// perspective would only distort the geometry being examined.
+    ///
+    /// O(1).
     pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) Mat4 {
         std.debug.assert(right != left and top != bottom and far != near);
         return .{ .m = .{
@@ -79,6 +85,8 @@ pub const Mat4 = extern struct {
     /// `target`, with `up_hint` giving the roll. The hint must not be parallel
     /// to the direction of view; `Orbit` clamps its pitch to keep it from
     /// becoming so.
+    ///
+    /// O(1).
     pub fn lookAt(eye_position: Vec3, target: Vec3, up_hint: Vec3) Mat4 {
         const forward = target.sub(eye_position).normalize();
         const right = forward.cross(up_hint).normalize();
@@ -95,6 +103,8 @@ pub const Mat4 = extern struct {
     /// Transforms a point and divides through by w, giving normalized device
     /// coordinates when `matrix` is a view-projection. This is how the viewer
     /// projects a vertex to find what the cursor is near.
+    ///
+    /// O(1).
     pub fn transformPoint(matrix: Mat4, point: Vec3) Vec3 {
         const x = matrix.m[0] * point.x + matrix.m[4] * point.y + matrix.m[8] * point.z + matrix.m[12];
         const y = matrix.m[1] * point.x + matrix.m[5] * point.y + matrix.m[9] * point.z + matrix.m[13];
@@ -139,6 +149,8 @@ pub const Orbit = struct {
 
     /// The position of the eye in world space, derived from the target,
     /// distance, yaw and pitch.
+    ///
+    /// O(1).
     pub fn eye(self: Orbit) Vec3 {
         const cos_pitch = @cos(self.pitch);
         const offset = Vec3.init(
@@ -150,6 +162,8 @@ pub const Orbit = struct {
     }
 
     /// The view transform for the current pose.
+    ///
+    /// O(1).
     pub fn view(self: Orbit) Mat4 {
         return .lookAt(self.eye(), self.target, .init(0, 1, 0));
     }
@@ -171,18 +185,24 @@ pub const Orbit = struct {
     }
 
     /// Returns the allocation-free perspective projection for `aspect`.
+    ///
+    /// O(1).
     pub fn proj(self: Orbit, aspect: f32) Mat4 {
         const planes = self.clipPlanes();
         return .perspective(self.fovy, aspect, planes.near, planes.far);
     }
 
     /// Returns `projection * view` without allocating.
+    ///
+    /// O(1).
     pub fn viewProj(self: Orbit, aspect: f32) Mat4 {
         return self.proj(aspect).mul(self.view());
     }
 
     /// Applies turntable rotation without allocating and clamps pitch away
     /// from the world-up singularity.
+    ///
+    /// O(1).
     pub fn rotate(self: *Orbit, dx: f32, dy: f32) void {
         self.yaw += dx;
         const limit: f32 = std.math.pi / 2.0 - 1e-4;
@@ -191,6 +211,8 @@ pub const Orbit = struct {
 
     /// Pans in screen space without allocating. Deltas are pixels and scale
     /// with distance so dragging remains stable across dolly levels.
+    ///
+    /// O(1).
     pub fn pan(self: *Orbit, dx: f32, dy: f32, viewport_height: f32) void {
         std.debug.assert(viewport_height > 0);
         const forward = self.target.sub(self.eye()).normalize();
@@ -204,12 +226,17 @@ pub const Orbit = struct {
 
     /// Applies exponential scroll dolly without allocating. Positive scroll
     /// moves toward the target while preserving a positive distance.
+    ///
+    /// O(1).
     pub fn dolly(self: *Orbit, scroll: f32) void {
         self.distance = @max(1e-4, self.distance * @exp(-scroll * 0.1));
     }
 
     /// Fits a bounding sphere around `aabb` into a square frustum without
     /// allocating. Empty bounds restore `default`.
+    ///
+    /// O(1): it takes bounds already computed rather than the points behind
+    /// them.
     pub fn fit(self: *Orbit, aabb: Aabb) void {
         if (aabb.isEmpty()) {
             self.* = default;
@@ -232,6 +259,8 @@ pub const Ortho2D = struct {
     half_height: f32 = 1,
 
     /// Returns an allocation-free orthographic view-projection for `aspect`.
+    ///
+    /// O(1).
     pub fn viewProj(self: Ortho2D, aspect: f32) Mat4 {
         std.debug.assert(aspect > 0 and self.half_height > 0);
         const half_width = self.half_height * aspect;
@@ -247,6 +276,8 @@ pub const Ortho2D = struct {
 
     /// Pans by screen-pixel deltas without allocating. Positive screen Y is
     /// downward, so it moves the world center in the opposite Y direction.
+    ///
+    /// O(1).
     pub fn pan(self: *Ortho2D, dx: f32, dy: f32, viewport_height: f32) void {
         std.debug.assert(viewport_height > 0);
         const world_per_pixel = 2 * self.half_height / viewport_height;
@@ -256,6 +287,8 @@ pub const Ortho2D = struct {
 
     /// Multiplies the zoom scale while keeping the NDC cursor's world point
     /// fixed. This operation owns no memory and never allocates.
+    ///
+    /// O(1).
     pub fn zoomAt(self: *Ortho2D, factor: f32, cursor_ndc: [2]f32) void {
         std.debug.assert(factor > 0);
         const old_half_height = self.half_height;
@@ -268,6 +301,9 @@ pub const Ortho2D = struct {
 
     /// Fits XY bounds into a square viewport without allocating. Empty bounds
     /// restore the default center and scale.
+    ///
+    /// O(1): it takes bounds already computed rather than the points behind
+    /// them.
     pub fn fit(self: *Ortho2D, aabb: Aabb) void {
         if (aabb.isEmpty()) {
             self.* = .{};
@@ -287,6 +323,8 @@ pub const Camera = union(enum) {
     ortho: Ortho2D,
 
     /// Returns the active mode's view-projection matrix without allocating.
+    ///
+    /// O(1).
     pub fn viewProj(self: Camera, aspect: f32) Mat4 {
         return switch (self) {
             .orbit => |camera| camera.viewProj(aspect),
@@ -295,6 +333,9 @@ pub const Camera = union(enum) {
     }
 
     /// Fits the active mode to `aabb` without allocating or changing modes.
+    ///
+    /// O(1): it takes bounds already computed rather than the points behind
+    /// them.
     pub fn fit(self: *Camera, aabb: Aabb) void {
         switch (self.*) {
             .orbit => |*camera| camera.fit(aabb),

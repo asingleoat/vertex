@@ -3,6 +3,8 @@ const std = @import("std");
 
 /// Reads `path` into caller-owned `buffer` and returns its initialized prefix.
 /// The slice borrows `buffer`; failures return null and no allocation occurs.
+///
+/// O(n) in the bytes read.
 pub fn readProc(path: []const u8, buffer: []u8) ?[]const u8 {
     const handle = std.posix.openat(std.posix.AT.FDCWD, path, .{ .CLOEXEC = true }, 0) catch return null;
     defer std.Io.Threaded.closeFd(handle);
@@ -17,6 +19,8 @@ pub fn readProc(path: []const u8, buffer: []u8) ?[]const u8 {
 
 /// Parses the first decimal unsigned integer after leading whitespace.
 /// The input is borrowed, malformed data returns null, and no allocation occurs.
+///
+/// O(k) in the field's length.
 pub fn parseUnsigned(bytes: []const u8) ?u64 {
     var start: usize = 0;
     while (start < bytes.len and std.ascii.isWhitespace(bytes[start])) : (start += 1) {}
@@ -28,6 +32,8 @@ pub fn parseUnsigned(bytes: []const u8) ?u64 {
 
 /// Finds `label` and parses the following unsigned integer without allocation.
 /// Both inputs are borrowed and missing or malformed fields return null.
+///
+/// O(n) in the text searched.
 pub fn parseLabeledUnsigned(bytes: []const u8, label: []const u8) ?u64 {
     const start = std.mem.indexOf(u8, bytes, label) orelse return null;
     return parseUnsigned(bytes[start + label.len ..]);

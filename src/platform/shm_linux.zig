@@ -57,6 +57,7 @@ pub const huge_page_size: usize = 2 * 1024 * 1024;
 const huge_failure_cooldown: u32 = 8;
 var huge_cooldown = std.atomic.Value(u32).init(0);
 
+/// O(1) in the size: the region is created and mapped, not written.
 pub fn create(len: usize, options: CreateOptions) Error!Region {
     if (len == 0) return error.InvalidLength;
     if (options.huge_pages and len >= huge_page_size) {
@@ -76,6 +77,8 @@ pub fn create(len: usize, options: CreateOptions) Error!Region {
 /// (`vm.nr_overcommit_hugepages` or `vm.nr_hugepages` nonzero). Allocation
 /// can still fail transiently on a fragmented machine; `create` handles that
 /// by falling back, so this is only for the misconfiguration notice.
+///
+/// O(1).
 pub fn hugePagesConfigured() bool {
     var buffer: [64]u8 = undefined;
     inline for (.{ "/proc/sys/vm/nr_overcommit_hugepages", "/proc/sys/vm/nr_hugepages" }) |path| {
@@ -89,6 +92,8 @@ pub fn hugePagesConfigured() bool {
 /// Maps the complete caller-owned memfd read-only. The returned mapping is
 /// caller-owned and must be passed to `unmap`; the input handle remains owned
 /// by the caller and must be closed separately. No allocator is used.
+///
+/// O(1) in the size.
 pub fn mapReadOnly(handle: platform.Handle, options: CreateOptions) Error!Region {
     _ = options;
     const file: std.Io.File = .{ .handle = handle, .flags = .{ .nonblocking = false } };
@@ -112,12 +117,16 @@ pub fn mapReadOnly(handle: platform.Handle, options: CreateOptions) Error!Region
 
 /// Unmaps `region.map` without closing `region.handle`; this function allocates
 /// nothing and consumes the mapping ownership only.
+///
+/// O(1).
 pub fn unmap(region: Region) void {
     std.posix.munmap(region.map);
 }
 
 /// Closes one owned handle without unmapping any associated region. It is not
 /// safe to call twice for the same ownership and allocates nothing.
+///
+/// O(1).
 pub fn close(handle: platform.Handle) void {
     std.Io.Threaded.closeFd(handle);
 }
@@ -131,6 +140,8 @@ var huge_notice_shown = std.atomic.Value(bool).init(false);
 /// pages and the sysctl that enables them. Callers gate on `hugePagesConfigured`. `context` names the caller
 /// ("shared buffer", "viewer startup"). Informational only; the ordinary
 /// memfd path is already in effect when this is called.
+///
+/// O(1).
 pub fn warnIfHugeUnavailable(context: []const u8) void {
     if (huge_notice_shown.swap(true, .acq_rel)) return;
     std.debug.print(
@@ -143,6 +154,7 @@ pub fn warnIfHugeUnavailable(context: []const u8) void {
     );
 }
 
+/// O(1).
 pub fn hugePagesAvailable() bool {
     var overcommit_buffer: [64]u8 = undefined;
     if (procfs.readProc("/proc/sys/vm/nr_overcommit_hugepages", &overcommit_buffer)) |bytes| {

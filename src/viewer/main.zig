@@ -82,6 +82,10 @@ var state: State = undefined;
 
 /// Starts the persistent viewer. Process startup owns and leak-checks `init.gpa`;
 /// all viewer allocations are released by the Sokol cleanup callback.
+///
+/// Unbounded: it runs until the window closes.
+///
+/// O(f) in the frames drawn, which is however long the window stays open.
 pub fn main(init: std.process.Init) !void {
     state = .{ .gpa = init.gpa, .io = init.io, .environ = init.minimal.environ };
     configureEnvironment(init.minimal.environ);

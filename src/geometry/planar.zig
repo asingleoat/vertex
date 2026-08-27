@@ -79,6 +79,12 @@ pub const Error = error{
 /// which yields a polyline with no segments rather than an error.
 ///
 /// The caller owns the result.
+///
+/// O(n·a) in the vertex count and the number of edges live at one position of
+/// Clipper2's sweep. That second figure is what decides it: a profile whose
+/// parts do not overlap in the sweep direction gives linear behaviour, and one
+/// where a constant fraction of the edges overlap gives quadratic.
+/// `bench/planar.zig` measures both.
 pub fn offset(
     gpa: std.mem.Allocator,
     profile: Polyline,
@@ -130,6 +136,9 @@ pub fn offset(
 /// is negative for such a ring and `polyline.loops` tells them apart.
 ///
 /// The caller owns the result.
+///
+/// O(n·a) in the combined vertex count and the live edge count; see `offset`,
+/// which is bounded the same way.
 pub fn boolean(
     gpa: std.mem.Allocator,
     a: Polyline,

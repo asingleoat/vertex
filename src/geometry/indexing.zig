@@ -42,6 +42,10 @@ pub const Mesh = @import("mesh.zig").Mesh;
 /// nothing references, including one that only a dropped face did, does not
 /// appear. `faces` may name any vertex in `vertices`, the soup's consecutive
 /// triples being the usual case but not a requirement.
+///
+/// O(n) expected, in the vertex and face counts. The probe table is open-
+/// addressed at a load factor of one half, so a lookup is a constant number of
+/// probes on average and the worst case is the usual linear one.
 pub fn indexSoup(
     gpa: std.mem.Allocator,
     vertices: []const Vec3,
@@ -83,6 +87,8 @@ pub fn indexSoup(
 /// front of `unique` in order of first appearance, `remap[i]` is where vertex
 /// `i` went, and the number of survivors is returned. This is the operation
 /// beneath `indexSoup`, for a caller that wants the mapping rather than a mesh.
+///
+/// O(n) expected in the vertex count, on the same terms as `indexSoup`.
 pub fn exactIndex(
     gpa: std.mem.Allocator,
     vertices: []const Vec3,

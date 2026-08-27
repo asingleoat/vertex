@@ -29,6 +29,8 @@ pub const Renderer = struct {
 
     /// Creates immutable point pipelines without CPU allocation. The result
     /// owns its Sokol handles until `deinit`.
+    ///
+    /// O(1).
     pub fn init() Renderer {
         const shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => points_shader.pointsShaderDesc(sg.queryBackend()),
@@ -66,6 +68,8 @@ pub const Renderer = struct {
 
     /// Draws one point structure. The operation borrows scene and shared GPU
     /// state; only a first scalar-range lookup may allocate through `gpu`.
+    ///
+    /// O(1) draw calls over resident geometry.
     pub fn draw(
         self: *Renderer,
         gpu: *common.Gpu,
@@ -116,6 +120,8 @@ pub const Renderer = struct {
     }
 
     /// Destroys every point pipeline and shader handle; no CPU memory is owned.
+    ///
+    /// O(1).
     pub fn deinit(self: *Renderer) void {
         sg.destroyPipeline(self.scalar_pipeline);
         sg.destroyPipeline(self.pipeline);

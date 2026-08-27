@@ -14,11 +14,13 @@ pub const Shortened = struct {
     len: usize = 0,
     dir: ?std.Io.Dir = null,
 
+    /// O(k) in the path's length.
     pub fn path(self: *const Shortened) []const u8 {
         return self.buffer[0..self.len];
     }
 };
 
+/// O(k) in the path's length.
 pub fn shorten(_: std.Io, original: []const u8, out: *Shortened) Error!void {
     out.* = .{};
     if (original.len > max_len) return error.NameTooLong;
@@ -26,6 +28,7 @@ pub fn shorten(_: std.Io, original: []const u8, out: *Shortened) Error!void {
     out.len = original.len;
 }
 
+/// O(1).
 pub fn release(_: std.Io, shortened: *Shortened) void {
     shortened.len = 0;
 }

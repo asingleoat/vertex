@@ -133,6 +133,8 @@ pub const Connection = struct {
     /// where a missing viewer produces a connection whose calls succeed and do
     /// nothing. A sketch can use it to skip work performed only for display.
     /// Borrows `self` and allocates nothing.
+    ///
+    /// O(1).
     pub fn isConnected(self: *const Connection) bool {
         return self.socket != null;
     }
@@ -155,6 +157,8 @@ pub const Connection = struct {
     /// caller should then fill an ordinary slice and send it as usual, which
     /// produces the same result over the wire at a higher cost. The typed
     /// functions below size and type the buffer for their element.
+    ///
+    /// O(1) in the size asked for: the region is mapped, not written.
     pub fn sharedBytes(self: *Connection, len: usize) SharedError!Shared {
         if (!platform.shm.supported) return error.Unsupported;
         if (self.state.finished) return error.Finished;
@@ -168,6 +172,8 @@ pub const Connection = struct {
     /// and `setAll`, then passes `toConst()` to `mesh` or `meshPositions`. The
     /// view becomes invalid once that send succeeds. See `sharedBytes` for the
     /// ownership rules and for the fallback when shared memory is unsupported.
+    ///
+    /// O(1); see `sharedBytes`.
     pub fn sharedPositions(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         const shared = try self.sharedBytes(layout.Positions.byteSize(n));
         return layout.Positions.fromBytes(shared.map[0..shared.len]);
@@ -179,6 +185,8 @@ pub const Connection = struct {
     /// slice: a subslice is not 64-byte aligned and is rejected with
     /// `error.MisalignedShared`. The slice becomes invalid once the send
     /// succeeds; see `sharedBytes`.
+    ///
+    /// O(1); see `sharedBytes`.
     pub fn sharedScalars(self: *Connection, n: u32) SharedError![]f32 {
         const shared = try self.sharedBytes(@as(usize, n) * @sizeOf(f32));
         return std.mem.bytesAsSlice(
@@ -193,6 +201,8 @@ pub const Connection = struct {
     /// Vectors use the same layout as positions, so this is equivalent to
     /// `sharedPositions`. The separate name states which of the two a call site
     /// means.
+    ///
+    /// O(1); see `sharedBytes`.
     pub fn sharedVectors(self: *Connection, n: u32) SharedError!layout.Positions.Mut {
         return self.sharedPositions(n);
     }
@@ -201,6 +211,8 @@ pub const Connection = struct {
     /// pages, which may be fewer than were requested. Benchmarks report this
     /// figure. It is zero on platforms without huge pages. Borrows `self` and
     /// allocates nothing.
+    ///
+    /// O(1).
     pub fn sharedHugeRegions(self: *const Connection) u64 {
         return self.shared_tracker.huge_regions;
     }
@@ -217,6 +229,9 @@ pub const Connection = struct {
     /// a decimation. When only the vertex positions have changed,
     /// `meshPositions` is considerably cheaper. Each call appends a version the
     /// viewer's timeline can return to.
+    ///
+    /// O(n) in the payload size, or O(1) in it for a section already in a
+    /// shared buffer, which is sent by reference.
     pub fn mesh(
         self: *Connection,
         name: []const u8,
@@ -238,6 +253,8 @@ pub const Connection = struct {
     /// `name` must already be registered and `positions` must have the same
     /// vertex count as the registered mesh. The slice is borrowed only until the
     /// call returns.
+    ///
+    /// O(n) in the payload size, or O(1) for shared positions; see `mesh`.
     pub fn meshPositions(self: *Connection, name: []const u8, positions: layout.Positions.Const) Error!void {
         return self.state.meshPositions(self.currentSink(), name, positions);
     }
@@ -252,6 +269,8 @@ pub const Connection = struct {
     /// A caller sending large geometry repeatedly should reach for
     /// `sharedPositions` and `mesh` instead, which places the vertices in memory
     /// the viewer maps rather than copying them; this convenience always copies.
+    ///
+    /// O(n) in the vertex count, for the copy into a stream, plus the send.
     pub fn registerMesh(
         self: *Connection,
         gpa: std.mem.Allocator,
@@ -272,6 +291,8 @@ pub const Connection = struct {
     /// passed through unchanged, so a polyline that is closed, open, or several
     /// disjoint runs all register as what they are. See `registerMesh` on the
     /// copy and on avoiding it.
+    ///
+    /// O(n) in the vertex count; see `registerMesh`.
     pub fn registerPolyline(
         self: *Connection,
         gpa: std.mem.Allocator,
@@ -292,6 +313,8 @@ pub const Connection = struct {
     /// viewer, so they remain visible at any zoom level. `options.dim` selects
     /// three or two dimensions. The slice is borrowed only until the call
     /// returns.
+    ///
+    /// O(n) in the payload size; see `mesh`.
     pub fn points(
         self: *Connection,
         name: []const u8,
@@ -308,6 +331,8 @@ pub const Connection = struct {
     /// primitive represents polylines, edge sets, graphs and trajectories.
     /// Segments are drawn at a constant width in pixels. Both slices are
     /// borrowed only until the call returns.
+    ///
+    /// O(n) in the payload size; see `mesh`.
     pub fn lines(
         self: *Connection,
         name: []const u8,
@@ -329,6 +354,8 @@ pub const Connection = struct {
     /// A structure may carry several quantities, and the viewer selects between
     /// them. Sending the same quantity name again replaces it. The slice is
     /// borrowed only until the call returns.
+    ///
+    /// O(n) in the value count; see `mesh`.
     pub fn scalar(
         self: *Connection,
         structure: []const u8,
@@ -345,6 +372,8 @@ pub const Connection = struct {
     /// match the count that `target` implies. The viewer draws each vector as an
     /// arrow, at a scale selected per structure. Sending the same quantity name
     /// again replaces it. The stream is borrowed only until the call returns.
+    ///
+    /// O(n) in the value count; see `mesh`.
     pub fn vector(
         self: *Connection,
         structure: []const u8,
@@ -360,6 +389,8 @@ pub const Connection = struct {
     /// This carries the commentary a sketch would otherwise print to a terminal,
     /// such as iteration counts, convergence measurements or notes about
     /// degenerate input. `message` is borrowed only until the call returns.
+    ///
+    /// O(n) in the message length.
     pub fn log(self: *Connection, level: protocol.LogLevel, message: []const u8) Error!void {
         return self.state.log(self.currentSink(), level, message);
     }
@@ -370,6 +401,8 @@ pub const Connection = struct {
     /// viewer's timeline moves between frames. A sketch normally calls this at
     /// the end of each iteration. A structure that is not sent again persists
     /// into the following frame at no per-step cost.
+    ///
+    /// O(1).
     pub fn step(self: *Connection) Error!void {
         return self.state.step(self.currentSink(), "");
     }
@@ -379,6 +412,8 @@ pub const Connection = struct {
     /// The label is shown on the viewer's timeline, which is useful when the
     /// frames represent distinct stages rather than repetitions of one step.
     /// `label` is borrowed only until the call returns.
+    ///
+    /// O(n) in the label length.
     pub fn stepLabeled(self: *Connection, label: []const u8) Error!void {
         return self.state.step(self.currentSink(), label);
     }
@@ -390,6 +425,8 @@ pub const Connection = struct {
     /// and discards any structure it did not, so a run that stops registering a
     /// name removes that structure. A deferred `close` after this call has no
     /// further effect.
+    ///
+    /// O(1) in the messages sent, plus releasing any shared buffers left over.
     pub fn finish(self: *Connection) Error!void {
         defer self.close();
         return self.state.finish(self.currentSink());
@@ -402,6 +439,8 @@ pub const Connection = struct {
     /// `connect` is safe. No run terminator is sent, so the viewer retains the
     /// last frame and a sketch that fails partway leaves its progress on
     /// screen.
+    ///
+    /// O(1), plus the shared buffers left over.
     pub fn close(self: *Connection) void {
         if (self.socket) |*socket| {
             self.shared_tracker.releaseAll();
@@ -435,6 +474,9 @@ pub const Connection = struct {
 /// disconnected and its calls do nothing. The opening messages of the run are
 /// sent before this function returns, so the viewer shows the run as active
 /// from that point.
+///
+/// O(1), dominated by the socket connection rather than by anything counted
+/// here.
 pub fn connect(init: std.process.Init, options: ConnectOptions) ConnectError!Connection {
     return connectWith(init.io, init.minimal.environ, options);
 }
@@ -442,6 +484,8 @@ pub fn connect(init: std.process.Init, options: ConnectOptions) ConnectError!Con
 /// Opens a connection with the I/O implementation and environment passed
 /// explicitly, for tests and for callers that are not a process `main`.
 /// Behaviour and ownership are otherwise identical to `connect`.
+///
+/// O(1); see `connect`.
 pub fn connectWith(io: std.Io, environ: std.process.Environ, options: ConnectOptions) ConnectError!Connection {
     try validateName(options.name);
     const huge_pages = resolveHugePages(environ, options.huge_pages);

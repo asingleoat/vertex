@@ -55,6 +55,8 @@ pub const Renderer = struct {
 
     /// Creates vector GPU state without CPU allocation. The returned owner
     /// must be destroyed before `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn init(gpa: std.mem.Allocator) Renderer {
         const shader = sg.makeShader(vector_shader.vectorsShaderDesc(sg.queryBackend()));
         var desc: sg.PipelineDesc = .{
@@ -93,16 +95,21 @@ pub const Renderer = struct {
 
     /// Evicts cached instances that depend on a freed scene blob without
     /// allocating.
+    ///
+    /// O(1).
     pub fn beginFrame(self: *Renderer, frame: u64) void {
         self.frame = frame;
     }
 
     /// Destroys cached arrow-instance buffers not drawn this frame once the
     /// cache holds more than `cap` entries (see common.Gpu.trimResidency).
+    ///
+    /// O(r) in the resident entries.
     pub fn trim(self: *Renderer, cap: u32) u32 {
         return common.trimStale(Key, Entry, &self.cache, self.frame, cap);
     }
 
+    /// O(r) in the resident entries.
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
         while (self.findMatching(blob_index)) |key| {
             const removed = self.cache.fetchRemove(key).?;
@@ -112,6 +119,9 @@ pub const Renderer = struct {
 
     /// Draws the selected vertex/point vector quantity for one structure. A
     /// cache miss allocates one exact-size temporary instance slice.
+    ///
+    /// O(1) draw calls over resident geometry, plus O(n) on the frame that
+    /// builds the instance buffer.
     pub fn draw(
         self: *Renderer,
         scene: *const Scene,
@@ -159,6 +169,8 @@ pub const Renderer = struct {
 
     /// Destroys static and derived GPU buffers, pipeline/shader handles, and
     /// frees the cache with the allocator retained by `init`.
+    ///
+    /// O(r) in the resident entries.
     pub fn deinit(self: *Renderer) void {
         var iterator = self.cache.valueIterator();
         while (iterator.next()) |entry| sg.destroyBuffer(entry.buffer);

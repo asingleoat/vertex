@@ -52,18 +52,25 @@ pub const Loops = struct {
     pub const empty: Loops = .{ .vertices = &.{}, .starts = &.{} };
 
     /// The number of loops, which is zero for a closed mesh.
+    ///
+    /// O(1).
     pub fn count(self: Loops) usize {
         return if (self.starts.len == 0) 0 else self.starts.len - 1;
     }
 
     /// The vertices of loop `i`, in traversal order. The slice aliases
     /// `vertices` and is valid until `deinit`.
+    ///
+    /// O(1).
     pub fn get(self: Loops, i: usize) []const u32 {
         return self.vertices[self.starts[i]..self.starts[i + 1]];
     }
 
     /// The length of the longest loop, which is what a caller sizing a per-loop
     /// scratch buffer needs. Zero when there are no loops.
+    ///
+    /// O(k) in the number of loops, which is a walk rather than a stored
+    /// figure.
     pub fn longest(self: Loops) usize {
         var most: usize = 0;
         var i: usize = 0;
@@ -71,6 +78,7 @@ pub const Loops = struct {
         return most;
     }
 
+    /// O(1).
     pub fn deinit(self: Loops, gpa: std.mem.Allocator) void {
         gpa.free(self.vertices);
         gpa.free(self.starts);
@@ -88,6 +96,9 @@ pub const Loops = struct {
 /// A degenerate triangle, one naming a vertex twice, is skipped entirely: it
 /// encloses no area, so it neither opens a boundary nor closes one. The result
 /// is owned by the caller. Nothing is retained.
+///
+/// O(f log f) in the face count, the sort over the half-edges dominating the
+/// two linear passes either side of it.
 pub fn boundaryLoops(
     gpa: std.mem.Allocator,
     vertex_count: u32,
@@ -143,6 +154,9 @@ pub fn boundaryLoops(
 /// This is what `boundaryLoops` does with the edges it finds, and what
 /// `polyline.loops` does with a polyline's segments, which are already the
 /// edges in question.
+///
+/// O(e + v) in the edge count and `vertex_count`, the latter because the table
+/// it walks is sized by it rather than by the edges.
 pub fn chain(
     gpa: std.mem.Allocator,
     vertex_count: u32,
@@ -306,6 +320,9 @@ pub const CapOptions = struct {
 ///
 /// On failure the mesh holds the caps appended before it, which the caller
 /// discards by truncating both lists to the lengths it passed in.
+///
+/// O(f log f) for the boundary, plus the triangulation of each loop: O(n) for
+/// `.fan`, `.hierarchical` and `.centroid`, and O(n log n) for `.general`.
 pub fn capBoundaries(
     gpa: std.mem.Allocator,
     vertices: *std.ArrayList(Vec3),
@@ -405,6 +422,8 @@ fn halve(faces: *std.ArrayList([3]u32), loop: []const u32, lo: usize, hi: usize)
 ///
 /// Returns `Vec3.zero` when the loop encloses no area, as for fewer than three
 /// vertices or a set of collinear ones. Allocates nothing.
+///
+/// O(m) in the loop length.
 pub fn newellNormal(vertices: []const Vec3, loop: []const u32) Vec3 {
     if (loop.len < 3) return .zero;
     var n: Vec3 = .zero;
@@ -426,6 +445,8 @@ pub fn newellNormal(vertices: []const Vec3, loop: []const u32) Vec3 {
 /// Orthonormal Basis, Revisited" (2017), which stays well conditioned for every
 /// `n` including one near the negative z axis, where the obvious construction
 /// loses precision. Allocates nothing.
+///
+/// O(1).
 pub fn orthonormalBasis(n: Vec3) [2]Vec3 {
     const sign = std.math.copysign(@as(f32, 1), n.z);
     const a = -1 / (sign + n.z);

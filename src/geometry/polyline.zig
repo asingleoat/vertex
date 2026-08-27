@@ -27,6 +27,7 @@ pub const Polyline = struct {
     /// A polyline owning nothing, which `deinit` accepts.
     pub const empty: Polyline = .{ .vertices = &.{}, .segments = &.{} };
 
+    /// O(1).
     pub fn deinit(self: Polyline, gpa: std.mem.Allocator) void {
         gpa.free(self.vertices);
         gpa.free(self.segments);
@@ -34,6 +35,8 @@ pub const Polyline = struct {
 
     /// Returns an independent copy, which is how a second polyline is derived
     /// from one already computed rather than generated again.
+    ///
+    /// O(n) in the vertex and segment counts.
     pub fn clone(self: Polyline, gpa: std.mem.Allocator) std.mem.Allocator.Error!Polyline {
         const vertices = try gpa.dupe(Vec3, self.vertices);
         errdefer gpa.free(vertices);
@@ -48,6 +51,8 @@ pub const Polyline = struct {
 /// The first vertex is at angle zero, on the +x axis. Fewer than three segments
 /// yields a polyline with no area, which is not an error. The caller owns the
 /// result.
+///
+/// O(n) in `num_segments`.
 pub fn circle(
     gpa: std.mem.Allocator,
     radius: f32,
@@ -75,6 +80,8 @@ pub fn circle(
 /// height to raise, so `.centered` and `.on_plane` give the same shape. Either
 /// side may be zero, which yields a closed polyline of no area rather than an
 /// error, and neither may be negative.
+///
+/// O(1), the shape having four corners whatever its size.
 pub fn rectangle(
     gpa: std.mem.Allocator,
     width: f32,
@@ -99,6 +106,8 @@ pub fn rectangle(
 
 /// Generates a closed square of the given `side`. This is `rectangle` with both
 /// sides equal.
+///
+/// O(1); see `rectangle`.
 pub fn square(
     gpa: std.mem.Allocator,
     side: f32,
@@ -119,6 +128,9 @@ pub fn square(
 /// The result owns its vertices and its faces. Vertices the surface does not
 /// refer to are dropped, but coordinates are never merged: a vertex shared by
 /// both inputs appears twice, with independent connectivity.
+///
+/// O(n) in the vertex and segment counts, over three linear passes and a table
+/// sized by the two vertex arrays together.
 pub fn loft(
     gpa: std.mem.Allocator,
     bottom: Polyline,
@@ -213,6 +225,8 @@ pub fn loft(
 /// away from the volume swept whichever way `displacement` runs, so extruding
 /// down does not quietly turn the surface inside out. A profile enclosing no
 /// area, an open one among them, has no such direction and is swept as given.
+///
+/// O(n) in the vertex and segment counts; see `loft`.
 pub fn sweep(
     gpa: std.mem.Allocator,
     profile: Polyline,
@@ -232,6 +246,8 @@ pub fn sweep(
 /// listed in. It is zero for a polyline enclosing no area, an open one
 /// included, which is what makes it usable as a test for having a direction at
 /// all. Allocates nothing.
+///
+/// O(n) in the segment count.
 pub fn areaVector(profile: Polyline) Vec3 {
     var sum: Vec3 = .zero;
     for (profile.segments) |segment| {
@@ -249,6 +265,8 @@ pub fn areaVector(profile: Polyline) Vec3 {
 ///
 /// A polyline holds no more than its segments, so several disjoint rings are as
 /// ordinary a value as one, and this is how they are told apart.
+///
+/// O(e + v) in the segment and vertex counts; see `polygon.chain`.
 pub fn loops(
     gpa: std.mem.Allocator,
     profile: Polyline,

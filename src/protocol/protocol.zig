@@ -268,11 +268,15 @@ pub const Flags = packed struct(u16) {
     _pad: u12 = 0,
 
     /// Interprets the raw `flags` field of a header.
+    ///
+    /// O(1).
     pub fn fromInt(raw: u16) Flags {
         return @bitCast(raw);
     }
 
     /// Returns the bits to store in a header's `flags` field.
+    ///
+    /// O(1).
     pub fn toInt(self: Flags) u16 {
         return @bitCast(self);
     }
@@ -405,6 +409,8 @@ pub const Encoded = struct {
     ///
     /// The returned list points into this `Encoded`, which must therefore not be
     /// moved or copied afterwards.
+    ///
+    /// O(1) in the payload size: the parts are described, not copied.
     pub fn slices(self: *Encoded) []const []const u8 {
         self.parts[0] = std.mem.asBytes(&self.header);
         const head_len = encodedHeadLen(self.header.kind);
@@ -417,6 +423,8 @@ pub const Encoded = struct {
 
     /// The total size of the frame, header included. Compare it against what a
     /// write reported to detect a short write.
+    ///
+    /// O(1).
     pub fn totalLen(self: *const Encoded) usize {
         return @sizeOf(Header) + @as(usize, self.header.len);
     }
@@ -425,6 +433,8 @@ pub const Encoded = struct {
     /// filled. `buf` must be at least `totalLen()` bytes and 16-byte aligned.
     /// This is for callers that need one buffer rather than a vector of slices,
     /// such as the in-process path used by dylib mode.
+    ///
+    /// O(n) in the payload size, which is where the copy happens.
     pub fn writeTo(self: *Encoded, buf: []align(section_alignment) u8) []align(section_alignment) u8 {
         std.debug.assert(buf.len >= self.totalLen());
         var offset: usize = 0;
@@ -448,6 +458,8 @@ pub const Encoded = struct {
 
 /// Encodes the opening frame of a connection, carrying `magic`, `version` and
 /// the source name the viewer displays for this run.
+///
+/// O(1).
 pub fn encodeHello(out: *Encoded, name: []const u8) void {
     assertName(name);
     initHead(out, .hello, HelloHead{
@@ -460,12 +472,16 @@ pub fn encodeHello(out: *Encoded, name: []const u8) void {
 
 /// Encodes the start of a run. The viewer releases the previous run's versions
 /// on receiving it.
+///
+/// O(n) in the name length.
 pub fn encodeBeginRun(out: *Encoded) void {
     initEmpty(out, .begin_run);
 }
 
 /// Encodes the start of frame `index`, with an optional label the viewer shows
 /// on the timeline. Pass an empty label for none.
+///
+/// O(n) in the label length.
 pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
     std.debug.assert(label.len <= std.math.maxInt(u16));
     initHead(out, .begin_frame, BeginFrameHead{
@@ -477,18 +493,25 @@ pub fn encodeBeginFrame(out: *Encoded, index: u32, label: []const u8) void {
 }
 
 /// Encodes the end of the current frame.
+///
+/// O(1).
 pub fn encodeEndFrame(out: *Encoded) void {
     initEmpty(out, .end_frame);
 }
 
 /// Encodes the end of the run, after which the viewer discards any structure
 /// the run did not register.
+///
+/// O(1).
 pub fn encodeEndRun(out: *Encoded) void {
     initEmpty(out, .end_run);
 }
 
 /// Encodes a mesh registration: positions and the triangles indexing them,
 /// under `name`.
+///
+/// O(1) in the geometry: the sections are referred to rather than copied, and
+/// copying is `writeTo`.
 pub fn encodeMesh(
     out: *Encoded,
     name: []const u8,
@@ -510,6 +533,8 @@ pub fn encodeMesh(
 
 /// Encodes a mesh registration whose positions and topology are each inline or
 /// external, in any combination.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeMeshSections(
     out: *Encoded,
     name: []const u8,
@@ -536,11 +561,15 @@ pub fn encodeMeshSections(
 
 /// Encodes a positions-only update to an existing mesh, which keeps the
 /// triangles the mesh already has.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeMeshPositions(out: *Encoded, name: []const u8, positions: layout.Positions.Const) void {
     encodeMeshPositionsSection(out, name, positions.len(), inlineSection(positions.bytes()));
 }
 
 /// Encodes a positions-only mesh update whose positions are inline or external.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count: u32, positions: Section) void {
     assertName(name);
     initHead(out, .mesh_positions, MeshPositionsHead{
@@ -553,11 +582,15 @@ pub fn encodeMeshPositionsSection(out: *Encoded, name: []const u8, vertex_count:
 }
 
 /// Encodes a point cloud registration under `name`.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodePoints(out: *Encoded, name: []const u8, dim: Dim, positions: layout.Positions.Const) void {
     encodePointsSection(out, name, dim, positions.len(), inlineSection(positions.bytes()));
 }
 
 /// Encodes a point cloud whose positions are inline or external.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32, positions: Section) void {
     assertName(name);
     initHead(out, .points, PointsHead{
@@ -572,6 +605,8 @@ pub fn encodePointsSection(out: *Encoded, name: []const u8, dim: Dim, count: u32
 
 /// Encodes a line set registration: vertices and the segments indexing them,
 /// under `name`.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeLines(
     out: *Encoded,
     name: []const u8,
@@ -593,6 +628,8 @@ pub fn encodeLines(
 
 /// Encodes a line set whose positions and segments are each inline or external,
 /// in any combination.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeLinesSections(
     out: *Encoded,
     name: []const u8,
@@ -619,6 +656,8 @@ pub fn encodeLinesSections(
 
 /// Encodes a scalar field attached to `structure`, with one value per element
 /// of `target`.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeScalarQuantity(
     out: *Encoded,
     structure: []const u8,
@@ -638,6 +677,8 @@ pub fn encodeScalarQuantity(
 }
 
 /// Encodes a scalar field whose values are inline or external.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeScalarQuantitySection(
     out: *Encoded,
     structure: []const u8,
@@ -662,6 +703,8 @@ pub fn encodeScalarQuantitySection(
 
 /// Encodes a vector field attached to `structure`, with one vector per element
 /// of `target`.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeVectorQuantity(
     out: *Encoded,
     structure: []const u8,
@@ -680,6 +723,8 @@ pub fn encodeVectorQuantity(
 }
 
 /// Encodes a vector field whose vectors are inline or external.
+///
+/// O(1); see `encodeMesh`.
 pub fn encodeVectorQuantitySection(
     out: *Encoded,
     structure: []const u8,
@@ -703,6 +748,8 @@ pub fn encodeVectorQuantitySection(
 }
 
 /// Encodes one line for the viewer's console at the given severity.
+///
+/// O(n) in the message length.
 pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
     std.debug.assert(text.len <= std.math.maxInt(u32));
     initHead(out, .log, LogHead{
@@ -720,6 +767,8 @@ pub fn encodeLog(out: *Encoded, level: LogLevel, text: []const u8) void {
 ///
 /// The `len` it reports is how many further bytes make up the payload, which is
 /// what a reader needs before it can wait for a complete frame.
+///
+/// O(1).
 pub fn decodeHeader(bytes: []const u8) DecodeError!Header {
     if (bytes.len < @sizeOf(Header)) return error.Truncated;
     return readValue(Header, bytes[0..@sizeOf(Header)]);
@@ -736,6 +785,9 @@ pub fn decodeHeader(bytes: []const u8) DecodeError!Header {
 /// message points into `payload` or into one of the `mappings`, both of which
 /// the caller must keep alive and unmodified for as long as the message is
 /// used.
+///
+/// O(1) in the payload size: the message holds views into it, and only the
+/// fixed heads are read.
 pub fn decode(
     header: Header,
     payload: []align(payload_alignment) const u8,
@@ -778,6 +830,8 @@ pub fn decode(
 
 /// Decodes a frame that has no external sections, which is `decode` with an
 /// empty set of mappings. Use it where shared memory is not in play at all.
+///
+/// O(1); see `decode`.
 pub fn decodeInline(header: Header, payload: []align(payload_alignment) const u8) DecodeError!Message {
     return decode(header, payload, &.{});
 }

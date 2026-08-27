@@ -32,6 +32,8 @@ pub const Ingest = struct {
 
     /// Creates an ingest edge without allocating. Every borrowed dependency
     /// must remain at a stable address until `deinit`.
+    ///
+    /// O(1).
     pub fn init(
         gpa: std.mem.Allocator,
         io: std.Io,
@@ -43,6 +45,8 @@ pub const Ingest = struct {
 
     /// Drains and applies every queued message. Payload and mapping ownership
     /// is consumed here; retained cleanup capacity remains owned by `self`.
+    ///
+    /// O(n) in the items queued, each applied to the scene.
     pub fn drain(self: *Ingest) bool {
         self.began_run = false;
         var saw_geometry = false;
@@ -124,6 +128,8 @@ pub const Ingest = struct {
 
     /// Releases every scene-retained mapping and the cleanup list allocation.
     /// Call before deinitializing the borrowed scene.
+    ///
+    /// O(1).
     pub fn deinit(self: *Ingest) void {
         self.scene.takeAllMappings(&self.mapping_cleanup) catch unreachable;
         for (self.mapping_cleanup.items) |mapping| disposeMapping(mapping);

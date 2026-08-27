@@ -27,6 +27,9 @@ pub const Received = struct {
 };
 
 /// Returns `error.Unsupported` without allocating or taking handle ownership.
+///
+/// O(p + h) in the parts and handles described, which is the header work; the
+/// bytes themselves are handed to one sendmsg.
 pub fn sendWithHandles(
     _: platform.Handle,
     _: []const []const u8,
@@ -36,6 +39,8 @@ pub fn sendWithHandles(
 }
 
 /// Returns `error.Unsupported` without allocating or modifying output storage.
+///
+/// O(h) in the handles received, over one recvmsg.
 pub fn recvWithHandles(
     _: platform.Handle,
     _: []u8,

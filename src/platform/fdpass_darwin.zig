@@ -40,6 +40,9 @@ pub const Received = struct {
 
 /// Sends borrowed byte parts and handles in one sendmsg with SCM_RIGHTS. The
 /// call allocates nothing and retains no input ownership.
+///
+/// O(p + h) in the parts and handles described, which is the header work; the
+/// bytes themselves are handed to one sendmsg.
 pub fn sendWithHandles(
     socket: platform.Handle,
     parts: []const []const u8,
@@ -94,6 +97,8 @@ pub fn sendWithHandles(
 /// Receives bytes and every SCM_RIGHTS cmsg into caller storage. Returned
 /// handles transfer to the caller even when control data was truncated; the
 /// call allocates nothing and retains no buffers.
+///
+/// O(h) in the handles received, over one recvmsg.
 pub fn recvWithHandles(
     socket: platform.Handle,
     buffer: []u8,

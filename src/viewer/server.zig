@@ -59,6 +59,8 @@ pub const Inbox = struct {
     /// and a protocol version mismatch all produce one. A caller that rejects a frame this
     /// way should pass the same bytes to `reportOversizePayload`, which says
     /// what was dropped and why.
+    ///
+    /// O(1): the payload is sized and reserved, not read.
     pub fn allocatePayload(
         gpa: std.mem.Allocator,
         header_bytes: []const u8,
@@ -87,6 +89,8 @@ pub const Inbox = struct {
     /// the connection over it, a test exercising the cap does not.
     /// `header_bytes` is whatever was handed to `allocatePayload`; a length
     /// that failed the cap decoded successfully to reach it.
+    ///
+    /// O(1).
     pub fn reportOversizePayload(header_bytes: []const u8, max_payload: usize) void {
         const header = protocol.decodeHeader(header_bytes) catch return;
         const kind: protocol.Kind = @fromBackingInt(@intCast(header.kind));
@@ -122,6 +126,8 @@ pub const Inbox = struct {
     /// Appends one owned item to the producer buffer. On success ownership of
     /// its payload, fds, and mappings transfers to the inbox; list growth is
     /// the only allocation.
+    ///
+    /// O(1) amortized.
     pub fn push(self: *Inbox, gpa: std.mem.Allocator, io: std.Io, item: Item) std.mem.Allocator.Error!void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -131,6 +137,8 @@ pub const Inbox = struct {
 
     /// Swaps the producer and consumer lists while holding the mutex only for
     /// the swap. The returned slice borrows the inbox until the next `drain`.
+    ///
+    /// O(1): the two buffers are swapped rather than copied.
     pub fn drain(self: *Inbox, io: std.Io) []Item {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -141,11 +149,15 @@ pub const Inbox = struct {
 
     /// Marks the current drained list consumed without releasing item storage.
     /// The caller must free each payload and dispose every mapping/fd first.
+    ///
+    /// O(1).
     pub fn consume(self: *Inbox) void {
         self.front.clearRetainingCapacity();
     }
 
     /// Frees list backing storage but not payloads. Both lists must be empty.
+    ///
+    /// O(n) in the items still held.
     pub fn deinit(self: *Inbox, gpa: std.mem.Allocator) void {
         std.debug.assert(self.front.items.len == 0);
         std.debug.assert(self.back.items.len == 0);
@@ -191,12 +203,16 @@ pub const Server = struct {
     /// Initializes an unstarted server without allocating. `gpa` must be
     /// thread-safe and remain valid through `stop`; `huge_pages` is retained as
     /// the mapping/reporting preference for every accepted connection.
+    ///
+    /// O(1).
     pub fn init(gpa: std.mem.Allocator, io: std.Io, huge_pages: bool, inbox: *Inbox) Server {
         return .{ .gpa = gpa, .io = io, .huge_pages = huge_pages, .inbox = inbox };
     }
 
     /// Resolves the environment-selected socket, removes a stale entry, binds,
     /// and spawns the accept thread. The environment is borrowed for this call.
+    ///
+    /// O(1), dominated by bind and listen.
     pub fn start(self: *Server, environ: std.process.Environ) StartError!void {
         std.debug.assert(self.thread == null and self.listener == null);
         self.path_len = (try vertex.internal.transport.resolveSocketPath(environ, null, &self.path_storage)).len;
@@ -221,6 +237,8 @@ pub const Server = struct {
 
     /// Returns the borrowed resolved socket path. It remains valid until the
     /// server value is destroyed and no allocation occurs.
+    ///
+    /// O(1).
     pub fn socketPath(self: *const Server) []const u8 {
         return self.path_storage[0..self.path_len];
     }
@@ -228,6 +246,8 @@ pub const Server = struct {
     /// Returns the minor-fault sample taken at the first successful recvmsg.
     /// Call after `stop` joins the server thread; sampling and access allocate
     /// nothing and the returned value owns no state.
+    ///
+    /// O(1).
     pub fn firstIngestMinorFaults(self: *const Server) ?u64 {
         return self.first_ingest_minflt;
     }
@@ -235,6 +255,8 @@ pub const Server = struct {
     /// Returns how many successfully mapped received handles were hugetlbfs
     /// regions. Call after `stop` joins the server thread; access allocates
     /// nothing and the returned counter owns no state.
+    ///
+    /// O(1).
     pub fn hugeMappingsReceived(self: *const Server) u64 {
         return self.received_huge_mappings;
     }
@@ -242,6 +264,8 @@ pub const Server = struct {
     /// Stops and joins the listener, discards queued payloads, removes the
     /// socket file, and discards queued payloads. The caller retains and later
     /// deinitializes the shared inbox. It is safe after any `start` outcome.
+    ///
+    /// O(1), plus joining the thread.
     pub fn stop(self: *Server) void {
         if (self.stopped) return;
         self.stopped = true;

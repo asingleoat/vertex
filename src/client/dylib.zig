@@ -34,6 +34,8 @@ pub const DirectSink = struct {
 
     /// Returns a sink borrowing this stable-address `DirectSink`. The returned
     /// value is invalid once the direct sink or its host is destroyed.
+    ///
+    /// O(1).
     pub fn sink(self: *DirectSink) client.Sink {
         return .{ .context = self, .vtable = &vtable };
     }
@@ -60,6 +62,8 @@ pub const DirectSink = struct {
 /// Returns the concrete ABI wrapper for `Sketch`. The returned functions own
 /// every live instance created by `init`; callers must eventually pass it to
 /// `deinit`, and must keep the host callbacks alive until then.
+///
+/// O(1) at compile time.
 pub fn Exports(comptime Sketch: type) type {
     return struct {
         const DebugAllocator = std.heap.DebugAllocator(.{ .enable_memory_limit = true });
@@ -72,12 +76,16 @@ pub fn Exports(comptime Sketch: type) type {
         };
 
         /// Returns the compile-time ABI version without allocation.
+        ///
+        /// O(1).
         pub fn version() callconv(.c) u32 {
             return abi_version;
         }
 
         /// Creates and owns one leak-checked sketch instance. Null reports an
         /// initialization failure through the borrowed host log callback.
+        ///
+        /// O(1) beyond whatever the sketch's own does.
         pub fn init(host: *const Host) callconv(.c) ?*anyopaque {
             const instance = std.heap.page_allocator.create(Instance) catch |err| {
                 logError(host, "vertex_init allocation failed", @errorName(err));
@@ -105,6 +113,8 @@ pub fn Exports(comptime Sketch: type) type {
 
         /// Executes one algorithm step. Returns 1 to continue, 0 when finished,
         /// and 2 after reporting a sketch or frame-boundary error to the host.
+        ///
+        /// O(1) beyond whatever the sketch's own step does.
         pub fn step(instance_ptr: *anyopaque) callconv(.c) u8 {
             const instance: *Instance = @ptrCast(@alignCast(instance_ptr));
             const keep_going = Sketch.step(
@@ -124,6 +134,8 @@ pub fn Exports(comptime Sketch: type) type {
 
         /// Ends the run and destroys the owned instance. Returns 1 when its
         /// internal DebugAllocator reports leaks, otherwise 0.
+        ///
+        /// O(1) beyond the sketch's own.
         pub fn deinit(instance_ptr: *anyopaque) callconv(.c) u8 {
             const instance: *Instance = @ptrCast(@alignCast(instance_ptr));
             const host = instance.direct.host;
@@ -158,6 +170,8 @@ pub fn Exports(comptime Sketch: type) type {
 
 /// Exports the four stable C symbols for `Sketch`. Calling this at comptime
 /// allocates no runtime state; tests can call `Exports(Sketch)` directly.
+///
+/// O(1) at compile time.
 pub fn exportSketch(comptime Sketch: type) void {
     const E = Exports(Sketch);
     @export(&E.version, .{ .name = "vertex_abi_version" });
@@ -248,6 +262,8 @@ const TestSketch = struct {
     };
 
     /// Allocates one point and sends the test's initial structure.
+    ///
+    /// O(1) beyond whatever the sketch's own does.
     pub fn init(gpa: std.mem.Allocator, session: *client.Session) !State {
         const positions = try P.alloc(gpa, 1);
         errdefer positions.free(gpa);
@@ -257,12 +273,16 @@ const TestSketch = struct {
     }
 
     /// Advances the fixed three-step test without allocation.
+    ///
+    /// O(1) beyond whatever the sketch's own step does.
     pub fn step(state: *State, _: std.mem.Allocator, _: *client.Session) !bool {
         state.count += 1;
         return state.count < 3;
     }
 
     /// Frees the position allocation owned by the test state.
+    ///
+    /// O(1) beyond the sketch's own.
     pub fn deinit(state: *State, gpa: std.mem.Allocator) void {
         state.positions.free(gpa);
     }
@@ -273,16 +293,22 @@ const ErrorSketch = struct {
     pub const State = struct {};
 
     /// Returns an allocation-free empty state.
+    ///
+    /// O(1) beyond whatever the sketch's own does.
     pub fn init(_: std.mem.Allocator, _: *client.Session) !State {
         return .{};
     }
 
     /// Always returns the intentional test error without allocation.
+    ///
+    /// O(1) beyond whatever the sketch's own step does.
     pub fn step(_: *State, _: std.mem.Allocator, _: *client.Session) !bool {
         return error.Intentional;
     }
 
     /// Releases nothing, because the state owns no memory.
+    ///
+    /// O(1) beyond the sketch's own.
     pub fn deinit(_: *State, _: std.mem.Allocator) void {}
 };
 
@@ -291,16 +317,22 @@ const LeakSketch = struct {
     pub const State = struct { leaked: []u8 };
 
     /// Allocates the byte intentionally left live by `deinit`.
+    ///
+    /// O(1) beyond whatever the sketch's own does.
     pub fn init(gpa: std.mem.Allocator, _: *client.Session) !State {
         return .{ .leaked = try gpa.alloc(u8, 1) };
     }
 
     /// Finishes immediately without allocation.
+    ///
+    /// O(1) beyond whatever the sketch's own step does.
     pub fn step(_: *State, _: std.mem.Allocator, _: *client.Session) !bool {
         return false;
     }
 
     /// Deliberately leaves the test allocation live for leak detection.
+    ///
+    /// O(1) beyond the sketch's own.
     pub fn deinit(_: *State, _: std.mem.Allocator) void {}
 };
 

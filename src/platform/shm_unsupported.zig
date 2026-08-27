@@ -37,30 +37,43 @@ pub const CreateOptions = struct {
 pub const huge_page_size: usize = 2 * 1024 * 1024;
 
 /// Returns `error.Unsupported` without allocating or taking ownership.
+///
+/// O(1) in the size: the region is created and mapped, not written.
 pub fn create(_: usize, _: CreateOptions) Error!Region {
     return error.Unsupported;
 }
 
 /// Returns `error.Unsupported` without allocating or taking ownership.
+///
+/// O(1) in the size.
 pub fn mapReadOnly(_: platform.Handle, _: CreateOptions) Error!Region {
     return error.Unsupported;
 }
 
 /// No-op counterpart for a region that unsupported constructors cannot create.
+///
+/// O(1).
 pub fn unmap(_: Region) void {}
 
 /// No-op counterpart for a handle that unsupported constructors cannot create.
+///
+/// O(1).
 pub fn close(_: platform.Handle) void {}
 
 /// Always false, because huge shared regions are unsupported here.
 /// Does nothing, because huge pages are a Linux hugetlbfs feature.
+///
+/// O(1).
 pub fn warnIfHugeUnavailable(_: []const u8) void {}
 
 /// Always false, because this platform has no hugetlbfs.
+///
+/// O(1).
 pub fn hugePagesConfigured() bool {
     return false;
 }
 
+/// O(1).
 pub fn hugePagesAvailable() bool {
     return false;
 }

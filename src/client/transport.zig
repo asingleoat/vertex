@@ -75,6 +75,7 @@ pub const SharedTracker = struct {
     huge_pages: bool = false,
     huge_regions: u64 = 0,
 
+    /// O(1) in the size asked for: the region is mapped rather than written.
     pub fn create(self: *SharedTracker, len: usize) SharedError!Shared {
         if (len == 0) return error.InvalidSharedLength;
         if (self.outstanding_len == max_outstanding_shared) return error.TooManyShared;
@@ -96,6 +97,7 @@ pub const SharedTracker = struct {
         return shared;
     }
 
+    /// O(m) in the buffers outstanding, which is at most eight.
     pub fn releaseAll(self: *SharedTracker) void {
         for (self.outstanding[0..self.outstanding_len]) |shared| {
             platform.shm.unmap(sharedRegion(shared));
@@ -104,6 +106,7 @@ pub const SharedTracker = struct {
         self.outstanding_len = 0;
     }
 
+    /// O(m) over at most eight buffers.
     pub fn findOutstanding(self: *const SharedTracker, bytes: []const u8) ?u8 {
         if (bytes.len == 0) return null;
         const start = @intFromPtr(bytes.ptr);
@@ -116,6 +119,7 @@ pub const SharedTracker = struct {
         return null;
     }
 
+    /// O(m) over the remembered buffers.
     pub fn wasConsumed(self: *const SharedTracker, bytes: []const u8) bool {
         if (bytes.len == 0) return false;
         const start = @intFromPtr(bytes.ptr);
@@ -126,6 +130,7 @@ pub const SharedTracker = struct {
         return false;
     }
 
+    /// O(m) over at most eight buffers.
     pub fn consume(self: *SharedTracker, indices: []const u8) void {
         var selected: [max_outstanding_shared]bool = @splat(false);
         for (indices) |index| selected[index] = true;
@@ -143,6 +148,7 @@ pub const SharedTracker = struct {
         self.outstanding_len = @intCast(write);
     }
 
+    /// O(1).
     pub fn rememberConsumed(self: *SharedTracker, shared: Shared) void {
         const range: ConsumedRange = .{ .start = @intFromPtr(shared.map.ptr), .len = shared.len };
         if (self.consumed_len < max_consumed_ranges) {
@@ -173,6 +179,8 @@ pub const SocketSink = struct {
 
     /// Connects to the socket at `path`, which is borrowed for the call. The
     /// returned sink owns the socket.
+    ///
+    /// O(1), dominated by the connect syscall.
     pub fn connect(io: std.Io, path: []const u8) (platform.sockpath.Error || std.Io.net.UnixAddress.InitError || std.Io.net.UnixAddress.ConnectError)!SocketSink {
         // Paths longer than sockaddr_un allows are rebased on a directory
         // handle where the platform supports it (see platform.sockpath).
@@ -191,18 +199,24 @@ pub const SocketSink = struct {
 
     /// Wraps a stream that is already open, taking ownership of it. Used by
     /// tests, which connect the two ends themselves.
+    ///
+    /// O(1).
     pub fn fromStream(io: std.Io, stream: std.Io.net.Stream) SocketSink {
         return .{ .io = io, .stream = stream };
     }
 
     /// Returns the `Sink` interface over this socket. It points at `self`, so
     /// it is invalid once `self` has been moved or closed.
+    ///
+    /// O(1).
     pub fn sink(self: *SocketSink) Sink {
         std.debug.assert(!self.closed);
         return .{ .context = self, .vtable = &socket_vtable };
     }
 
     /// Closes the socket. Calling it again does nothing.
+    ///
+    /// O(1).
     pub fn close(self: *SocketSink) void {
         if (self.closed) return;
         self.stream.close(self.io);
@@ -364,6 +378,8 @@ const socket_vtable: Sink.VTable = .{ .send = struct {
 /// `$XDG_RUNTIME_DIR/vertex.sock`, then `/tmp/vertex.sock`. The viewer's bind
 /// and the client's connect both resolve through this function, so they agree
 /// without either being configured.
+///
+/// O(k) in the path's length.
 pub fn resolveSocketPath(
     environ: std.process.Environ,
     explicit_path: ?[]const u8,
@@ -403,6 +419,8 @@ fn copySocketPath(path: []const u8, storage: *[std.Io.Dir.max_path_bytes]u8) err
 /// if one was made, otherwise `VERTEX_SHARED_HUGE`, otherwise enabled. Always
 /// false on a platform with no huge-page class, where the preference cannot be
 /// honoured.
+///
+/// O(1).
 pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
     // Not a preference anyone can hold on a platform with no huge-page class.
     if (!platform.shm.huge_supported) return false;
@@ -415,6 +433,8 @@ pub fn resolveHugePages(environ: std.process.Environ, explicit: ?bool) bool {
 
 /// A sink that accepts every message and does nothing. It backs a connection
 /// opened with `.optional` when no viewer is listening.
+///
+/// O(1).
 pub fn noopSink() Sink {
     return .{ .context = null, .vtable = &noop_vtable };
 }

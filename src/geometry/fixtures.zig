@@ -19,6 +19,8 @@ const Vec3 = layout.Vec3;
 /// Ordinary code uses `current`, the instantiation for this build, while a
 /// benchmark uses this to build the same fixture in every layout. Everything returned is
 /// owned by the caller.
+///
+/// O(1) at compile time.
 pub fn Fixtures(comptime l: layout.Layout) type {
     return struct {
         /// The vertex stream type these generators produce, which is
@@ -39,6 +41,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
 
             /// Frees the positions and the faces. Pass the allocator the mesh
             /// was generated with.
+            ///
+            /// O(1).
             pub fn deinit(self: Mesh, gpa: std.mem.Allocator) void {
                 self.positions.free(gpa);
                 gpa.free(self.faces);
@@ -57,6 +61,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// Allocates the positions and the faces from `gpa`; the caller owns the
         /// returned mesh and releases it with `deinit`. Height fields, parameter
         /// domains and cloth simulations all start from this surface.
+        ///
+        /// O(nx·ny), which is the size of what it returns.
         pub fn grid(
             gpa: std.mem.Allocator,
             nx: u32,
@@ -120,6 +126,11 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// returned mesh and releases it with `deinit`. A midpoint table gives
         /// an edge shared by two faces one vertex rather than two, and the
         /// table is freed before returning.
+        ///
+        /// an expected-constant lookup per split edge.
+        ///
+        /// O(4^s) in `subdivisions`, which is the size of what it returns, with
+        /// an expected-constant lookup per split edge.
         pub fn icosphere(
             gpa: std.mem.Allocator,
             subdivisions: u32,
@@ -208,6 +219,8 @@ pub fn Fixtures(comptime l: layout.Layout) type {
         /// spatial structures. Note that the distribution is uniform in the cube
         /// and not in the inscribed ball, so it is denser toward the corners
         /// when interpreted radially.
+        ///
+        /// O(n).
         pub fn randomPoints(
             gpa: std.mem.Allocator,
             n: u32,

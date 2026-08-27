@@ -64,6 +64,9 @@ pub const Sink = struct {
     };
 
     /// Delivers one message, returning once the sink has taken it.
+    ///
+    /// O(1) in the geometry, which the parts refer to rather than copy; what
+    /// the sink then does with them is its own cost.
     pub fn send(self: Sink, message: protocol.Message) SendError!void {
         return self.vtable.send(self.context, message);
     }
@@ -87,6 +90,8 @@ pub const Session = struct {
 
     /// Opens a run on `destination`, sending the handshake and the run marker.
     /// `name` labels the run in the viewer and is borrowed for the call.
+    ///
+    /// O(1).
     pub fn init(destination: Sink, name: []const u8) Error!Session {
         try validateName(name);
         try destination.send(.{ .hello = .{ .name = name } });
@@ -96,6 +101,9 @@ pub const Session = struct {
 
     /// Registers a triangle mesh under `name`, replacing anything registered
     /// under it before.
+    ///
+    /// O(k) in the name's length, the geometry being referred to rather than
+    /// copied.
     pub fn mesh(
         self: *Session,
         name: []const u8,
@@ -107,11 +115,15 @@ pub const Session = struct {
     }
 
     /// Updates the vertices of an existing mesh, keeping its triangles.
+    ///
+    /// O(k) in the name's length; see `mesh`.
     pub fn meshPositions(self: *Session, name: []const u8, positions: layout.Positions.Const) Error!void {
         return self.state.meshPositions(self.destination, name, positions);
     }
 
     /// Registers a point cloud under `name`.
+    ///
+    /// O(k) in the name's length; see `mesh`.
     pub fn points(
         self: *Session,
         name: []const u8,
@@ -122,6 +134,8 @@ pub const Session = struct {
     }
 
     /// Registers a set of line segments under `name`.
+    ///
+    /// O(k) in the name's length; see `mesh`.
     pub fn lines(
         self: *Session,
         name: []const u8,
@@ -133,6 +147,8 @@ pub const Session = struct {
     }
 
     /// Attaches a named scalar field to an already registered structure.
+    ///
+    /// O(k) in the two names' lengths; see `mesh`.
     pub fn scalar(
         self: *Session,
         structure: []const u8,
@@ -144,6 +160,8 @@ pub const Session = struct {
     }
 
     /// Attaches a named vector field to an already registered structure.
+    ///
+    /// O(k) in the two names' lengths; see `mesh`.
     pub fn vector(
         self: *Session,
         structure: []const u8,
@@ -155,24 +173,32 @@ pub const Session = struct {
     }
 
     /// Writes one line to the viewer's console.
+    ///
+    /// O(n) in the message length.
     pub fn log(self: *Session, level: protocol.LogLevel, message: []const u8) Error!void {
         return self.state.log(self.destination, level, message);
     }
 
     /// Ends the current frame and opens the next. Frames divide a run into the
     /// states the viewer's timeline moves between.
+    ///
+    /// O(1).
     pub fn step(self: *Session) Error!void {
         return self.state.step(self.destination, "");
     }
 
     /// Ends the current frame and opens the next with a label, shown on the
     /// timeline.
+    ///
+    /// O(n) in the label length.
     pub fn stepLabeled(self: *Session, label: []const u8) Error!void {
         return self.state.step(self.destination, label);
     }
 
     /// Ends the frame and the run, after which the viewer discards any
     /// structure this run did not register. Calling it again does nothing.
+    ///
+    /// O(1).
     pub fn finish(self: *Session) Error!void {
         return self.state.finish(self.destination);
     }
@@ -190,6 +216,8 @@ pub const State = struct {
     frame_open: bool = true,
     finished: bool = false,
 
+    /// O(k) in the name's length, the geometry being referred to rather than
+    /// copied.
     pub fn mesh(
         self: *State,
         destination: Sink,
@@ -209,6 +237,7 @@ pub const State = struct {
         } });
     }
 
+    /// O(k) in the name's length; see `mesh`.
     pub fn meshPositions(
         self: *State,
         destination: Sink,
@@ -220,6 +249,7 @@ pub const State = struct {
         return destination.send(.{ .mesh_positions = .{ .name = name, .positions = positions } });
     }
 
+    /// O(k) in the name's length; see `mesh`.
     pub fn points(
         self: *State,
         destination: Sink,
@@ -236,6 +266,7 @@ pub const State = struct {
         } });
     }
 
+    /// O(k) in the name's length; see `mesh`.
     pub fn lines(
         self: *State,
         destination: Sink,
@@ -255,6 +286,7 @@ pub const State = struct {
         } });
     }
 
+    /// O(k) in the two names' lengths; see `mesh`.
     pub fn scalar(
         self: *State,
         destination: Sink,
@@ -275,6 +307,7 @@ pub const State = struct {
         } });
     }
 
+    /// O(k) in the two names' lengths; see `mesh`.
     pub fn vector(
         self: *State,
         destination: Sink,
@@ -294,12 +327,14 @@ pub const State = struct {
         } });
     }
 
+    /// O(n) in the message length.
     pub fn log(self: *State, destination: Sink, level: protocol.LogLevel, message: []const u8) Error!void {
         try self.ensureActive();
         if (message.len > std.math.maxInt(u32)) return error.TextTooLong;
         return destination.send(.{ .log = .{ .level = level, .text = message } });
     }
 
+    /// O(1).
     pub fn step(self: *State, destination: Sink, label: []const u8) Error!void {
         try self.ensureActive();
         if (label.len > std.math.maxInt(u16)) return error.LabelTooLong;
@@ -313,6 +348,7 @@ pub const State = struct {
         self.frame_open = true;
     }
 
+    /// O(1).
     pub fn finish(self: *State, destination: Sink) Error!void {
         if (self.finished) return;
         self.finished = true;
@@ -330,6 +366,7 @@ pub const State = struct {
         if (first_error) |err| return err;
     }
 
+    /// O(1).
     pub fn ensureActive(self: *const State) Error!void {
         if (self.finished or !self.frame_open) return error.Finished;
     }
@@ -342,6 +379,8 @@ pub const State = struct {
 /// than referred to. `SocketSink` uses it for messages with no shared sections.
 /// `DirectSink` uses it for all of them, because the in-process path passes no
 /// descriptors.
+///
+/// O(1) in the geometry; see `send`.
 pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     switch (message) {
         .hello => |value| protocol.encodeHello(out, value.name),
@@ -371,6 +410,7 @@ pub fn encodeMessage(out: *protocol.Encoded, message: protocol.Message) void {
     }
 }
 
+/// O(k) in the name's length.
 pub fn validateName(name: []const u8) Error!void {
     if (name.len > protocol.max_name_len) return error.NameTooLong;
 }

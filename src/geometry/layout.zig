@@ -52,6 +52,9 @@ pub const blob_alignment: std.mem.Alignment = .@"64";
 /// It also serves as the arithmetic type for geometry code, with `add`, `sub`,
 /// `scale`, `dot`, `cross`, `length`, `normalize`, `min`, `max` and `eql`.
 /// Two-dimensional work uses the same type with `z` left at zero.
+/// ---
+/// Every one of its operations is O(1) and allocates nothing, so they are not
+/// labelled individually.
 pub const Vec3 = extern struct {
     x: f32,
     y: f32,
@@ -85,6 +88,8 @@ pub const Vec3 = extern struct {
         return @sqrt(a.dot(a));
     }
     /// Returns `zero` for a zero-length input rather than NaN.
+    ///
+    /// O(1).
     pub inline fn normalize(a: Vec3) Vec3 {
         const l = a.length();
         return if (l > 0) a.scale(1.0 / l) else zero;
@@ -134,6 +139,8 @@ pub const Vec3Padded = extern struct {
 /// The returned type is a view over memory, not a container. `Mut` is the
 /// writable view and `Const` the read-only one, over the same bytes;
 /// `fromBytes` and `bytes` are casts, not copies.
+///
+/// O(1) at compile time.
 pub fn PositionsOf(comptime l: Layout) type {
     return struct {
         pub const Layout_ = l;
@@ -177,6 +184,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// The caller owns the result and releases it with `free` and the same
         /// allocator. The contents are undefined until written, normally with
         /// `setAll` or a loop over `set`.
+        ///
+        /// O(1): the memory is reserved, not written.
         pub fn alloc(gpa: std.mem.Allocator, n: u32) std.mem.Allocator.Error!Mut {
             const elems = try gpa.alignedAlloc(Elem, blob_alignment, elemCount(n));
             return .{ .data = elems };
@@ -184,6 +193,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// Releases a stream obtained from `alloc`, using the same allocator.
         /// Do not call it on a view produced by `fromBytes` or `fromSlice`,
         /// which do not own their memory.
+        ///
+        /// O(1).
         pub fn free(self: Mut, gpa: std.mem.Allocator) void {
             gpa.free(@as([]align(blob_alignment.toByteUnits()) Elem, @alignCast(self.data)));
         }
@@ -193,6 +204,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// must be aligned for `Elem`. The view is valid for as long as that
         /// memory is, and does not own it. This is how the viewer reads a
         /// stream out of a blob and how a sketch writes into a shared buffer.
+        ///
+        /// O(1), the view borrowing what it is given.
         pub fn fromBytes(b: []u8) Mut {
             std.debug.assert(b.len % bytes_per_vertex == 0);
             return .{ .data = std.mem.bytesAsSlice(Elem, @as([]align(@alignOf(Elem)) u8, @alignCast(b))) };
@@ -203,6 +216,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// is a multiple of three. The view does not own the slice and is valid
         /// only as long as it is, which makes this the way to send a stack
         /// array or an existing buffer without allocating.
+        ///
+        /// O(1).
         pub fn fromSlice(elems: []Elem) Mut {
             if (l == .soa) std.debug.assert(elems.len % 3 == 0);
             return .{ .data = elems };
@@ -210,6 +225,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// The number of bytes `n` vertices occupy, which is the same figure
         /// in memory, on the wire and in a blob. Use it to size a shared buffer
         /// or to check a payload length.
+        ///
+        /// O(1).
         pub inline fn byteSize(n: u32) usize {
             return @as(usize, n) * bytes_per_vertex;
         }
@@ -222,16 +239,22 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// Returns the read-only view of the same bytes. Nothing is copied,
         /// and the result is what every function that only reads a stream
         /// takes, including the client's message calls and the kernels.
+        ///
+        /// O(1).
         pub inline fn toConst(self: Mut) Const {
             return .{ .data = self.data };
         }
         /// The stream as raw bytes. Sending a stream writes these bytes
         /// directly, with no serialization step.
+        ///
+        /// O(1).
         pub inline fn bytes(self: Mut) []u8 {
             return std.mem.sliceAsBytes(self.data);
         }
         /// The number of vertices in the stream, not the number of elements or
         /// bytes; the three differ in `.soa` and `.aos4`.
+        ///
+        /// O(1).
         pub inline fn len(self: Mut) u32 {
             return @intCast(if (l == .soa) self.data.len / 3 else self.data.len);
         }
@@ -240,6 +263,9 @@ pub fn PositionsOf(comptime l: Layout) type {
 
         /// The vertex at `i` as a `Vec3`, whatever the layout stores. Indices
         /// are vertex indices and are `u32`.
+        ///
+        /// O(1) in every layout, `.soa` included: the components are found by
+        /// arithmetic on the index rather than by a search.
         pub inline fn get(self: Mut, i: u32) Vec3 {
             return self.toConst().get(i);
         }
@@ -253,6 +279,8 @@ pub fn PositionsOf(comptime l: Layout) type {
             return self.toConst().z(i);
         }
         /// Writes the vertex at `i`, converting to the stored layout.
+        ///
+        /// O(1).
         pub inline fn set(self: Mut, i: u32, v: Vec3) void {
             switch (l) {
                 .aos3 => self.data[i] = v,
@@ -268,6 +296,8 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// Writes the whole stream from a `Vec3` slice, which must have
         /// exactly `len()` elements. Geometry code that computes into a
         /// `[]Vec3` transfers its result with one call.
+        ///
+        /// O(n) in `src.len`.
         pub fn setAll(self: Mut, src: []const Vec3) void {
             std.debug.assert(src.len == self.len());
             for (src, 0..) |v, i| self.set(@intCast(i), v);
@@ -276,25 +306,33 @@ pub fn PositionsOf(comptime l: Layout) type {
         /// The read-only view over a vertex stream. It offers the same
         /// accessors as the mutable view, minus the ones that write, and is what
         /// functions that only read a stream should take.
+        ///
+        /// Every accessor is O(1) and allocates nothing, `.soa` included.
         const ConstView = struct {
             data: []const Elem,
 
             pub const empty: Const = .{ .data = &.{} };
 
+            /// O(1), the view borrowing what it is given.
             pub fn fromBytes(b: []const u8) Const {
                 std.debug.assert(b.len % bytes_per_vertex == 0);
                 return .{ .data = std.mem.bytesAsSlice(Elem, @as([]align(@alignOf(Elem)) const u8, @alignCast(b))) };
             }
+            /// O(1).
             pub fn fromSlice(elems: []const Elem) Const {
                 if (l == .soa) std.debug.assert(elems.len % 3 == 0);
                 return .{ .data = elems };
             }
+            /// O(1).
             pub inline fn bytes(self: Const) []const u8 {
                 return std.mem.sliceAsBytes(self.data);
             }
+            /// O(1).
             pub inline fn len(self: Const) u32 {
                 return @intCast(if (l == .soa) self.data.len / 3 else self.data.len);
             }
+            /// O(1) in every layout, `.soa` included: the components are found
+            /// by arithmetic on the index rather than by a search.
             pub inline fn get(self: Const, i: u32) Vec3 {
                 return switch (l) {
                     .aos3 => self.data[i],
@@ -325,6 +363,8 @@ pub fn PositionsOf(comptime l: Layout) type {
             /// Available only in the `.soa` layout, with `ys` and `zs`, and
             /// reached from inside a compile-time switch on the layout. A kernel
             /// written for planar data takes these runs directly.
+            ///
+            /// O(1).
             pub inline fn xs(self: Const) []const f32 {
                 comptime std.debug.assert(l == .soa);
                 return self.data[0 .. self.data.len / 3];

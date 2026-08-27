@@ -62,6 +62,10 @@ pub const Error = error{
 /// deliberately so: rather than nudge coincident geometry until both orders
 /// agree, Manifold gives the two operands different roles and stays exact. See
 /// `STYLE.md` §3a.
+///
+/// O(n) on this side, for the two copies across the boundary, over whatever
+/// Manifold's own cost is: its booleans build a hierarchy over the two meshes
+/// and are near linear in their total size on ordinary input.
 pub fn apply(gpa: std.mem.Allocator, a: Mesh, b: Mesh, op: Op) Error!Mesh {
     var handle: ?*anyopaque = null;
     var vertex_count: usize = 0;

@@ -44,12 +44,16 @@ pub const Input = struct {
 
     /// Creates a controller borrowing the scene and timeline controls. The
     /// caller must keep all three at stable addresses for the controller lifetime.
+    ///
+    /// O(1).
     pub fn init(scene: *const Scene, scrub: *u32, follow_latest: *bool) Input {
         return .{ .scene = scene, .scrub = scrub, .follow_latest = follow_latest };
     }
 
     /// Handles one borrowed Sokol event after imgui has observed it. Mouse
     /// capture, tracking, camera motion, and all key bindings allocate nothing.
+    ///
+    /// O(1) per event.
     pub fn event(self: *Input, ev: sapp.Event) void {
         const mouse_event = isMouseEvent(ev.type);
         const wants_mouse = mouse_event and ig.igGetIO().*.WantCaptureMouse;
@@ -65,6 +69,8 @@ pub const Input = struct {
 
     /// Fits the active camera to visible geometry at the selected frame.
     /// Scene data is borrowed and no allocation occurs.
+    ///
+    /// O(s) in the structures, whose bounds are already computed.
     pub fn fitCamera(self: *Input) void {
         const bounds = self.visibleBounds();
         switch (self.camera_mode) {
@@ -75,6 +81,8 @@ pub const Input = struct {
 
     /// Returns true when the borrowed scene is non-empty and entirely 2D.
     /// The scene is only inspected and no allocation occurs.
+    ///
+    /// O(s) in the structures.
     pub fn allStructures2d(self: *const Input) bool {
         if (self.scene.structures.len == 0) return false;
         const structures = self.scene.structures.slice();
@@ -85,6 +93,8 @@ pub const Input = struct {
     }
 
     /// Computes the active camera view-projection matrix without allocation.
+    ///
+    /// O(1).
     pub fn viewProj(self: *const Input, aspect: f32) vertex.internal.camera.Mat4 {
         return switch (self.camera_mode) {
             .orbit => self.orbit.viewProj(aspect),

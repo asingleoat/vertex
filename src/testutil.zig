@@ -10,6 +10,8 @@ pub const CountingAllocator = struct {
     free_calls: usize = 0,
 
     /// Returns an allocator view borrowing this counter and forwarding to `child`.
+    ///
+    /// O(1).
     pub fn allocator(self: *CountingAllocator) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &vtable };
     }

@@ -76,10 +76,13 @@ pub const Picker = if (supported) GlPicker else DisabledPicker;
 /// Stands in for a backend without a readback path. It holds nothing and
 /// reports no hit, giving main.zig one code path.
 const DisabledPicker = struct {
+    /// O(1).
     pub fn init() DisabledPicker {
         return .{};
     }
 
+    /// O(1) in the scene, being a readback of one pixel already rendered; the
+    /// pass that filled it is O(n) in the geometry drawn.
     pub fn query(
         _: *DisabledPicker,
         _: *mesh_render.Renderer,
@@ -92,6 +95,7 @@ const DisabledPicker = struct {
         return null;
     }
 
+    /// O(1).
     pub fn deinit(self: *DisabledPicker) void {
         self.* = undefined;
     }
@@ -119,6 +123,8 @@ const GlPicker = struct {
 
     /// Creates GL 4.3 integer-output pipelines without CPU allocation. The
     /// returned owner must be destroyed before `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn init() GlPicker {
         const mesh_shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => pick_mesh_shader.pickMeshShaderDesc(sg.queryBackend()),
@@ -165,6 +171,9 @@ const GlPicker = struct {
     /// Draws every visible pickable structure for `scrub`, reads the requested
     /// top-left-origin framebuffer pixel inside the pass, and returns a valid hit.
     /// A line-cache OOM skips that line structure rather than retaining an error.
+    ///
+    /// O(1) in the scene, being a readback of one pixel already rendered; the
+    /// pass that filled it is O(n) in the geometry drawn.
     pub fn query(
         self: *GlPicker,
         renderer: *mesh_render.Renderer,
@@ -221,6 +230,8 @@ const GlPicker = struct {
 
     /// Destroys the current target and all pick pipelines/shaders. It owns no
     /// CPU allocations and must run before the renderer and `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn deinit(self: *GlPicker) void {
         self.destroyTarget();
         sg.destroyPipeline(self.lines_pipeline);
@@ -370,6 +381,9 @@ const GlPicker = struct {
 
 /// Runs one pick query through `picker`; the returned hit owns no memory. A
 /// first line-cache lookup may use the renderer's retained allocator.
+///
+/// O(1) in the scene, being a readback of one pixel already rendered; the pass
+/// that filled it is O(n) in the geometry drawn.
 pub fn query(
     picker: *Picker,
     renderer: *mesh_render.Renderer,

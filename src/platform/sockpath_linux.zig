@@ -20,6 +20,7 @@ pub const Shortened = struct {
     len: usize = 0,
     dir: ?std.Io.Dir = null,
 
+    /// O(k) in the path's length.
     pub fn path(self: *const Shortened) []const u8 {
         return self.buffer[0..self.len];
     }
@@ -28,6 +29,8 @@ pub const Shortened = struct {
 /// Produces a path usable in a `sockaddr_un` for `original`: unchanged when
 /// it fits, otherwise rebased on an opened directory handle. Allocates
 /// nothing; may open one directory fd (closed by `release`).
+///
+/// O(k) in the path's length.
 pub fn shorten(io: std.Io, original: []const u8, out: *Shortened) Error!void {
     out.* = .{};
     if (original.len <= max_len) {
@@ -47,6 +50,8 @@ pub fn shorten(io: std.Io, original: []const u8, out: *Shortened) Error!void {
 }
 
 /// Closes the directory handle, if any. Safe to call once per `shorten`.
+///
+/// O(1).
 pub fn release(io: std.Io, shortened: *Shortened) void {
     if (shortened.dir) |dir| dir.close(io);
     shortened.dir = null;

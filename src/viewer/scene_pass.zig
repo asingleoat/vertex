@@ -15,6 +15,9 @@ const Scene = vertex.internal.scene.Scene;
 
 /// Draws the displayed scene in the established solid, wire, line, vector,
 /// then point order. Inputs are borrowed; renderer cache misses may allocate.
+///
+/// O(s) draw calls in the visible structures, over O(n) geometry already
+/// resident on the GPU.
 pub fn drawScene(
     renderer: *mesh_render.Renderer,
     scene: *const Scene,
@@ -94,6 +97,8 @@ pub fn drawScene(
 
 /// Returns whether any structure has a displayed version at `scrub`.
 /// The scene is borrowed and the query allocates nothing.
+///
+/// O(s) in the structures.
 pub fn hasDisplayedGeometry(scene: *const Scene, scrub: u32) bool {
     const structures = scene.structures.slice();
     for (structures.items(.versions), 0..) |_, i| {

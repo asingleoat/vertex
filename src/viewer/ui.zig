@@ -33,6 +33,9 @@ pub const Selection = struct {
 
 /// Draws all viewer panels and mutates only viewer UI state. It allocates nothing,
 /// borrows every argument for the call, and returns whether Fit was pressed.
+///
+/// O(s + v) in the structures listed and the versions the timeline spans, plus
+/// whatever Dear ImGui does with the widgets.
 pub fn draw(
     scene: *Scene,
     scrub: *u32,
@@ -563,6 +566,8 @@ fn hitValid(scene: *const Scene, scrub: u32, hit: pick.Hit) bool {
 
 /// Returns the face vertex whose current top-left-origin framebuffer projection
 /// is closest to `cursor`. All views are borrowed and the operation never allocates.
+///
+/// O(1): three vertices are compared.
 pub fn nearestVertexOfFace(
     positions: Positions.Const,
     face: [3]u32,

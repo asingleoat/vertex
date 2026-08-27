@@ -45,6 +45,8 @@ pub const Renderer = struct {
 
     /// Creates every immutable renderer pipeline. The returned renderer owns
     /// all Sokol handles and must be released before `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn init(gpa: std.mem.Allocator) Renderer {
         const shader = sg.makeShader(switch (vertex.internal.layout.layout) {
             .aos3, .aos4 => mesh_shader.meshShaderDesc(sg.queryBackend()),
@@ -111,6 +113,8 @@ pub const Renderer = struct {
     pub const derived_cap: u32 = 128;
 
     /// Marks the frame for residency stamping; call before any draw.
+    ///
+    /// O(1).
     pub fn beginFrame(self: *Renderer, frame: u64) void {
         self.gpu.beginFrame(frame);
         self.lines.beginFrame(frame);
@@ -118,10 +122,13 @@ pub const Renderer = struct {
     }
 
     /// Enforces GPU residency caps; call after the frame's passes are committed.
+    ///
+    /// O(r) in the resident entries.
     pub fn trimResidency(self: *Renderer) u32 {
         return self.gpu.trimResidency(residency_cap) + self.lines.trim(derived_cap) + self.vectors.trim(derived_cap);
     }
 
+    /// O(1) for a resident version; O(n) in its bytes on the upload.
     pub fn sync(self: *Renderer, scene: *Scene) std.mem.Allocator.Error!void {
         try self.gpu.ensureSceneCapacity(scene);
         for (scene.freed_blobs.items) |blob_index| {
@@ -140,6 +147,8 @@ pub const Renderer = struct {
 
     /// Draws one solid mesh version. Selected vertex and face scalar quantities
     /// choose attribute and primitive-indexed storage-buffer pipelines respectively.
+    ///
+    /// O(1) draw calls over resident geometry; see `sync`.
     pub fn draw(
         self: *Renderer,
         scene: *const Scene,
@@ -204,6 +213,8 @@ pub const Renderer = struct {
 
     /// Draws a mesh wireframe overlay through the shared thick-line module.
     /// A derived-cache miss may allocate through the renderer allocator.
+    ///
+    /// O(1) draw calls; see `lines.drawWireframe`.
     pub fn drawWireframe(
         self: *Renderer,
         scene: *const Scene,
@@ -218,6 +229,8 @@ pub const Renderer = struct {
 
     /// Draws one line structure. A derived-cache miss may allocate through the
     /// renderer allocator; all returned GPU state remains renderer-owned.
+    ///
+    /// O(1) draw calls; see `lines.drawLines`.
     pub fn drawLines(
         self: *Renderer,
         scene: *const Scene,
@@ -232,6 +245,8 @@ pub const Renderer = struct {
 
     /// Draws the active vector quantity for a structure. A derived-cache miss
     /// may allocate; non-vector and unsupported-target selections draw nothing.
+    ///
+    /// O(1) draw calls over resident geometry.
     pub fn drawVectors(
         self: *Renderer,
         scene: *const Scene,
@@ -245,6 +260,8 @@ pub const Renderer = struct {
 
     /// Draws one point structure using scene-blob position/scalar buffers. A
     /// first scalar-range lookup may allocate through the renderer allocator.
+    ///
+    /// O(1) draw calls over resident geometry.
     pub fn drawPoints(
         self: *Renderer,
         scene: *const Scene,
@@ -259,6 +276,8 @@ pub const Renderer = struct {
 
     /// Destroys every owned renderer and shared GPU resource, then frees all
     /// retained CPU cache capacity.
+    ///
+    /// O(r) in the resident entries.
     pub fn deinit(self: *Renderer) void {
         self.vectors.deinit();
         self.lines.deinit();

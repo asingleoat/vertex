@@ -45,6 +45,9 @@ pub const Error = error{
 ///
 /// The returned slice aliases `out`. Nothing is allocated on this side of the
 /// call and no argument is retained.
+///
+/// O(n log n) in the point count, which is Manifold's rather than this
+/// project's. Nothing is allocated on this side.
 pub fn polygon(
     points: []const [2]f64,
     ring_lengths: []const u32,
@@ -79,6 +82,8 @@ pub fn polygon(
 ///
 /// `out` must hold at least `triangleCount(points.len)` triangles, which for
 /// one ring is exact rather than an upper bound.
+///
+/// O(n log n) in the point count; see `polygon`.
 pub fn simplePolygon(
     points: []const [2]f64,
     epsilon: f64,
@@ -91,6 +96,8 @@ pub fn simplePolygon(
 
 /// The number of triangles a simple polygon of `n` points produces, and so the
 /// length `simplePolygon` requires of its `out`. Zero below three points.
+///
+/// O(1).
 pub fn triangleCount(n: usize) usize {
     return triangleCapacity(n, 1);
 }
@@ -103,6 +110,8 @@ pub fn triangleCount(n: usize) usize {
 /// several separate outer rings give fewer, so `n + 2k` covers every
 /// arrangement of `k` rings without knowing which of them are holes, which is
 /// what the triangulation is being asked to work out.
+///
+/// O(1).
 pub fn triangleCapacity(point_count: usize, ring_count: usize) usize {
     if (point_count < 3 or ring_count == 0) return 0;
     if (ring_count == 1) return point_count - 2;

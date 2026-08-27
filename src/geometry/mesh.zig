@@ -40,6 +40,7 @@ pub const Mesh = struct {
     /// A mesh owning nothing, which `deinit` accepts.
     pub const empty: Mesh = .{ .vertices = &.{}, .faces = &.{} };
 
+    /// O(1).
     pub fn deinit(self: Mesh, gpa: std.mem.Allocator) void {
         gpa.free(self.vertices);
         gpa.free(self.faces);
@@ -48,6 +49,8 @@ pub const Mesh = struct {
 
 /// Moves every vertex by `offset`. Connectivity is unaffected, so this applies
 /// to the vertex array of any geometric type.
+///
+/// O(n) in the vertex count.
 pub fn translate(vertices: []Vec3, offset: Vec3) void {
     for (vertices) |*v| v.* = v.add(offset);
 }

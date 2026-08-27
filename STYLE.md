@@ -190,6 +190,25 @@ rule keeps at arm's length. It needs a tolerance by its nature, which is why it
 is a separate operation a caller asks for rather than a step folded into import,
 capping or anything else that would otherwise imply it.
 
+## 3b. Complexity is documented
+
+Every public function states its asymptotic cost as the last paragraph of its
+doc comment, naming the quantity it is measured in: `O(f log f) in the face
+count`. Constant factors are not the subject, so simplifying assumptions are
+correct here; what the label is for is telling a caller which operations it can
+afford in a loop.
+
+Say what the bound depends on when that is not the input size. `planar.offset`
+is `O(n·a)` in the vertex count and the edges live at one position of the
+sweep, which is the difference between linear and quadratic on inputs of equal
+size, and no label reading `O(n log n)` would have said so.
+
+An operation whose cost is a dependency's says whose it is, since it is not
+ours to promise: `triangulate.polygon` is `O(n log n)` because Manifold's
+triangulator is. Where a whole cluster of accessors is `O(1)`, the type says so
+once rather than each of them repeating it; `Vec3` and the `Positions` views
+are the two.
+
 ## 4. Pure core, effectful edges
 
 - The core modules are `protocol`, `scene`, `camera` and `geometry/*`, the last

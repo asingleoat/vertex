@@ -63,6 +63,8 @@ const name_attempts = 8;
 /// Creates and maps a writable shared region. The caller owns the returned
 /// mapping and handle and must call `unmap` and `close`; no allocator is used.
 /// `options.huge_pages` is ignored: `region.huge` is always false.
+///
+/// O(1) in the size: the region is created and mapped, not written.
 pub fn create(len: usize, options: CreateOptions) Error!Region {
     _ = options;
     if (len == 0) return error.InvalidLength;
@@ -86,6 +88,8 @@ pub fn create(len: usize, options: CreateOptions) Error!Region {
 /// Maps the complete caller-owned region read-only. The returned mapping is
 /// caller-owned and must be passed to `unmap`; the input handle remains owned
 /// by the caller and must be closed separately. No allocator is used.
+///
+/// O(1) in the size.
 pub fn mapReadOnly(handle: platform.Handle, options: CreateOptions) Error!Region {
     _ = options;
     const file: std.Io.File = .{ .handle = handle, .flags = .{ .nonblocking = false } };
@@ -105,26 +109,36 @@ pub fn mapReadOnly(handle: platform.Handle, options: CreateOptions) Error!Region
 
 /// Unmaps `region.map` without closing `region.handle`; this function allocates
 /// nothing and consumes the mapping ownership only.
+///
+/// O(1).
 pub fn unmap(region: Region) void {
     std.posix.munmap(region.map);
 }
 
 /// Closes one owned handle without unmapping any associated region. It is not
 /// safe to call twice for the same ownership and allocates nothing.
+///
+/// O(1).
 pub fn close(handle: platform.Handle) void {
     std.Io.Threaded.closeFd(handle);
 }
 
 /// Does nothing, because this platform has no huge-page class to be
 /// misconfigured and nothing to advise about.
+///
+/// O(1).
 pub fn warnIfHugeUnavailable(_: []const u8) void {}
 
 /// Always false, because macOS has no equivalent of hugetlbfs.
+///
+/// O(1).
 pub fn hugePagesConfigured() bool {
     return false;
 }
 
 /// Always false, because macOS has no equivalent of hugetlbfs.
+///
+/// O(1).
 pub fn hugePagesAvailable() bool {
     return false;
 }

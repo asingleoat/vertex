@@ -37,6 +37,9 @@ pub const WriteError = std.Io.Dir.WriteFileError || stl.Error;
 /// caller wanting to bound the read for a reason of its own calls
 /// `readFileAlloc` and `stl.decode` itself, which is the two lines this
 /// composes.
+///
+/// O(n) in the file size, plus the indexing, which is expected linear; see
+/// `indexing.indexSoup`.
 pub fn read(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -54,6 +57,8 @@ pub fn read(
 /// Use this to see a file as it is, to count what `read` would drop, or to hold
 /// per-facet data alongside the facets. Anything treating the result as a
 /// surface wants `read` instead.
+///
+/// O(n) in the file size for a binary file; see `stl.decode` for the ASCII one.
 pub fn readSoup(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -81,6 +86,8 @@ pub const WriteOptions = struct {
 /// store the mesh's own. A mesh with shared vertices is expanded to the
 /// triangle soup the format requires, so what is written is larger than what is
 /// held and reading it back needs `read` to index it again.
+///
+/// O(n) in the face count.
 pub fn write(
     gpa: std.mem.Allocator,
     io: std.Io,

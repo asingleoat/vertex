@@ -27,6 +27,8 @@ pub const BufferKind = enum { vertex, index, storage };
 
 /// Configures build-selected position attributes on `desc`. Position data is
 /// borrowed, no allocation occurs, and `instanced` selects the input step rate.
+///
+/// O(1).
 pub fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
     switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => {
@@ -52,6 +54,8 @@ pub fn configurePositions(desc: *sg.PipelineDesc, instanced: bool) void {
 
 /// Binds one borrowed build-selected position buffer and its planar offsets.
 /// The binding is updated in place without allocation or ownership transfer.
+///
+/// O(1).
 pub fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void {
     switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => bindings.vertex_buffers[0] = buffer,
@@ -66,6 +70,8 @@ pub fn bindPositions(bindings: *sg.Bindings, buffer: sg.Buffer, count: u32) void
 }
 
 /// Returns the build-selected scalar texture-view slot without allocation.
+///
+/// O(1).
 pub fn scalarViewSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
     return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => aos_shader.VIEW_cmap_tex,
@@ -74,6 +80,8 @@ pub fn scalarViewSlot(comptime aos_shader: type, comptime soa_shader: type) usiz
 }
 
 /// Returns the build-selected scalar sampler slot without allocation.
+///
+/// O(1).
 pub fn scalarSamplerSlot(comptime aos_shader: type, comptime soa_shader: type) usize {
     return switch (vertex.internal.layout.layout) {
         .aos3, .aos4 => aos_shader.SMP_cmap_smp,
@@ -83,6 +91,8 @@ pub fn scalarSamplerSlot(comptime aos_shader: type, comptime soa_shader: type) u
 
 /// Destroys and removes entries not used in `frame` once `map` exceeds `cap`.
 /// The map retains its allocation; each removed entry's GPU buffer is consumed.
+///
+/// O(r) in the resident entries.
 pub fn trimStale(
     comptime Key: type,
     comptime Entry: type,
@@ -141,6 +151,8 @@ pub const Gpu = struct {
 
     /// Creates shared GPU state without allocating CPU memory. The returned
     /// owner must be destroyed before `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn init(gpa: std.mem.Allocator) Gpu {
         return .{
             .gpa = gpa,
@@ -156,6 +168,8 @@ pub const Gpu = struct {
 
     /// Extends the parallel GPU array to the scene's blob-slot count. Growth
     /// may allocate through the retained allocator; no GPU upload occurs.
+    ///
+    /// O(1) amortized in the structures.
     pub fn ensureSceneCapacity(self: *Gpu, scene: *const Scene) std.mem.Allocator.Error!void {
         if (scene.blobs.len <= self.blob_gpu.items.len) return;
         const additional = scene.blobs.len - self.blob_gpu.items.len;
@@ -171,6 +185,8 @@ pub const Gpu = struct {
 
     /// Releases GPU and cached range state for one freed scene blob. It does
     /// not allocate and leaves the parallel slot ready for scene index reuse.
+    ///
+    /// O(r) in the resident entries, which are searched for the blob.
     pub fn releaseBlob(self: *Gpu, blob_index: BlobIndex) void {
         const i = indexOf(blob_index);
         const view_slot = &self.blob_storage_views.items[i];
@@ -186,6 +202,8 @@ pub const Gpu = struct {
     }
 
     /// Marks the start of a frame; buffers bound from now on are stamped with it.
+    ///
+    /// O(1).
     pub fn beginFrame(self: *Gpu, frame: u64) void {
         self.frame = frame;
     }
@@ -195,6 +213,8 @@ pub const Gpu = struct {
     /// resident, destroy every one not bound this frame; they are immutable
     /// uploads of scene blobs and are recreated on demand when scrubbed back.
     /// Returns how many were destroyed. Call outside a render pass.
+    ///
+    /// O(r) in the resident entries.
     pub fn trimResidency(self: *Gpu, cap: u32) u32 {
         if (self.resident <= cap) return 0;
         var destroyed: u32 = 0;
@@ -213,6 +233,9 @@ pub const Gpu = struct {
 
     /// Lazily returns the immutable GPU mirror of a live scene blob. The
     /// returned handle remains owned by this object and no CPU allocation occurs.
+    ///
+    /// O(1) expected for a resident blob; O(n) in its bytes on the upload that
+    /// makes it resident.
     pub fn bufferFor(self: *Gpu, scene: *const Scene, blob_index: BlobIndex, kind: BufferKind) sg.Buffer {
         std.debug.assert(blob_index != .none);
         const i = indexOf(blob_index);
@@ -240,6 +263,8 @@ pub const Gpu = struct {
 
     /// Lazily returns the readonly storage-buffer view for a live scene blob.
     /// The view and its buffer remain owned by this object; no CPU allocation occurs.
+    ///
+    /// O(1) expected; see `bufferFor`.
     pub fn storageViewFor(self: *Gpu, scene: *const Scene, blob_index: BlobIndex) sg.View {
         const slot = &self.blob_storage_views.items[indexOf(blob_index)];
         if (slot.*) |view| return view;
@@ -253,6 +278,8 @@ pub const Gpu = struct {
 
     /// Returns and caches the finite range of a scalar blob. A new cache entry
     /// may allocate through the retained allocator; returned values own no memory.
+    ///
+    /// O(n) in the values, which are scanned once and then cached.
     pub fn scalarRange(self: *Gpu, scene: *const Scene, blob_index: BlobIndex) std.mem.Allocator.Error![2]f32 {
         if (self.ranges.get(blob_index)) |cached| return cached;
         const result = vertex.internal.colormap.range(scalarValues(scene, blob_index));
@@ -262,6 +289,8 @@ pub const Gpu = struct {
 
     /// Lazily creates and returns the sampled texture view for `cm`. The GPU
     /// owner retains it until `deinit`; this operation performs no CPU allocation.
+    ///
+    /// O(1).
     pub fn colormapView(self: *Gpu, cm: Colormap) sg.View {
         const i: usize = @backingInt(cm);
         if (self.colormaps[i]) |entry| return entry.view;
@@ -287,6 +316,8 @@ pub const Gpu = struct {
 
     /// Destroys all shared GPU handles and frees CPU caches with the allocator
     /// retained by `init`.
+    ///
+    /// O(r) in the resident entries.
     pub fn deinit(self: *Gpu) void {
         for (self.blob_storage_views.items) |maybe_view| {
             if (maybe_view) |view| sg.destroyView(view);
@@ -311,6 +342,8 @@ pub const Gpu = struct {
 
 /// Resolves the structure's selected quantity on `version` without allocating.
 /// The returned record owns no memory and remains valid while the scene is unchanged.
+///
+/// O(q) in the quantities of that version.
 pub fn activeQuantity(
     scene: *const Scene,
     structure_index: StructureIndex,
@@ -326,11 +359,15 @@ pub fn activeQuantity(
 }
 
 /// Returns a borrowed f32 view of a live scalar blob without allocation.
+///
+/// O(1).
 pub fn scalarValues(scene: *const Scene, blob_index: BlobIndex) []const f32 {
     return std.mem.bytesAsSlice(f32, scene.blobBytes(blob_index));
 }
 
 /// Converts any typed scene index to a slice index without allocating.
+///
+/// O(1).
 pub fn indexOf(index: anytype) usize {
     return @backingInt(index);
 }

@@ -135,6 +135,8 @@ pub const Stepper = struct {
 
     /// Initializes `self` at its final stable address and spawns its worker.
     /// The inbox and allocator are borrowed until `deinit`; no library is loaded.
+    ///
+    /// O(1).
     pub fn init(
         self: *Stepper,
         gpa: std.mem.Allocator,
@@ -163,6 +165,8 @@ pub const Stepper = struct {
     /// Requests worker termination, joins it, removes every copied file best
     /// effort, and releases bookkeeping. Library mappings remain intentionally
     /// resident and are reclaimed only by process exit.
+    ///
+    /// O(1).
     pub fn deinit(self: *Stepper) void {
         self.mutex.lockUncancelable(self.io);
         self.command_read = 0;
@@ -186,6 +190,8 @@ pub const Stepper = struct {
 
     /// Copies `path` into the editable UI field. No ownership is retained from
     /// the caller; an overlong path is rejected without changing the field.
+    ///
+    /// O(k) in the path's length.
     pub fn setInputPath(self: *Stepper, path: []const u8) error{PathTooLong}!void {
         if (path.len > max_path_bytes) return error.PathTooLong;
         @memset(&self.input_path, 0);
@@ -194,17 +200,23 @@ pub const Stepper = struct {
 
     /// Returns the mutable, NUL-terminated UI input storage owned by `self`.
     /// The render thread is its sole caller and no allocation occurs.
+    ///
+    /// O(1).
     pub fn inputBuffer(self: *Stepper) []u8 {
         return &self.input_path;
     }
 
     /// Returns the currently typed path, borrowed until the next input edit.
+    ///
+    /// O(k) in the path's length.
     pub fn inputPath(self: *const Stepper) []const u8 {
         return self.input_path[0..(std.mem.indexOfScalar(u8, &self.input_path, 0) orelse self.input_path.len)];
     }
 
     /// Queues a load of caller-borrowed `path` after copying it into the fixed
     /// mailbox and updates the render-thread auto-reload watch path.
+    ///
+    /// O(k) in the path's length.
     pub fn requestLoad(self: *Stepper, path: []const u8) Error!void {
         const owned = try Path.init(path);
         try self.enqueue(.{ .load = owned });
@@ -213,36 +225,50 @@ pub const Stepper = struct {
     }
 
     /// Queues a reload of the current source path without allocation.
+    ///
+    /// O(1).
     pub fn requestReload(self: *Stepper) Error!void {
         try self.enqueue(.reload);
     }
 
     /// Queues creation of a fresh instance from the current mapping.
+    ///
+    /// O(1).
     pub fn requestReset(self: *Stepper) Error!void {
         try self.enqueue(.reset);
     }
 
     /// Queues `count` manual steps. Zero is accepted as a no-op command.
+    ///
+    /// O(1).
     pub fn requestStep(self: *Stepper, count: u32) Error!void {
         try self.enqueue(.{ .step = count });
     }
 
     /// Queues continuous execution of the current instance.
+    ///
+    /// O(1).
     pub fn requestRun(self: *Stepper) Error!void {
         try self.enqueue(.run);
     }
 
     /// Queues a pause, retaining the current instance and timeline.
+    ///
+    /// O(1).
     pub fn requestPause(self: *Stepper) Error!void {
         try self.enqueue(.pause);
     }
 
     /// Queues instance destruction while intentionally retaining all mappings.
+    ///
+    /// O(1).
     pub fn requestUnload(self: *Stepper) Error!void {
         try self.enqueue(.unload);
     }
 
     /// Samples all UI-facing atomics without blocking or allocation.
+    ///
+    /// O(1).
     pub fn snapshot(self: *const Stepper) Snapshot {
         return .{
             .status = @fromBackingInt(@intCast(self.published_status.load(.acquire))),
@@ -262,12 +288,15 @@ pub const Stepper = struct {
     /// and leaves them to be scrubbed afterwards.
     pub const PaceMode = enum(u8) { frame, rate, max };
 
+    /// O(1).
     pub fn paceMode(self: *const Stepper) PaceMode {
         return @fromBackingInt(@intCast(self.published_pace.load(.acquire)));
     }
 
     /// Publishes the pace mode; wakes the worker so a mode change takes effect
     /// immediately (a frame-paced worker may be waiting for a credit).
+    ///
+    /// O(1).
     pub fn setPaceMode(self: *Stepper, mode: PaceMode) void {
         self.published_pace.store(@backingInt(mode), .release);
         self.mutex.lockUncancelable(self.io);
@@ -278,6 +307,8 @@ pub const Stepper = struct {
     /// Called once per rendered frame by the render thread, granting a step
     /// credit to a frame-paced running worker. When idle it costs one
     /// uncontended lock.
+    ///
+    /// O(1).
     pub fn frameTick(self: *Stepper) void {
         if (self.status() != .running or self.paceMode() != .frame) return;
         self.mutex.lockUncancelable(self.io);
@@ -290,24 +321,32 @@ pub const Stepper = struct {
 
     /// Returns the current worker pacing limit. Zero means unlimited and no
     /// synchronization beyond one atomic load occurs.
+    ///
+    /// O(1).
     pub fn maxStepsPerSecond(self: *const Stepper) f32 {
         return @bitCast(self.published_rate_bits.load(.acquire));
     }
 
     /// Atomically publishes a nonnegative worker pacing limit. NaN and negative
     /// values are normalized to zero; no allocation occurs.
+    ///
+    /// O(1).
     pub fn setMaxStepsPerSecond(self: *Stepper, value: f32) void {
         const normalized = if (std.math.isFinite(value) and value > 0) value else 0;
         self.published_rate_bits.store(@bitCast(normalized), .release);
     }
 
     /// Returns the render-thread-owned auto-reload setting for direct UI edits.
+    ///
+    /// O(1).
     pub fn autoReloadPtr(self: *Stepper) *bool {
         return &self.auto_reload;
     }
 
     /// Polls source mtime at most every 250 ms and queues one reload after a
     /// change. File errors are ignored so an atomic rebuild can finish first.
+    ///
+    /// O(1), dominated by one stat of the library.
     pub fn pollAutoReload(self: *Stepper) void {
         if (!self.auto_reload or self.watch_path.len == 0) return;
         const current_status = self.snapshot().status;

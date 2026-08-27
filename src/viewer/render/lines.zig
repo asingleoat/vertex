@@ -59,6 +59,8 @@ pub const Renderer = struct {
 
     /// Creates line GPU state without CPU allocation. The result owns all
     /// derived buffers and must be released before `sg.shutdown`.
+    ///
+    /// O(1).
     pub fn init(gpa: std.mem.Allocator) Renderer {
         const shader = sg.makeShader(line_shader.linesShaderDesc(sg.queryBackend()));
         var desc = pipelineDesc(shader, false);
@@ -75,17 +77,22 @@ pub const Renderer = struct {
 
     /// Evicts every derived entry whose position or topology key names a freed
     /// scene blob. The operation allocates nothing.
+    ///
+    /// O(1).
     pub fn beginFrame(self: *Renderer, frame: u64) void {
         self.frame = frame;
     }
 
     /// Destroys cached instance buffers not drawn this frame once a cache
     /// holds more than `cap` entries (see common.Gpu.trimResidency).
+    ///
+    /// O(r) in the resident entries.
     pub fn trim(self: *Renderer, cap: u32) u32 {
         return common.trimStale(Key, Entry, &self.line_cache, self.frame, cap) +
             common.trimStale(Key, Entry, &self.wire_cache, self.frame, cap);
     }
 
+    /// O(r) in the resident entries.
     pub fn evictBlob(self: *Renderer, blob_index: BlobIndex) void {
         evictFrom(&self.line_cache, blob_index);
         evictFrom(&self.wire_cache, blob_index);
@@ -93,6 +100,9 @@ pub const Renderer = struct {
 
     /// Draws one line structure through an immutable endpoint buffer. A cache
     /// miss performs one exact-size temporary allocation and may grow the map.
+    ///
+    /// O(1) draw calls over geometry already resident, plus O(n) on the frame
+    /// that uploads it.
     pub fn drawLines(
         self: *Renderer,
         scene: *const Scene,
@@ -114,6 +124,8 @@ pub const Renderer = struct {
 
     /// Returns the same derived endpoint buffer used by the color line pass.
     /// A cache miss may allocate through the renderer allocator; the result is borrowed.
+    ///
+    /// O(r) in the resident entries.
     pub fn entryForPick(
         self: *Renderer,
         scene: *const Scene,
@@ -133,6 +145,9 @@ pub const Renderer = struct {
 
     /// Draws a mesh's unique edges after the solid pass with depth bias. A
     /// cache miss reuses the edge scratch list and creates immutable endpoints.
+    ///
+    /// O(1) draw calls, plus O(f log f) on the frame that first extracts the
+    /// unique edges.
     pub fn drawWireframe(
         self: *Renderer,
         scene: *const Scene,
@@ -156,6 +171,8 @@ pub const Renderer = struct {
 
     /// Destroys pipelines, shaders, every derived buffer, and all retained CPU
     /// cache capacity using the allocator supplied to `init`.
+    ///
+    /// O(r) in the resident entries.
     pub fn deinit(self: *Renderer) void {
         destroyEntries(&self.line_cache);
         destroyEntries(&self.wire_cache);

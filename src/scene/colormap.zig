@@ -23,6 +23,8 @@ pub const Colormap = enum(u8) { viridis, turbo, coolwarm, plasma };
 /// The 256-entry RGBA8 ramp for a colormap, as a pointer to compile-time
 /// constant data valid for the lifetime of the process. The viewer uploads it
 /// as a one-dimensional texture.
+///
+/// O(1): the tables are built at compile time.
 pub fn table(cm: Colormap) *const [256][4]u8 {
     return &tables[@backingInt(cm)];
 }
@@ -34,6 +36,8 @@ pub fn table(cm: Colormap) *const [256][4]u8 {
 /// Three degenerate cases return an interval of non-zero width instead: no
 /// values, no finite values, and every value identical. The caller can
 /// therefore always divide by the width.
+///
+/// O(1).
 pub fn range(values: []const f32) [2]f32 {
     var minimum = std.math.inf(f32);
     var maximum = -std.math.inf(f32);

@@ -37,6 +37,9 @@ pub const Error = polygon.CapError || error{NotClosed};
 /// The profile is read as lying in the z = 0 plane, since that is where a
 /// planar operation leaves one; its z is ignored for the purpose of
 /// triangulating the caps, though the vertices themselves are used as given.
+///
+/// O(n log n) in the profile's vertex count, the cap triangulation dominating
+/// the linear sweep of the walls.
 pub fn extrude(
     gpa: std.mem.Allocator,
     profile: polyline.Polyline,
@@ -123,6 +126,8 @@ pub fn extrude(
 /// `extrude` of a `circle`, which is all it ever was.
 ///
 /// Fewer than three segments encloses no volume and yields an empty mesh.
+///
+/// O(n log n) in `segment_count`; see `extrude`.
 pub fn cylinder(
     gpa: std.mem.Allocator,
     radius: f32,
@@ -147,6 +152,8 @@ pub fn cylinder(
 /// nothing to loft or cap: a box has a closed form, and going through the
 /// general path would cost an allocation for each polyline, a boundary walk and
 /// two triangulations to arrive at the same twelve faces.
+///
+/// O(1), the eight corners and twelve triangles being written out directly.
 pub fn box(
     gpa: std.mem.Allocator,
     size: Vec3,

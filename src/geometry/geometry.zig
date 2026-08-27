@@ -22,6 +22,8 @@ const Vec3 = layout.Vec3;
 /// `bench/` uses this to run all three layouts against the same inputs. A kernel may switch on
 /// `l` at compile time to take a planar fast path, with the accessor path as the
 /// always-correct fallback.
+///
+/// O(1) at compile time; instantiating it costs nothing at run time.
 pub fn Geometry(comptime l: layout.Layout) type {
     return struct {
         /// The vertex stream type these kernels accept, which is
@@ -48,21 +50,29 @@ pub fn Geometry(comptime l: layout.Layout) type {
             };
 
             /// Returns the midpoint of these bounds without allocating.
+            ///
+            /// O(1).
             pub fn center(a: Aabb) Vec3 {
                 return a.min.add(a.max).scale(0.5);
             }
 
             /// Returns the full side lengths of these bounds without allocating.
+            ///
+            /// O(1).
             pub fn extent(a: Aabb) Vec3 {
                 return a.max.sub(a.min);
             }
 
             /// Returns the half-diagonal length of these bounds without allocating.
+            ///
+            /// O(1).
             pub fn radius(a: Aabb) f32 {
                 return a.extent().scale(0.5).length();
             }
 
             /// Reports whether these bounds contain no points; never allocates.
+            ///
+            /// O(1).
             pub fn isEmpty(a: Aabb) bool {
                 return a.min.x > a.max.x or a.min.y > a.max.y or a.min.z > a.max.z;
             }
@@ -73,6 +83,8 @@ pub fn Geometry(comptime l: layout.Layout) type {
         /// Reads `positions` once and returns the bounds by value, or
         /// `Aabb.empty` when the stream has no vertices. Allocates nothing.
         /// In the `.soa` layout it takes the planar component runs directly.
+        ///
+        /// O(n) in the vertex count.
         pub fn bounds(positions: P.Const) Aabb {
             if (positions.len() == 0) return .empty;
 
@@ -129,6 +141,8 @@ pub fn Geometry(comptime l: layout.Layout) type {
         /// Use these for flat shading, for face-target vector quantities, and
         /// wherever a per-triangle direction is wanted. For shading that should
         /// look smooth across shared edges, use `vertexNormals` instead.
+        ///
+        /// O(f) in the face count.
         pub fn faceNormals(positions: P.Const, faces: []const [3]u32, out: []Vec3) void {
             std.debug.assert(out.len == faces.len);
             const vertex_count = positions.len();
@@ -156,6 +170,8 @@ pub fn Geometry(comptime l: layout.Layout) type {
         /// A vertex whose incident faces cancel out, or one with no incident
         /// faces at all, yields a zero vector. Use these for smooth shading and
         /// as the direction field for displacing a surface along its normals.
+        ///
+        /// O(n + f) in the vertex and face counts, over two passes.
         pub fn vertexNormals(positions: P.Const, faces: []const [3]u32, out: []Vec3) void {
             std.debug.assert(out.len == positions.len());
             @memset(out, Vec3.zero);
@@ -190,6 +206,8 @@ pub fn Geometry(comptime l: layout.Layout) type {
         /// traversals both require that.
         ///
         /// The cost is dominated by sorting three entries per face.
+        ///
+        /// O(f log f) in the face count, the sort dominating.
         pub fn uniqueEdges(
             gpa: std.mem.Allocator,
             faces: []const [3]u32,

@@ -82,6 +82,8 @@ pub const Mesh = mesh_mod.Mesh;
 /// declares, which a text file matches only by coincidence, so the length is
 /// checked first and the keyword consulted only when it does not fit.
 /// Allocates nothing and reads at most the first 84 bytes.
+///
+/// O(1): the length decides it, and at most 84 bytes are read.
 pub fn detect(bytes: []const u8) ?Format {
     if (bytes.len >= binary_header_size) {
         const declared = std.mem.readInt(u32, bytes[80..84], .little);
@@ -98,6 +100,8 @@ pub fn detect(bytes: []const u8) ?Format {
 /// This is `O(1)`, so a caller sizes its output exactly before decoding rather
 /// than growing a list. Returns `Truncated` when the bytes are shorter than the
 /// header, or shorter than the facets the header promises.
+///
+/// O(1), the count being in the header.
 pub fn binaryTriangleCount(bytes: []const u8) Error!u32 {
     if (bytes.len < binary_header_size) return error.Truncated;
     const declared = std.mem.readInt(u32, bytes[80..84], .little);
@@ -106,6 +110,8 @@ pub fn binaryTriangleCount(bytes: []const u8) Error!u32 {
 }
 
 /// The exact byte length of a binary file holding `triangle_count` facets.
+///
+/// O(1).
 pub fn binarySize(triangle_count: u32) usize {
     return binary_header_size + @as(usize, triangle_count) * binary_record_size;
 }
@@ -125,6 +131,8 @@ pub fn binarySize(triangle_count: u32) usize {
 /// SIMD version would load spans of records and shuffle the wanted lanes into
 /// place, which is worth doing only once this shows up in a profile against the
 /// cost of getting the bytes into memory at all.
+///
+/// O(n) in the facet count, one 36-byte copy each.
 pub fn decodeBinary(
     bytes: []const u8,
     vertices: []Vec3,
@@ -159,6 +167,9 @@ pub fn decodeBinary(
 /// because the count is known before any parsing; for the ASCII form the arrays
 /// grow from an estimate, since the count is only known once the file has been
 /// read through.
+///
+/// O(n) in the facet count for a binary file, and O(n) in the byte count for an
+/// ASCII one; allocates the result.
 pub fn decode(gpa: std.mem.Allocator, bytes: []const u8) Error!Mesh {
     return switch (detect(bytes) orelse return error.NotStl) {
         .binary => blk: {
@@ -190,6 +201,8 @@ pub fn decode(gpa: std.mem.Allocator, bytes: []const u8) Error!Mesh {
 /// the tokenizer is minor. Sizing is by estimate: an ASCII facet runs to
 /// roughly 200 bytes, so the arrays are reserved from the file length and grow
 /// only if that estimate is low.
+///
+/// O(n) in the byte count, dominated by nine `parseFloat` calls per facet.
 pub fn decodeAscii(
     gpa: std.mem.Allocator,
     bytes: []const u8,
@@ -242,6 +255,8 @@ pub fn decodeAscii(
 /// A `header` beginning with `solid` is accepted but should be avoided: it
 /// leaves the file's first five bytes indistinguishable from the ASCII form,
 /// which readers less careful than `detect` take at face value.
+///
+/// O(n) in the face count.
 pub fn encodeBinary(
     vertices: []const Vec3,
     faces: []const [3]u32,
@@ -282,6 +297,8 @@ pub fn encodeBinary(
 /// reads back as the same `f32`, so a file written here and read back gives the
 /// identical mesh. Each facet is formatted into a stack buffer and appended in
 /// one piece, which keeps the per-facet cost to one bounds check.
+///
+/// O(n) in the face count, dominated by formatting nine floats each.
 pub fn encodeAscii(
     gpa: std.mem.Allocator,
     name: []const u8,
