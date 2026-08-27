@@ -13,7 +13,8 @@
 //! Several environment variables exist for headless use, and the smoke tests
 //! depend on them: `VERTEX_EXIT_AFTER_FRAMES` stops the viewer after a fixed
 //! number of frames, `VERTEX_PICK_PROBE` issues one pick at given coordinates,
-//! `VERTEX_MEMORY_BUDGET_MB` sets the retention budget, and the `VERTEX_STEP_*`
+//! `VERTEX_MEMORY_BUDGET_MB` sets the retention budget,
+//! `VERTEX_MAX_PAYLOAD_MB` the largest message accepted, and the `VERTEX_STEP_*`
 //! variables drive dylib mode. The statistics lines printed on exit are what
 //! those tests assert against.
 const std = @import("std");
@@ -62,6 +63,7 @@ const State = struct {
     exit_after_frames: ?u64 = null,
     probe: ?Probe = null,
     initial_memory_budget: usize = default_retention.budget_bytes,
+    max_payload: usize = server_mod.default_max_payload,
     huge_pages: bool = true,
     sg_ready: bool = false,
     imgui_ready: bool = false,
@@ -122,6 +124,19 @@ fn configureEnvironment(environ: std.process.Environ) void {
             } else std.log.warn("ignoring VERTEX_MEMORY_BUDGET_MB that exceeds addressable memory", .{});
         }
     };
+    if (std.process.Environ.getPosix(environ, "VERTEX_MAX_PAYLOAD_MB")) |value| if (value.len != 0) {
+        const payload_mb = std.fmt.parseInt(usize, value, 10) catch |err| blk: {
+            std.log.warn("ignoring invalid VERTEX_MAX_PAYLOAD_MB: {s}", .{@errorName(err)});
+            break :blk null;
+        };
+        if (payload_mb) |mb| {
+            // A payload is allocated in one piece, so a limit above what the
+            // address space can hold would be a limit in name only.
+            if (mb != 0 and mb <= std.math.maxInt(usize) / mebibyte) {
+                state.max_payload = mb * mebibyte;
+            } else std.log.warn("ignoring VERTEX_MAX_PAYLOAD_MB that is zero or exceeds addressable memory", .{});
+        }
+    };
     if (std.process.Environ.getPosix(environ, "VERTEX_SHARED_HUGE")) |value| {
         state.huge_pages = !std.mem.eql(u8, value, "0");
     }
@@ -157,6 +172,7 @@ fn initCallback() callconv(.c) void {
     state.ingest = ingest_mod.Ingest.init(state.gpa, state.io, &state.inbox, &state.scene);
     state.input = input_mod.Input.init(&state.scene, &state.scrub, &state.follow_latest);
     state.server = server_mod.Server.init(state.gpa, state.io, state.huge_pages, &state.inbox);
+    state.server.max_payload = state.max_payload;
     state.server_ready = true;
     state.server.start(state.environ) catch |err| {
         std.log.err("could not start vertex viewer socket: {s}", .{@errorName(err)});
@@ -168,6 +184,7 @@ fn initCallback() callconv(.c) void {
         sapp.quit();
         return;
     };
+    state.stepper.max_payload = state.max_payload;
     state.stepper_ready = true;
     if (!configureStepper()) return;
     state.renderer = mesh_render.Renderer.init(state.gpa);

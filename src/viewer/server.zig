@@ -50,20 +50,69 @@ pub const Inbox = struct {
         ExternalPayload,
     };
 
-    /// Parses `header_bytes`, enforces the 256 MiB cap, optionally rejects
+    /// Parses `header_bytes`, enforces `max_payload`, optionally rejects
     /// external sections, and allocates the caller-owned 16-aligned payload.
+    ///
+    /// The cap exists because the length is taken from the wire before any of
+    /// the payload has arrived, so a header wrong about it would otherwise name
+    /// an allocation of up to 4 GiB. A truncated stream, a client mid-rebuild
+    /// and a protocol version mismatch all produce one. A caller that rejects a frame this
+    /// way should pass the same bytes to `reportOversizePayload`, which says
+    /// what was dropped and why.
     pub fn allocatePayload(
         gpa: std.mem.Allocator,
         header_bytes: []const u8,
         allow_external: bool,
+        max_payload: usize,
     ) PayloadError!Payload {
         const header = try protocol.decodeHeader(header_bytes);
-        if (header.len > 256 * 1024 * 1024) return error.PayloadTooLarge;
+        if (header.len > max_payload) return error.PayloadTooLarge;
         if (!allow_external and protocol.Flags.fromInt(header.flags).external) return error.ExternalPayload;
         return .{
             .header = header,
             .payload = try gpa.alignedAlloc(u8, .@"16", header.len),
         };
+    }
+
+    /// Logs the frame `allocatePayload` refused for exceeding `max_payload`.
+    ///
+    /// It names the message kind, both sizes, and whether the frame carried its
+    /// sections inline, which is the distinction that usually explains the
+    /// size: an external frame holds only section references and stays small
+    /// whatever the geometry, so an oversized inline frame means the sketch
+    /// sent the bytes down the socket rather than through shared memory.
+    ///
+    /// Reporting is separate from `allocatePayload` because only the caller
+    /// knows whether a rejected frame is worth a line: the socket path drops
+    /// the connection over it, a test exercising the cap does not.
+    /// `header_bytes` is whatever was handed to `allocatePayload`; a length
+    /// that failed the cap decoded successfully to reach it.
+    pub fn reportOversizePayload(header_bytes: []const u8, max_payload: usize) void {
+        const header = protocol.decodeHeader(header_bytes) catch return;
+        const kind: protocol.Kind = @fromBackingInt(@intCast(header.kind));
+        const flags = protocol.Flags.fromInt(header.flags);
+        std.log.err(
+            "dropping the connection: a {s} message carries {d} bytes ({d:.1} MiB), " ++
+                "over the {d} byte ({d:.1} MiB) limit. {s} " ++
+                "The limit itself is VERTEX_MAX_PAYLOAD_MB=<megabytes>.",
+            .{
+                std.enums.tagName(protocol.Kind, kind) orelse "unrecognised",
+                header.len,
+                mebibytes(header.len),
+                max_payload,
+                mebibytes(max_payload),
+                if (flags.external)
+                    "Its sections are shared, so the length is a fault in the header rather than a large mesh."
+                else
+                    "Its sections are inline, which is what an ordinary allocation produces: a buffer from " ++
+                        "Connection.sharedPositions, sharedScalars, sharedVectors or sharedBytes is sent by " ++
+                        "reference and does not count against this limit.",
+            },
+        );
+    }
+
+    fn mebibytes(bytes: usize) f64 {
+        return @as(f64, @floatFromInt(bytes)) / (1024.0 * 1024.0);
     }
 
     mutex: std.Io.Mutex = .init,
@@ -115,6 +164,12 @@ pub const StartError = vertex.internal.platform.sockpath.Error || std.Io.net.Uni
 
 /// Owns the listener thread and socket path while borrowing a shared inbox.
 /// The caller must keep both values at stable addresses from `start` to `stop`.
+/// The default cap on one message payload, which `VERTEX_MAX_PAYLOAD_MB`
+/// overrides. Large geometry travels through shared memory, where the payload
+/// holds only section references, so a frame anywhere near this size is one
+/// whose sections were sent inline.
+pub const default_max_payload: usize = 256 * 1024 * 1024;
+
 pub const Server = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -127,6 +182,9 @@ pub const Server = struct {
     thread: ?std.Thread = null,
     stopped: bool = false,
     huge_pages: bool,
+    /// The largest message payload this viewer will allocate for. Set from
+    /// `VERTEX_MAX_PAYLOAD_MB` at startup; see `Inbox.allocatePayload`.
+    max_payload: usize = default_max_payload,
     first_ingest_minflt: ?u64 = null,
     received_huge_mappings: u64 = 0,
 
@@ -292,7 +350,17 @@ pub const Server = struct {
                     cursor += copied;
                     if (header_len != header_bytes.len) continue;
 
-                    const allocated = try Inbox.allocatePayload(self.gpa, &header_bytes, true);
+                    const allocated = Inbox.allocatePayload(
+                        self.gpa,
+                        &header_bytes,
+                        true,
+                        self.max_payload,
+                    ) catch |err| {
+                        if (err == error.PayloadTooLarge) {
+                            Inbox.reportOversizePayload(&header_bytes, self.max_payload);
+                        }
+                        return err;
+                    };
                     payload = allocated.payload;
                     header = allocated.header;
                     payload_len = 0;
@@ -389,6 +457,47 @@ fn deleteIfPresent(io: std.Io, path: []const u8) std.Io.Dir.DeleteFileError!void
 
 const testing = std.testing;
 const empty_payload: [0]u8 align(protocol.section_alignment) = .{};
+
+/// Encodes a header naming `len` payload bytes, for the cap tests below. A
+/// header's wire form is its in-memory form, which `decodeHeader` reads back
+/// through an unaligned pointer.
+fn headerBytes(len: u32, kind: protocol.Kind) [@sizeOf(protocol.Header)]u8 {
+    const header: protocol.Header = .{ .len = len, .kind = @backingInt(kind) };
+    return std.mem.toBytes(header);
+}
+
+test "allocatePayload accepts a payload at the limit and rejects one over it" {
+    const limit = 4096;
+    const at = headerBytes(limit, .mesh);
+    const allocated = try Inbox.allocatePayload(testing.allocator, &at, true, limit);
+    defer testing.allocator.free(allocated.payload);
+    try testing.expectEqual(@as(usize, limit), allocated.payload.len);
+
+    const over = headerBytes(limit + 1, .mesh);
+    try testing.expectError(
+        error.PayloadTooLarge,
+        Inbox.allocatePayload(testing.allocator, &over, true, limit),
+    );
+}
+
+test "the payload limit is what the caller passes, not a fixed size" {
+    // The same frame is accepted under one limit and refused under a smaller
+    // one, which is the whole of what VERTEX_MAX_PAYLOAD_MB changes.
+    const bytes = headerBytes(2048, .points);
+    const allocated = try Inbox.allocatePayload(testing.allocator, &bytes, true, 4096);
+    defer testing.allocator.free(allocated.payload);
+    try testing.expectError(
+        error.PayloadTooLarge,
+        Inbox.allocatePayload(testing.allocator, &bytes, true, 1024),
+    );
+}
+
+test "the default limit leaves the length field far more room than it allows" {
+    // `Header.len` is a u32, so a header can name close to 4 GiB. The cap is
+    // what stands between a length that is wrong and an allocation of that
+    // size, which is why it exists at all.
+    try testing.expect(default_max_payload < std.math.maxInt(u32));
+}
 
 test "Inbox receives items pushed by another thread" {
     const n = 256;

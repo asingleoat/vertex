@@ -93,6 +93,9 @@ pub const Stepper = struct {
     inbox: *server.Inbox,
     host: dylib.Host,
     thread: ?std.Thread = null,
+    /// The largest message payload a stepping library may enqueue. Set from
+    /// `VERTEX_MAX_PAYLOAD_MB` at startup, as for the socket path.
+    max_payload: usize = server.default_max_payload,
 
     mutex: std.Io.Mutex = .init,
     condition: std.Io.Condition = .init,
@@ -623,7 +626,15 @@ fn hostLog(ctx: ?*anyopaque, level: u8, text_ptr: [*]const u8, len: usize) callc
 fn enqueueSlices(self: *Stepper, slices: []const []const u8) u8 {
     std.debug.assert(slices.len != 0);
     std.debug.assert(slices[0].len == @sizeOf(protocol.Header));
-    const allocated = server.Inbox.allocatePayload(self.gpa, slices[0], false) catch return 1;
+    const allocated = server.Inbox.allocatePayload(
+        self.gpa,
+        slices[0],
+        false,
+        self.max_payload,
+    ) catch |err| {
+        if (err == error.PayloadTooLarge) server.Inbox.reportOversizePayload(slices[0], self.max_payload);
+        return 1;
+    };
     const header = allocated.header;
     const payload = allocated.payload;
     var offset: usize = 0;
