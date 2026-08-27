@@ -143,7 +143,12 @@ fn initCallback() callconv(.c) void {
         .view_pool_size = 1024,
     });
     state.sg_ready = true;
-    simgui.setup(.{ .logger = .{ .func = slog.func } });
+    // Without an ini path Dear ImGui keeps no settings, so every panel returns
+    // to the layout in `ui.zig` at each launch. With one, that layout applies
+    // only the first time and the arrangement the user leaves behind is
+    // restored. The file is written beside the viewer's working directory and
+    // is listed in .gitignore.
+    simgui.setup(.{ .logger = .{ .func = slog.func }, .ini_filename = "imgui.ini" });
     state.imgui_ready = true;
     state.scene = Scene.init(state.gpa);
     state.scene.retention.budget_bytes = state.initial_memory_budget;

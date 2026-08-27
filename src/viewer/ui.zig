@@ -1,9 +1,10 @@
 //! The viewer's panels, drawn with Dear ImGui.
 //!
-//! There are three: a structure tree listing what the scene holds, with the
+//! There are five: a structure tree listing what the scene holds, with the
 //! per-structure display settings; a timeline with the frame scrubber, the
-//! memory budget and the camera mode; and an inspector tooltip for whatever the
-//! cursor is over.
+//! memory budget and the camera mode; a log; a stepper for loading a stepping
+//! library; and an inspector tooltip for whatever the cursor is under. `Layout`
+//! places the four windowed ones.
 //!
 //! The panels read the scene and write only `UiState` and the handful of
 //! viewer-owned values passed in by pointer, so no display setting is ever lost
@@ -50,7 +51,10 @@ pub fn draw(
     if (selection.*) |selected| {
         if (!hitValid(scene, scrub.*, selected.hit)) selection.* = null;
     }
+    const panels: Layout = .compute();
+    placeNextPanel(panels.structures);
     drawStructures(scene, scrub.*, follow_latest.*, selection, view_proj, viewport);
+    placeNextPanel(panels.timeline);
     const fit_requested = drawTimeline(
         scene,
         scrub,
@@ -60,10 +64,78 @@ pub fn draw(
         connected,
         fps,
     );
+    placeNextPanel(panels.log);
     drawLog(scene);
+    placeNextPanel(panels.stepper);
     drawStepper(stepper);
     drawHoverTooltip(scene, scrub.*, hover, view_proj, viewport, cursor);
     return fit_requested;
+}
+
+/// A panel's starting rectangle, in Dear ImGui's coordinates.
+const Rect = struct { x: f32, y: f32, w: f32, h: f32 };
+
+/// Where each panel opens, given the size of the main viewport.
+/// ---
+/// Without this every panel opens at the same default position, stacked one on
+/// another, and sized to fit its contents, which for the structure list and the
+/// log is a few pixels tall until something arrives in them. The panels are
+/// placed around the edges: the structure list down the left, the stepper and
+/// the log down the right, and the timeline along the bottom, which leaves the
+/// middle clear for the scene.
+///
+/// The dimensions scale with the viewport so that a small window still shows
+/// four usable panels rather than four overlapping ones.
+const Layout = struct {
+    structures: Rect,
+    stepper: Rect,
+    log: Rect,
+    timeline: Rect,
+
+    fn compute() Layout {
+        const viewport = ig.igGetMainViewport();
+        const origin = viewport.*.WorkPos;
+        const size = viewport.*.WorkSize;
+
+        const margin: f32 = 8;
+        const column = @min(340, size.x * 0.32);
+        const timeline_height = @max(96, @min(148, size.y * 0.28));
+        const stepper_height = @max(88, @min(132, size.y * 0.2));
+
+        const top = origin.y + margin;
+        const timeline_y = origin.y + size.y - timeline_height - margin;
+        const side_height = @max(120, timeline_y - top - margin);
+        const right = origin.x + size.x - column - margin;
+
+        return .{
+            .structures = .{ .x = origin.x + margin, .y = top, .w = column, .h = side_height },
+            .stepper = .{ .x = right, .y = top, .w = column, .h = stepper_height },
+            .log = .{
+                .x = right,
+                .y = top + stepper_height + margin,
+                .w = column,
+                .h = @max(96, side_height - stepper_height - margin),
+            },
+            .timeline = .{
+                .x = origin.x + margin,
+                .y = timeline_y,
+                .w = size.x - 2 * margin,
+                .h = timeline_height,
+            },
+        };
+    }
+};
+
+/// Positions and sizes the next panel, which is the one the following `igBegin`
+/// opens.
+///
+/// The condition is `FirstUseEver`, so a panel the viewer has already placed
+/// stays where the user dragged it. Nothing persists across a run: `simgui`
+/// is set up without an `ini_filename`, so Dear ImGui writes no settings file
+/// and this layout applies at every launch.
+fn placeNextPanel(rect: Rect) void {
+    ig.igSetNextWindowPos(.{ .x = rect.x, .y = rect.y }, ig.ImGuiCond_FirstUseEver);
+    ig.igSetNextWindowSize(.{ .x = rect.w, .y = rect.h }, ig.ImGuiCond_FirstUseEver);
 }
 
 fn drawStepper(stepper: *stepper_mod.Stepper) void {
