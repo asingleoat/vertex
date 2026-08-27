@@ -36,6 +36,18 @@ pub fn main(init: std.process.Init) !void {
     shapes.translate(drilled.vertices, .init(-3, 0, 0));
     try vx.registerMesh(gpa, "drilled-block", drilled, .{});
 
+    // A two-dimensional profile and its offset, both closed polylines in the
+    // z = 0 plane. The round join traces the true offset, so the square's four
+    // corners come back as quarter arcs while its sides stay straight.
+    const profile = try shapes.square(gpa, 1.5, .centered);
+    defer profile.deinit(gpa);
+    shapes.translate(profile.vertices, .init(0, -3, 0));
+    try vx.registerPolyline(gpa, "profile", profile, .{});
+
+    const grown = try shapes.offset.apply(gpa, profile, 0.4, .{ .circular_segments = 64 });
+    defer grown.deinit(gpa);
+    try vx.registerPolyline(gpa, "profile-offset", grown, .{});
+
     // At its own scale, which is millimetres: the boat is about 60 mm long and
     // dwarfs the unit cylinder beside it. models/ is not checked in, so a fresh
     // clone has no boat and the rest of the sketch stands on its own.
