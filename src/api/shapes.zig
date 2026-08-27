@@ -125,6 +125,21 @@ pub const loft = polyline.loft;
 /// is not welding: vertices that merely lie close together are left alone.
 pub const indexSoup = @import("../geometry/indexing.zig").indexSoup;
 
+/// Reading and writing STL, in both the binary and the ASCII form.
+/// ---
+/// Every function takes or produces byte slices rather than files, so the
+/// caller does the reading and writing and a large file can be mapped rather
+/// than copied. `stl.decode` detects the form and returns a mesh; `encodeBinary`
+/// and `encodeAscii` produce one. STL stores a triangle soup, so a decoded mesh
+/// has three vertices per facet and no shared connectivity.
+/// ---
+/// ```zig
+/// const bytes = try std.Io.Dir.cwd().readFileAlloc(io, "part.stl", gpa, .unlimited);
+/// defer gpa.free(bytes);
+/// const mesh = try vertex.shapes.stl.decode(gpa, bytes);
+/// defer mesh.deinit(gpa);
+/// ```
+pub const stl = @import("../io/stl.zig");
 
 /// Computes the normal of a possibly non-planar loop by Newell's method. Use it
 /// for the plane of a polygon, where a cross product of two edges is not

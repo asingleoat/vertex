@@ -30,6 +30,10 @@ pub const sketch = @import("api/sketch.zig");
 
 // ---- the sketch-facing surface, flattened for convenience ----
 
+/// Reads an STL file as an indexed mesh; see `sketch.readStl`.
+pub const readStl = sketch.readStl;
+/// Writes a mesh to an STL file; see `sketch.writeStl`.
+pub const writeStl = sketch.writeStl;
 
 /// Opens a connection to the viewer; see `sketch.connect`.
 pub const connect = sketch.connect;
@@ -78,6 +82,10 @@ pub const internal = struct {
     pub const polyline = @import("geometry/polyline.zig");
     /// Pure: recovering an index array from a triangle soup by exact equality.
     pub const indexing = @import("geometry/indexing.zig");
+    /// Pure: reading and writing STL, in both the binary and ASCII forms.
+    pub const stl = @import("io/stl.zig");
+    /// Edge: STL files, over the pure encoder above.
+    pub const stl_file = @import("io/stl_file.zig");
     /// Pure: boundary recovery and capping of open surfaces.
     pub const polygon = @import("geometry/polygon.zig");
     /// Edge: polygon triangulation, which is Manifold behind a C ABI.

@@ -28,6 +28,7 @@
 //! to a structure, holding one scalar or one vector per vertex, per face or per
 //! point.
 const std = @import("std");
+const stl_file = @import("../io/stl_file.zig");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -612,6 +613,7 @@ test "live unix socket round-trip delivers the frame sequence" {
     }
     try connection.step();
     try connection.log(.info, "hi");
+
     try connection.finish();
     thread.join();
 
@@ -683,3 +685,27 @@ test "connection shared buffer tracker rejects more than eight outstanding" {
     for (0..transport.max_outstanding_shared) |_| _ = try tracker.create(64);
     try testing.expectError(error.TooManyShared, tracker.create(64));
 }
+
+/// Reads an STL file and returns it as an indexed mesh.
+///
+/// This is the counterpart of `shapes.stl`, which decodes bytes: it opens the
+/// path, reads the file, detects binary or ASCII, and indexes the facets, so
+/// that what comes back is a surface rather than the triangle soup the format
+/// stores. The caller owns the mesh and releases it with `deinit`.
+/// ---
+/// ```zig
+/// const part = try vertex.readStl(gpa, init.io, .cwd(), "part.stl");
+/// defer part.deinit(gpa);
+/// ```
+pub const readStl = stl_file.read;
+
+/// Reads an STL file as the triangle soup it stores, without indexing it. See
+/// `readStl`, which is what anything treating the result as a surface wants.
+pub const readStlSoup = stl_file.readSoup;
+
+/// Writes a mesh to an STL file, in either form. Facet normals are computed
+/// from the winding, the format having nowhere to keep the mesh's own.
+pub const writeStl = stl_file.write;
+
+/// Options for `writeStl`: which form to write, and the solid's name.
+pub const StlWriteOptions = stl_file.WriteOptions;
