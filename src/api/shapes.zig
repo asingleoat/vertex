@@ -120,6 +120,10 @@ pub const loft = polyline.loft;
 
 
 
+/// Recovers an index array from a triangle soup by exact equality, which is
+/// what a mesh imported from STL needs before it is treated as a surface. This
+/// is not welding: vertices that merely lie close together are left alone.
+pub const indexSoup = @import("../geometry/indexing.zig").indexSoup;
 
 
 /// Computes the normal of a possibly non-planar loop by Newell's method. Use it

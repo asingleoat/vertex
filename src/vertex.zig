@@ -76,6 +76,8 @@ pub const internal = struct {
     pub const mesh = @import("geometry/mesh.zig");
     /// Pure: polylines, and the surfaces lofted between them.
     pub const polyline = @import("geometry/polyline.zig");
+    /// Pure: recovering an index array from a triangle soup by exact equality.
+    pub const indexing = @import("geometry/indexing.zig");
     /// Pure: boundary recovery and capping of open surfaces.
     pub const polygon = @import("geometry/polygon.zig");
     /// Edge: polygon triangulation, which is Manifold behind a C ABI.
