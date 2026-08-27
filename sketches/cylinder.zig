@@ -41,10 +41,18 @@ pub fn main(init: std.process.Init) !void {
     // corners come back as quarter arcs while its sides stay straight.
     const profile = try shapes.square(gpa, 1.5, .centered);
     defer profile.deinit(gpa);
+
     shapes.translate(profile.vertices, .init(0, -3, 0));
     try vx.registerPolyline(gpa, "profile", profile, .{});
 
-    const grown = try shapes.offset.apply(gpa, profile, 0.4, .{ .circular_segments = 64 });
+    // Inward then outward by the same distance rounds the convex corners off
+    // and leaves the sides where they were, which is how a fillet is cut. Each
+    // call allocates a polyline and borrows its input, so the intermediate is
+    // the caller's to release: a `defer` on a reassigned `var` would free
+    // whichever value it held at the end and orphan the other.
+    const shrunk = try shapes.planar.offset(gpa, profile, -0.4, .{ .circular_segments = 64 });
+    defer shrunk.deinit(gpa);
+    const grown = try shapes.planar.offset(gpa, shrunk, 0.4, .{ .circular_segments = 64 });
     defer grown.deinit(gpa);
     try vx.registerPolyline(gpa, "profile-offset", grown, .{});
 

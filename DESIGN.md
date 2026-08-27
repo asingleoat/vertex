@@ -279,13 +279,23 @@ for being able to replace it.
 The seam is three modules over one C++ file. `geometry/triangulate.zig` takes
 projected points and returns triangle indices; `geometry/boolean.zig` takes two
 closed meshes and returns their union, difference or intersection;
-`geometry/offset.zig` moves a closed curve's boundary, which is Clipper2 reached
-through Manifold's `CrossSection`. All three go through
-`geometry/manifold_shim.cpp`, and nothing else names `manifoldc.h`. They are
-separate modules because the seam is drawn per operation: writing any one of
-them here would leave the other two untouched.
+`geometry/planar.zig` does the same for regions of the plane and also offsets
+one, both being Clipper2 reached through Manifold's `CrossSection`. All three go
+through `geometry/manifold_shim.cpp`, and nothing else names `manifoldc.h`. They
+are separate modules because the seam is drawn per operation: writing any one of
+them here would leave the others untouched.
 
-Offsetting is the operation of the three that is hardest to do naively. Moving
+A planar operation takes and returns a `Polyline`, which needs nothing added to
+carry the result: a polyline is a vertex array and a segment array, so several
+disjoint rings are as ordinary a value as one. Rings are read under the non-zero
+fill rule, which makes a clockwise ring inside a counter-clockwise one a hole,
+and `polyline.areaVector` is negative for such a ring. What does not yet
+understand holes is the cap: `polygon.capBoundaries` triangulates each boundary
+loop independently as a simple polygon, and `triangulate.simplePolygon` passes
+one ring where `manifold_triangulate` would take a set. Extruding a region with
+a hole and capping it therefore fills the hole in.
+
+Offsetting is the operation that is hardest to do naively. Moving
 each vertex along its angle bisector is correct only while the result does not
 touch itself, and a curve offset far enough inward will collapse, split or
 vanish; Clipper2 resolves those cases rather than returning a self-intersecting

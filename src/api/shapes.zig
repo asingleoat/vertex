@@ -143,12 +143,14 @@ pub const box = @import("../geometry/solids.zig").box;
 /// `.corner` or `.on_plane`.
 pub const Placement = mesh.Placement;
 
-/// Offsetting closed curves, outward or inward.
+/// Regions of the plane: offsetting a closed curve, and the booleans between
+/// two of them.
 /// ---
-/// `offset.apply(gpa, profile, delta, .{})`. The profile lies in the z = 0
-/// plane and its rings must be closed. The result may hold a different number
-/// of rings: growing merges them, shrinking splits or empties them.
-pub const offset = @import("../geometry/offset.zig");
+/// `planar.offset(gpa, profile, delta, .{})` and
+/// `planar.boolean(gpa, a, b, .subtract)`. Profiles lie in the z = 0 plane and
+/// their segments must chain into closed rings. A result may hold any number of
+/// rings, and a clockwise ring inside a counter-clockwise one is a hole.
+pub const planar = @import("../geometry/planar.zig");
 
 /// Mesh booleans: union, difference and intersection over closed surfaces.
 /// ---
