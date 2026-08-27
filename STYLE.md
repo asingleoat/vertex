@@ -141,7 +141,9 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   `[]const [2]u32`; topology is consumed positionally and has no layout
   variant. Scalar quantities are `[]const f32`.
 - Indices are `u32` rather than `usize`. This halves the memory spent on
-  indices, and four billion elements is the ceiling in any case. Conversion
+  indices, and four billion elements is the current ceiling. That ceiling is an
+  assumption, not a law: DESIGN.md records a deferred plan to make the index
+  width a comptime parameter, alongside the numeric type. Conversion
   happens at the slice-indexing site through a small helper; `@intCast` does not
   appear in loop bodies.
 - Hot structs assert their size. Fields are ordered from largest to smallest and
@@ -153,6 +155,40 @@ The approach follows Andrew Kelley's "Programming Without Pointers" and
   padding holes, and a test asserts `@sizeOf` equals the documented byte count.
 - Where variants differ greatly in size, use an enum tag with the payload in a
   side array rather than a tagged union holding the largest variant inline.
+
+## 3a. Tolerances
+
+A tolerance in geometry code is a smell. An `epsilon` parameter is nearly always
+a fudge factor standing in for a decision that was not made: it turns a
+predicate that should be exact into one that is approximately right, its value
+is chosen by experiment rather than derived, and it has to be re-chosen whenever
+the scale of the input changes. Code that carries one has usually traded a hard
+problem for an unprincipled approximation of it.
+
+Prefer the principled trade. Where two objects must be compared, compare them
+exactly and let a difference be a difference: `indexing.indexSoup` matches
+vertices bit for bit, which recovers exactly the connectivity an exporter had,
+and leaves two coordinates a single bit apart as two vertices. Measured over the
+225706 facets of 3DBenchy, no vertex lies within `1e-4` of a distinct other one,
+so a tolerance there would have had nothing to do and everything to break.
+
+Where exactness genuinely cannot decide the question, change the operation
+rather than blur the inputs. Manifold's booleans are not commutative, and that
+is the point: rather than nudging coincident geometry with a fudge factor until
+the two orders agree, it gives the two arguments different roles and stays
+exact. A non-commutative boolean is a surprising interface and a correct one; a
+commutative boolean that is right most of the time is neither.
+
+Two tolerances appear in this code today and both are Manifold's rather than
+ours: the `epsilon` on `triangulate.simplePolygon` and the one it reaches
+through `CapOptions`. They are passed through a seam this project does not
+control, are documented as such, and are one more reason for the plan to be able
+to replace that seam a function at a time.
+
+Welding, the merging of vertices that are merely close, is the operation this
+rule keeps at arm's length. It needs a tolerance by its nature, which is why it
+is a separate operation a caller asks for rather than a step folded into import,
+capping or anything else that would otherwise imply it.
 
 ## 4. Pure core, effectful edges
 

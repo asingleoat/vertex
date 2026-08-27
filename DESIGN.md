@@ -28,6 +28,8 @@ processing.
 | Timeline | Frames captured explicitly: the client calls `step()` between iterations and the viewer presents a frame scrubber |
 | UI | Dear ImGui through sokol_imgui and cimgui |
 | Picking | An ID-buffer pass, clicked to inspect an element index and its quantity values. Superseded by a CPU ray cast; see below |
+| Geometry kernels | Written here, except polygon triangulation, which is Manifold reached through its C ABI behind a single module; see below |
+| Threat model | None, and none is available: a sketch is general-purpose Zig the user wrote and compiled, running with the reach of any other program they run, so a check inside this library guards nothing that the code on the other side of it could not do directly. Limits and validation exist to catch mistakes, and are not to be written or argued for as defence |
 
 ## Components
 
@@ -152,6 +154,17 @@ each payload into one 16-byte-aligned allocation, `protocol.decode` returns
 views into it, and `Scene.apply` copies the sections into 64-byte-aligned
 blobs.
 
+That allocation is sized from the header before any of the payload has arrived,
+so a header wrong about the length names it. A truncated stream, a client caught
+mid-rebuild and a protocol version mismatch all produce one, and all of them are
+mistakes rather than anything to defend against. It is capped at 256 MiB, which
+`VERTEX_MAX_PAYLOAD_MB` overrides, and a frame over the cap is dropped with the
+connection after a line naming the kind, both sizes and whether the sections
+were inline. Which mode a section takes is not a size threshold: a section is
+external exactly when its bytes lie in a shared buffer the connection handed
+out, so geometry from an ordinary allocator travels inline however large it is,
+and only inline frames can reach the cap.
+
 In the shared mode the sketch asks the connection for buffers that are
 themselves memory-mapped file descriptors, through `conn.sharedPositions(n)`,
 `sharedScalars` and `sharedVectors`, fills them in place and sends as usual. The
@@ -238,6 +251,147 @@ socket and sends messages. `vertex.zig` re-exports both for convenience and
 places the remaining modules under `internal`, which states intent rather than
 imposing a restriction.
 
+## Polygon triangulation and caps
+
+Decided 2026-08-26, while building the loft. Capping a lofted surface requires
+general polygon triangulation, which is the first piece of geometry this project
+takes from outside rather than writing.
+
+Manifold is the choice. nixpkgs carries 3.5.2 under Apache-2.0 and installs
+`libmanifoldc` with `manifold/manifoldc.h` already built, so the flake gains a
+dependency and `build.zig` a link line, with no vendored source and no CMake. Its
+C API constructs every object into a buffer the caller sizes with
+`manifold_*_size()` and owns, which is the allocation discipline of `STYLE.md` §2
+expressed at the boundary, and its triangulator takes an epsilon, which distinct
+indices at coincident coordinates require. The alternatives were libtess2, which
+matches §2 more literally through an injectable allocator but is unpackaged and
+minimally maintained; CDT, which produces better triangles but exposes no C API;
+and Shewchuk's Triangle, whose licence excludes commercial use. The deciding
+argument is not triangulation. Booleans are anticipated under "Wire protocol"
+above as a topology-evolving operation, and Manifold is the kernel that makes
+them tractable.
+
+The `epsilon` this seam exposes is Manifold's, not a tolerance chosen here.
+`STYLE.md` §3a records why geometry code should not carry one, and the fact that
+this one is borrowed from a dependency rather than invented is part of the case
+for being able to replace it.
+
+The seam is two modules over one C++ file. `geometry/triangulate.zig` takes
+projected points and returns triangle indices; `geometry/boolean.zig` takes two
+closed meshes and returns their union, difference or intersection. Both go
+through `geometry/manifold_shim.cpp`, and nothing else names `manifoldc.h`. They
+are separate modules because the seam is drawn per operation: writing a
+triangulator here would leave booleans untouched, and the reverse. Everything above it is pure and `f32`. Replacing
+Manifold, whole or one operation at a time, is a matter of reimplementing that
+signature, and the seam is drawn per operation for that reason.
+
+Booleans cross the boundary without conversion. Manifold's `MeshGL` holds `f32`
+vertex properties and `u32` triangle indices, which at three properties per
+vertex is this project's `Mesh` exactly. What that boundary costs instead is two
+copies, one in and one out, Manifold keeping its own storage and sizing a result
+only by computing it. It reports a bad operand through `manifold_status` rather
+than by throwing, so an open or self-intersecting mesh comes back as
+`error.NotManifold` rather than as a plausible wrong answer.
+
+Three properties of the triangulation seam are recorded because they are
+exceptions rather than oversights. `ManifoldVec2` is `double`, so that boundary
+converts `f32` to `f64` and back; the cost is proportional to the ring rather than to the mesh.
+Manifold allocates internally through its own allocator, so an allocation
+failure inside it is neither observable nor recoverable, and
+`checkAllAllocationFailures` stops at the seam. `manifold_triangulate` is not
+exception-safe: `manifold::Triangulate` rethrows `geometryErr` on invalid input
+and the C binding wraps it in no handler, so a throw would unwind across the C
+ABI. A shim compiled with the project catches and returns a status, which
+restores an error value at the boundary.
+
+That last one is insurance rather than a handled route, and the distinction
+matters to callers. Manifold ensures a manifold result rather than validating
+its input: a ring that self-intersects, repeats a point, encloses no area or
+winds the wrong way comes back as a best-effort triangulation, not as an error,
+as the tests in `triangulate.zig` record. Detecting a malformed ring is the
+caller's to do before the call. The shipped library does reference `__cxa_throw`,
+so the throw path exists and the shim is worth its one file.
+
+Manifold reaches every consumer of the `vertex` module, which now links libc,
+libc++ and `libmanifoldc`: the viewer, sketches and the stepping libraries all
+carry the dependency. The prefix comes from MANIFOLD_PREFIX, exported by the dev
+shell on both platforms, because NIX_CFLAGS_COMPILE is unset on darwin to
+restore zig's SDK detection and ZIG_SEARCH_PREFIXES is exported only on linux.
+
+A cap adds faces over indices the ring already carries, which leaves the surface
+closed and manifold, and manifoldness is what Manifold requires of its own
+inputs. It may add an interior vertex but never duplicates a boundary one: the
+`.centroid` strategy places a vertex at the middle of each loop and fans from
+it, which on a ring is the only way to beat the `pi/n` smallest angle that
+bounds every triangulation of the ring alone. `Strategy` in `polygon.zig`
+records the measurements. Caps therefore attach to a surface
+rather than to the polylines it was lofted from, and the boundary is recovered
+from the faces as the edges used by exactly one triangle, chained into loops.
+The single adjacent triangle traverses each boundary edge in one direction and
+the cap traverses it in the other, so winding follows from topology; the Newell
+normal of the loop is needed only to choose the projection plane. Reading the
+boundary from the constructed surface also accounts for dropped degenerate
+triangles without a special case: an apex contributes no boundary edges, so a
+cone yields one loop and takes one cap.
+
+## Mesh files
+
+STL is read and written by `io/stl.zig`, which is pure: every function
+takes or produces byte slices and the caller does the file I/O, so a large file
+can be mapped rather than copied and the whole format is testable without a
+filesystem.
+
+Both forms are supported. Which one a file holds is decided arithmetically
+rather than by its leading keyword, because some writers put the word `solid`
+into the binary form's 80-byte comment: a binary file is exactly `84 + 50n`
+bytes for the `n` its header declares, and the keyword is consulted only when
+that does not fit.
+
+The binary path allocates nothing and knows its size in advance, since the facet
+count is in the header. Its inner loop is one 36-byte copy per facet, `Vec3`
+being a 12-byte `extern struct`, so a facet's three vertices are contiguous in
+both the file and the output. Measured over 81920 facets: 611M facets per second
+decoding and 328M encoding, against 1.5M and 2.5M for the ASCII form, which is
+also 4.1 times larger. Vectorizing the binary path is not a matter of widening
+the copy, the 50-byte record stride being coprime with every useful vector
+width; a SIMD version would load spans of records and shuffle.
+
+STL stores a triangle soup, so a file of `n` facets decodes to `3n` vertices and
+no shared connectivity: every edge is used by one triangle and each facet is its
+own island. Recovering the index array is exact and belongs to
+`geometry/indexing.zig`, which returns the same `Mesh` as everything else that
+builds geometry: `geometry/mesh.zig` holds that type, plain slices of vertices
+and triangles, and `Positions.alloc` followed by `setAll` is the one place it
+becomes a stream. The copies a soup holds are identical to the last bit,
+the exporter having written one value unchanged for each facet that touches it,
+so `indexSoup` matches them bitwise and reproduces the connectivity the exporter
+had. No tolerance is involved.
+
+That is not welding. Welding merges vertices that are merely close, and needs a
+tolerance, a spatial structure and a decision about the normals it changes.
+`indexSoup` leaves two coordinates differing in their last bit as two vertices,
+which is the line between the two operations. It does discard degenerate faces,
+those naming one point twice, because that test is exact and such a face draws
+nothing, bounds nothing and adds nothing to a volume while every operation that
+walks connectivity has to special-case it. 3DBenchy carries 552 of them in
+225706 facets.
+
+Reading and writing are therefore not an identity on arbitrary input, which is
+the intent rather than a shortfall. A malformed file is normalized on the way
+in, so what is written back is not the file that was read: the benchy goes in
+with 225706 facets and comes back with 225154. It differs once. A second pass
+reproduces the first written file byte for byte, so the path reaches a fixed
+point after one application, and a well-formed file is already at that fixed
+point. The geometry itself is preserved exactly throughout: over the benchy's
+225706 facets, none differs from the source in its vertex bytes. A face whose three vertices are distinct but collinear is kept:
+it has no area either, but saying so needs a predicate on coordinates that no
+exact test provides. It is a single pass with linear
+probing over a table of `u32` slots at a load factor of one half, and runs at
+228M vertices per second; a sphere of 81920 facets goes from 245760 soup
+vertices to the 40962 it was exported from, exactly. Its one canonicalization is that
+negative zero matches positive zero, since they are the same point; without it a
+file that wrote both for one corner would come back with a crack along it.
+
 ## Viewer internals
 
 ### Threading
@@ -294,6 +448,12 @@ before the policy existed.
 - The mesh solid pass shades flat from screen-space derivatives,
   `normalize(cross(dFdx(p), dFdy(p)))`, which needs neither normals nor
   duplicated vertices. Smooth shading is used when the client supplies normals.
+- Counter-clockwise winding is front-facing, matching the outward-normal
+  convention geometry is built to. The mesh pipelines set `face_winding` to
+  `.CCW` explicitly, since sokol-gfx defaults to clockwise. Nothing is culled:
+  back faces are drawn tinted toward red instead, which shows reversed winding
+  and marks the inside of an open surface. The derivative normal above carries
+  no winding information, so `gl_FrontFacing` is the only signal available.
 - The wireframe is a CPU-extracted unique edge list drawn through the thick-line
   pipeline with a depth offset, which avoids both barycentric vertex duplication
   and unreliable GL line widths.
@@ -563,7 +723,7 @@ starts it running. The exit statistics line gains
 
 ## Planned
 
-Two changes are decided but deferred.
+Three changes are decided but deferred.
 
 **Picking becomes a CPU ray cast**, replacing the ID-buffer pass and its GPU
 readback. The reasoning and the plan are under "Picking: a CPU ray cast rather
@@ -587,3 +747,30 @@ The work is a `Vec3Of(T)` with its arithmetic, `PositionsOf` gaining a scalar
 parameter alongside its layout parameter, and the kernels following. It is
 deferred until a second instantiation exists to validate the abstraction rather
 than assume it.
+
+**Index width becomes a parameter**, in the same manner and for the same reason.
+Vertex indices are `u32` throughout: `[3]u32` faces, `[2]u32` segments, the count
+`Positions.len` returns, and the `vertex_count`, `face_count` and
+`segment_count` fields of every protocol head. A mesh of more than 2^32 vertices
+cannot be expressed, and `STYLE.md` §3 records that ceiling as an assumption
+rather than a law.
+
+Two families of index exist and only one of them grows. `StructureIndex` and
+`BlobIndex` count structures and blobs, of which a scene holds thousands, and
+they stay `enum(u32)` per §1. It is the vertex indices that reach the ceiling, so
+the parameter belongs on the geometry types, the topology slices and the protocol
+heads, and not on the handle types.
+
+Widening the core is separable from drawing the result. sokol's `index_type` is
+`UINT16` or `UINT32`, as is every graphics API beneath it, so a mesh past 2^32
+vertices is not one draw call whatever the core holds. The renderer would
+partition it into sub-meshes and remap each to local `u32` indices, which is the
+larger half of the work and is why this sits behind the numeric change. The
+shared-memory path needs nothing: `SectionRef` already carries `offset` and `len`
+as `u64`.
+
+Memory bounds this long before the index type does. 2^32 vertices is 51 GB of
+positions in `.aos3` before any topology, and a mesh that size reaches the viewer
+through shared buffers in any case, since `Header.len` is a `u32` and caps an
+inline payload at 4 GiB. Widening the counts in the heads is a protocol version
+bump.
