@@ -4,3 +4,5 @@ zig-out/
 result
 zig-pkg/
 zig-out-debug/
+imgui.ini
+models/
