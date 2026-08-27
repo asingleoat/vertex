@@ -143,8 +143,13 @@ pub fn build(b: *Build) !void {
             .root_source_file = b.path("src/vertex.zig"),
             .target = target,
             .optimize = .fast,
+            // A bench builds its own copy of the module rather than sharing
+            // `mod_vertex`, so it needs Manifold linked into it as well.
+            .link_libc = true,
+            .link_libcpp = true,
         });
         mod_bench_vertex.addImport("build_options", options_module);
+        addManifold(b, mod_bench_vertex);
         const mod = b.createModule(.{
             .root_source_file = b.path(b.fmt("bench/{s}.zig", .{name})),
             .target = target,
