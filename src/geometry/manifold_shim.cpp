@@ -1,4 +1,4 @@
-// The whole of the Manifold interaction, presented to Zig as one C function.
+// The whole of the Manifold interaction, presented to Zig as plain C functions.
 //
 // Two properties of manifoldc make a shim necessary rather than convenient.
 // `manifold_triangulate` is not exception-safe: `manifold::Triangulate`
@@ -9,9 +9,9 @@
 // no Zig equivalent. Both are confined here.
 //
 // The interface is plain data: coordinates in, indices out, a status code for
-// the result. Replacing Manifold with an implementation written here means
-// providing this one function; see "Polygon triangulation and caps" in
-// DESIGN.md.
+// the result. Each operation stands alone, so replacing Manifold with an
+// implementation written here is done one function at a time; see "Polygon
+// triangulation and caps" in DESIGN.md.
 #include <manifold/manifoldc.h>
 #include <manifold/types.h>
 
@@ -27,11 +27,21 @@ static_assert(sizeof(int) == sizeof(uint32_t),
 
 extern "C" {
 
-// Status codes, mirrored by `Status` in triangulate.zig.
+// Status codes, mirrored by the seam modules that call these.
 #define VERTEX_TRIANGULATE_OK 0
 #define VERTEX_TRIANGULATE_INVALID 1
 #define VERTEX_TRIANGULATE_OVERFLOW 2
 #define VERTEX_TRIANGULATE_OUT_OF_MEMORY 3
+
+#define VERTEX_BOOLEAN_OK 0
+#define VERTEX_BOOLEAN_THREW 1
+#define VERTEX_BOOLEAN_OUT_OF_MEMORY 2
+// The operation completed but Manifold rejected an input or the result;
+// `detail` then carries the ManifoldError.
+#define VERTEX_BOOLEAN_REJECTED 3
+// The result carries something other than three properties per vertex, which
+// this shim does not know how to hand back.
+#define VERTEX_BOOLEAN_UNEXPECTED_PROPERTIES 4
 
 // Triangulates one simple polygon.
 //
@@ -95,6 +105,141 @@ int vertexTriangulatePolygon(const double *xy, size_t point_count,
   std::free(triangulation_mem);
   std::free(polygons_mem);
   std::free(polygon_mem);
+  return status;
+}
+
+// One boolean result, held between `vertexBooleanBegin` reporting its size and
+// `vertexBooleanTake` copying it out. Manifold sizes the result only by
+// computing it, so a caller cannot allocate ahead the way it can for a
+// polygon's triangulation.
+struct VertexBooleanResult {
+  void *meshgl_mem;
+  ManifoldMeshGL *meshgl;
+};
+
+// Frees everything a `VertexBooleanResult` holds. Safe on a null handle.
+void vertexBooleanRelease(void *handle) {
+  if (handle == nullptr) return;
+  VertexBooleanResult *result = static_cast<VertexBooleanResult *>(handle);
+  if (result->meshgl != nullptr) manifold_destruct_meshgl(result->meshgl);
+  std::free(result->meshgl_mem);
+  std::free(result);
+}
+
+// Copies the result into caller memory: `vert_count * 3` floats and
+// `tri_count * 3` indices, both as reported by `vertexBooleanBegin`.
+void vertexBooleanTake(void *handle, float *vertices, uint32_t *triangles) {
+  VertexBooleanResult *result = static_cast<VertexBooleanResult *>(handle);
+  manifold_meshgl_vert_properties(vertices, result->meshgl);
+  manifold_meshgl_tri_verts(triangles, result->meshgl);
+}
+
+// Runs one boolean and reports the size of its result.
+//
+// Both inputs are meshes of `Vec3` vertices and `[3]u32` triangles, which is
+// MeshGL's own layout at three properties per vertex, so nothing is converted
+// on the way in. `op` is a `ManifoldOpType`. On success `*handle` owns the
+// result until `vertexBooleanTake` and `vertexBooleanRelease`; on any other
+// status it is null and nothing is owned.
+//
+// Manifold requires each input to be a closed, oriented surface and says so
+// through `manifold_status` rather than by throwing, which is why the status is
+// read for both inputs and for the result. The try/catch remains for everything
+// that does throw: the C binding wraps none of these calls.
+int vertexBooleanBegin(const float *a_vertices, size_t a_vertex_count,
+                       const uint32_t *a_triangles, size_t a_triangle_count,
+                       const float *b_vertices, size_t b_vertex_count,
+                       const uint32_t *b_triangles, size_t b_triangle_count,
+                       int op, void **handle, size_t *vertex_count,
+                       size_t *triangle_count, int *detail) {
+  *handle = nullptr;
+  *vertex_count = 0;
+  *triangle_count = 0;
+  *detail = MANIFOLD_NO_ERROR;
+
+  const size_t meshgl_size = manifold_meshgl_size();
+  const size_t manifold_size = manifold_manifold_size();
+  void *a_mesh_mem = std::malloc(meshgl_size);
+  void *b_mesh_mem = std::malloc(meshgl_size);
+  void *a_solid_mem = std::malloc(manifold_size);
+  void *b_solid_mem = std::malloc(manifold_size);
+  void *out_solid_mem = std::malloc(manifold_size);
+  VertexBooleanResult *result =
+      static_cast<VertexBooleanResult *>(std::malloc(sizeof(VertexBooleanResult)));
+  void *out_mesh_mem = std::malloc(meshgl_size);
+
+  ManifoldMeshGL *a_mesh = nullptr;
+  ManifoldMeshGL *b_mesh = nullptr;
+  ManifoldManifold *a_solid = nullptr;
+  ManifoldManifold *b_solid = nullptr;
+  ManifoldManifold *out_solid = nullptr;
+  ManifoldMeshGL *out_mesh = nullptr;
+  int status = VERTEX_BOOLEAN_OK;
+
+  if (a_mesh_mem == nullptr || b_mesh_mem == nullptr || a_solid_mem == nullptr ||
+      b_solid_mem == nullptr || out_solid_mem == nullptr || result == nullptr ||
+      out_mesh_mem == nullptr) {
+    status = VERTEX_BOOLEAN_OUT_OF_MEMORY;
+  } else {
+    try {
+      a_mesh = manifold_meshgl(a_mesh_mem, const_cast<float *>(a_vertices),
+                               a_vertex_count, 3,
+                               const_cast<uint32_t *>(a_triangles), a_triangle_count);
+      b_mesh = manifold_meshgl(b_mesh_mem, const_cast<float *>(b_vertices),
+                               b_vertex_count, 3,
+                               const_cast<uint32_t *>(b_triangles), b_triangle_count);
+      a_solid = manifold_of_meshgl(a_solid_mem, a_mesh);
+      b_solid = manifold_of_meshgl(b_solid_mem, b_mesh);
+
+      ManifoldError a_status = manifold_status(a_solid);
+      ManifoldError b_status = manifold_status(b_solid);
+      if (a_status != MANIFOLD_NO_ERROR || b_status != MANIFOLD_NO_ERROR) {
+        status = VERTEX_BOOLEAN_REJECTED;
+        *detail = a_status != MANIFOLD_NO_ERROR ? a_status : b_status;
+      } else {
+        out_solid = manifold_boolean(out_solid_mem, a_solid, b_solid,
+                                     static_cast<ManifoldOpType>(op));
+        ManifoldError out_status = manifold_status(out_solid);
+        if (out_status != MANIFOLD_NO_ERROR) {
+          status = VERTEX_BOOLEAN_REJECTED;
+          *detail = out_status;
+        } else {
+          out_mesh = manifold_get_meshgl(out_mesh_mem, out_solid);
+          if (manifold_meshgl_num_prop(out_mesh) != 3) {
+            status = VERTEX_BOOLEAN_UNEXPECTED_PROPERTIES;
+          } else {
+            *vertex_count = manifold_meshgl_num_vert(out_mesh);
+            *triangle_count = manifold_meshgl_num_tri(out_mesh);
+          }
+        }
+      }
+    } catch (...) {
+      status = VERTEX_BOOLEAN_THREW;
+    }
+  }
+
+  // The inputs and the intermediate solids are done with either way; only the
+  // result mesh outlives this call, and only on success.
+  if (out_solid != nullptr) manifold_destruct_manifold(out_solid);
+  if (b_solid != nullptr) manifold_destruct_manifold(b_solid);
+  if (a_solid != nullptr) manifold_destruct_manifold(a_solid);
+  if (b_mesh != nullptr) manifold_destruct_meshgl(b_mesh);
+  if (a_mesh != nullptr) manifold_destruct_meshgl(a_mesh);
+  std::free(out_solid_mem);
+  std::free(b_solid_mem);
+  std::free(a_solid_mem);
+  std::free(b_mesh_mem);
+  std::free(a_mesh_mem);
+
+  if (status == VERTEX_BOOLEAN_OK) {
+    result->meshgl_mem = out_mesh_mem;
+    result->meshgl = out_mesh;
+    *handle = result;
+  } else {
+    if (out_mesh != nullptr) manifold_destruct_meshgl(out_mesh);
+    std::free(out_mesh_mem);
+    std::free(result);
+  }
   return status;
 }
 

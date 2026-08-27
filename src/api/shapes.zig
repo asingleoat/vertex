@@ -119,6 +119,13 @@ pub const loft = polyline.loft;
 
 
 
+/// Mesh booleans: union, difference and intersection over closed surfaces.
+/// ---
+/// `boolean.apply(gpa, a, b, .subtract)` and its two siblings. Each operand
+/// must be a closed, oriented surface, which `boundaryLoops` reporting no loops
+/// tests for and `indexSoup` is what a mesh from a file needs first. The result
+/// is closed in turn, so booleans compose.
+pub const boolean = @import("../geometry/boolean.zig");
 
 /// Recovers an index array from a triangle soup by exact equality, which is
 /// what a mesh imported from STL needs before it is treated as a surface. This
