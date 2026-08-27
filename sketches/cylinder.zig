@@ -56,6 +56,20 @@ pub fn main(init: std.process.Init) !void {
     defer grown.deinit(gpa);
     try vx.registerPolyline(gpa, "profile-offset", grown, .{});
 
+    // Extruding the filleted profile with a hole cut out of it: the hole comes
+    // through the solid as a passage, because the caps are triangulated from
+    // both rings together rather than one loop at a time.
+    const bore_profile = try shapes.circle(gpa, 0.35, 32);
+    defer bore_profile.deinit(gpa);
+    shapes.translate(bore_profile.vertices, .init(0, -3, 0));
+    const with_hole = try shapes.planar.boolean(gpa, grown, bore_profile, .subtract);
+    defer with_hole.deinit(gpa);
+
+    const plate = try shapes.extrude(gpa, with_hole, .init(0, 0, 0.5));
+    defer plate.deinit(gpa);
+    shapes.translate(plate.vertices, .init(-3, 0, 0));
+    try vx.registerMesh(gpa, "plate", plate, .{});
+
     // At its own scale, which is millimetres: the boat is about 60 mm long and
     // dwarfs the unit cylinder beside it. models/ is not checked in, so a fresh
     // clone has no boat and the rest of the sketch stands on its own.

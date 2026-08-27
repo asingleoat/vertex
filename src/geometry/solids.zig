@@ -10,6 +10,7 @@ const layout = @import("layout.zig");
 const mesh_mod = @import("mesh.zig");
 const polyline = @import("polyline.zig");
 const polygon = @import("polygon.zig");
+const triangulate = @import("triangulate.zig");
 
 const Placement = mesh_mod.Placement;
 
@@ -17,16 +18,109 @@ const Vec3 = layout.Vec3;
 const Mesh = mesh_mod.Mesh;
 
 /// Failure of a solid: allocation, or the triangulation of a cap.
-pub const Error = polygon.CapError;
+pub const Error = polygon.CapError || error{NotClosed};
+
+/// Extrudes a closed two-dimensional profile into a solid.
+///
+/// The profile lies in a plane and its segments must chain into closed rings;
+/// `displacement` is how far and in what direction it is swept. The result is
+/// closed and wound outward, so it is a boolean operand directly.
+///
+/// Holes are preserved. A profile with a clockwise ring inside a
+/// counter-clockwise one, which is what `planar.boolean` returns when a region
+/// is subtracted from the middle of another, extrudes to a solid with a
+/// passage through it: the hole's wall is swept like any other ring, and the
+/// two caps are triangulated from all the rings together so that neither
+/// covers it. This is why the extrusion does not go through `sweep` and
+/// `capBoundaries`, which see one loop at a time and would fill the hole in.
+///
+/// The profile is read as lying in the z = 0 plane, since that is where a
+/// planar operation leaves one; its z is ignored for the purpose of
+/// triangulating the caps, though the vertices themselves are used as given.
+pub fn extrude(
+    gpa: std.mem.Allocator,
+    profile: polyline.Polyline,
+    displacement: Vec3,
+) Error!Mesh {
+    const rings = polyline.loops(gpa, profile) catch |err| switch (err) {
+        error.NonManifoldBoundary => return error.NotClosed,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer rings.deinit(gpa);
+    if (rings.count() == 0) return .empty;
+
+    // The rings laid end to end are both the vertex order of the result and the
+    // index space the triangulation returns, so the caps need no remapping.
+    const ring_count = rings.count();
+    const points = rings.vertices.len;
+    const lengths = try gpa.alloc(u32, ring_count);
+    defer gpa.free(lengths);
+    const flat = try gpa.alloc([2]f64, points);
+    defer gpa.free(flat);
+    var written: usize = 0;
+    for (0..ring_count) |i| {
+        const ring = rings.get(i);
+        lengths[i] = @intCast(ring.len);
+        for (ring) |index| {
+            const v = profile.vertices[index];
+            flat[written] = .{ v.x, v.y };
+            written += 1;
+        }
+    }
+
+    const cap_scratch = try gpa.alloc([3]u32, triangulate.triangleCapacity(points, ring_count));
+    defer gpa.free(cap_scratch);
+    const cap = try triangulate.polygon(flat, lengths, -1, cap_scratch);
+
+    // Near vertices first, then the same again displaced, so far = near + points.
+    const vertices = try gpa.alloc(Vec3, 2 * points);
+    errdefer gpa.free(vertices);
+    for (rings.vertices, 0..) |index, k| {
+        vertices[k] = profile.vertices[index];
+        vertices[points + k] = profile.vertices[index].add(displacement);
+    }
+
+    const faces = try gpa.alloc([3]u32, 2 * points + 2 * cap.len);
+    errdefer gpa.free(faces);
+    // Sweeping along the profile's own normal puts the far cap on the outside;
+    // sweeping against it swaps which end is which, and the walls with it.
+    const flip = displacement.dot(polyline.areaVector(profile)) < 0;
+    var at: usize = 0;
+    var base: u32 = 0;
+    for (0..ring_count) |i| {
+        const length: u32 = lengths[i];
+        for (0..length) |k| {
+            const a = base + @as(u32, @intCast(k));
+            const b = base + @as(u32, @intCast((k + 1) % length));
+            const a_far = a + @as(u32, @intCast(points));
+            const b_far = b + @as(u32, @intCast(points));
+            // A hole's ring runs the other way round, which is exactly what
+            // turns its wall to face into the passage.
+            faces[at] = if (flip) .{ a, b_far, b } else .{ a, b, b_far };
+            faces[at + 1] = if (flip) .{ a, a_far, b_far } else .{ a, b_far, a_far };
+            at += 2;
+        }
+        base += length;
+    }
+    const shift: u32 = @intCast(points);
+    for (cap) |t| {
+        // The near cap faces away from the sweep and the far cap along it, so
+        // one of the two is the triangulation reversed.
+        faces[at] = if (flip) .{ t[0], t[1], t[2] } else .{ t[0], t[2], t[1] };
+        faces[at + 1] = if (flip)
+            .{ t[0] + shift, t[2] + shift, t[1] + shift }
+        else
+            .{ t[0] + shift, t[1] + shift, t[2] + shift };
+        at += 2;
+    }
+    return .{ .vertices = vertices, .faces = faces };
+}
 
 /// Builds a closed cylinder of `radius` and `height`, its base on the z = 0
 /// plane and its axis along +z, approximated by `segment_count` sides.
 ///
-/// The caller owns the result and places it with `mesh.translate`. Its caps are
-/// triangulated by recursive halving, which suits a solid that is rendered,
-/// picked or used as a boolean operand; a caller who needs the better-shaped
-/// triangles of a centre-fan cap lofts and caps it directly, which is the four
-/// calls this composes.
+/// The caller owns the result and places it with `mesh.translate`. This is
+/// `extrude` of a `circle`, which is all it ever was.
 ///
 /// Fewer than three segments encloses no volume and yields an empty mesh.
 pub fn cylinder(
@@ -36,24 +130,9 @@ pub fn cylinder(
     segment_count: u32,
 ) Error!Mesh {
     if (segment_count < 3) return .empty;
-
     const profile = try polyline.circle(gpa, radius, segment_count);
     defer profile.deinit(gpa);
-    const wall = try polyline.extrude(gpa, profile, .init(0, 0, height));
-    defer wall.deinit(gpa);
-
-    var vertices: std.ArrayList(Vec3) = .empty;
-    errdefer vertices.deinit(gpa);
-    try vertices.appendSlice(gpa, wall.vertices);
-    var faces: std.ArrayList([3]u32) = .empty;
-    errdefer faces.deinit(gpa);
-    try faces.appendSlice(gpa, wall.faces);
-    try polygon.capBoundaries(gpa, &vertices, &faces, .{ .strategy = .hierarchical });
-
-    const owned_vertices = try vertices.toOwnedSlice(gpa);
-    errdefer gpa.free(owned_vertices);
-    const owned_faces = try faces.toOwnedSlice(gpa);
-    return .{ .vertices = owned_vertices, .faces = owned_faces };
+    return extrude(gpa, profile, .init(0, 0, height));
 }
 
 /// Builds a closed rectangular prism with the given side lengths, wound
@@ -268,4 +347,108 @@ fn boxAllocationCase(gpa: std.mem.Allocator) !void {
 
 test "box handles every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, boxAllocationCase, .{});
+}
+
+test "extruding a profile with a hole leaves the hole open" {
+    const gpa = testing.allocator;
+    const planar = @import("planar.zig");
+    const outer = try polyline.square(gpa, 4, .centered);
+    defer outer.deinit(gpa);
+    const inner = try polyline.square(gpa, 2, .centered);
+    defer inner.deinit(gpa);
+    const washer = try planar.boolean(gpa, outer, inner, .subtract);
+    defer washer.deinit(gpa);
+
+    const solid = try extrude(gpa, washer, .init(0, 0, 3));
+    defer solid.deinit(gpa);
+
+    // The volume is the region's, not the outer square's: a filled cap would
+    // give 48 rather than 36, and a cap covering the hole would enclose it.
+    try testing.expectApproxEqRel(@as(f64, (16 - 4) * 3), volume(solid), 1e-5);
+
+    // Closed, so it is a boolean operand in turn.
+    const loops = try polygon.boundaryLoops(gpa, @intCast(solid.vertices.len), solid.faces);
+    defer loops.deinit(gpa);
+    try testing.expectEqual(0, loops.count());
+
+    // Eight vertices per end, two walls of eight quads, two caps of eight
+    // triangles: a passage through the middle rather than a lid over it.
+    try testing.expectEqual(16, solid.vertices.len);
+    try testing.expectEqual(2 * 8 + 2 * 8, solid.faces.len);
+}
+
+test "a hole survives a boolean against the solid it passes through" {
+    const gpa = testing.allocator;
+    const boolean = @import("boolean.zig");
+    const planar = @import("planar.zig");
+    const outer = try polyline.square(gpa, 4, .centered);
+    defer outer.deinit(gpa);
+    const inner = try polyline.circle(gpa, 1, 48);
+    defer inner.deinit(gpa);
+    const washer = try planar.boolean(gpa, outer, inner, .subtract);
+    defer washer.deinit(gpa);
+
+    const solid = try extrude(gpa, washer, .init(0, 0, 2));
+    defer solid.deinit(gpa);
+
+    // A rod that fits the passage exactly removes nothing, because the passage
+    // is already empty. If the extrusion had covered the hole, this would cut
+    // the covered volume away and shrink the result.
+    const rod = try cylinder(gpa, 1, 6, 48);
+    defer rod.deinit(gpa);
+    mesh_mod.translate(rod.vertices, .init(0, 0, -2));
+    const cut = try boolean.apply(gpa, solid, rod, .subtract);
+    defer cut.deinit(gpa);
+    try testing.expectApproxEqRel(volume(solid), volume(cut), 1e-4);
+}
+
+test "extruding against the profile's own direction still winds outward" {
+    const gpa = testing.allocator;
+    for ([_]f32{ 3, -3 }) |height| {
+        const profile = try polyline.rectangle(gpa, 2, 1, .centered);
+        defer profile.deinit(gpa);
+        const solid = try extrude(gpa, profile, .init(0, 0, height));
+        defer solid.deinit(gpa);
+        try testing.expectApproxEqRel(@as(f64, 6), volume(solid), 1e-5);
+    }
+}
+
+test "extruding an open profile is reported" {
+    const gpa = testing.allocator;
+    const vertices = try gpa.dupe(Vec3, &.{ .init(0, 0, 0), .init(1, 0, 0), .init(2, 0, 0) });
+    const segments = try gpa.dupe([2]u32, &.{ .{ 0, 1 }, .{ 1, 2 } });
+    const open: polyline.Polyline = .{ .vertices = vertices, .segments = segments };
+    defer open.deinit(gpa);
+    try testing.expectError(error.NotClosed, extrude(gpa, open, .init(0, 0, 1)));
+}
+
+test "two separate rings extrude to two separate solids" {
+    const gpa = testing.allocator;
+    const planar = @import("planar.zig");
+    const left = try polyline.square(gpa, 1, .centered);
+    defer left.deinit(gpa);
+    const right = try polyline.square(gpa, 1, .centered);
+    defer right.deinit(gpa);
+    mesh_mod.translate(right.vertices, .init(5, 0, 0));
+    const pair = try planar.boolean(gpa, left, right, .add);
+    defer pair.deinit(gpa);
+
+    const solid = try extrude(gpa, pair, .init(0, 0, 2));
+    defer solid.deinit(gpa);
+    try testing.expectApproxEqRel(@as(f64, 4), volume(solid), 1e-5);
+    const loops = try polygon.boundaryLoops(gpa, @intCast(solid.vertices.len), solid.faces);
+    defer loops.deinit(gpa);
+    try testing.expectEqual(0, loops.count());
+}
+
+fn extrudeAllocationCase(gpa: std.mem.Allocator) !void {
+    const profile = try polyline.square(gpa, 2, .centered);
+    defer profile.deinit(gpa);
+    const solid = try extrude(gpa, profile, .init(0, 0, 1));
+    defer solid.deinit(gpa);
+    if (solid.faces.len == 0) return error.TestUnexpectedResult;
+}
+
+test "extrude handles every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, extrudeAllocationCase, .{});
 }

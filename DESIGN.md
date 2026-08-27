@@ -289,11 +289,20 @@ A planar operation takes and returns a `Polyline`, which needs nothing added to
 carry the result: a polyline is a vertex array and a segment array, so several
 disjoint rings are as ordinary a value as one. Rings are read under the non-zero
 fill rule, which makes a clockwise ring inside a counter-clockwise one a hole,
-and `polyline.areaVector` is negative for such a ring. What does not yet
-understand holes is the cap: `polygon.capBoundaries` triangulates each boundary
-loop independently as a simple polygon, and `triangulate.simplePolygon` passes
-one ring where `manifold_triangulate` would take a set. Extruding a region with
-a hole and capping it therefore fills the hole in.
+and `polyline.areaVector` is negative for such a ring. Holes survive into three
+dimensions: `triangulate.polygon` passes a whole set of rings to
+`manifold_triangulate`, and `solids.extrude` triangulates a profile's rings
+together for both caps while sweeping each ring's wall separately, so a region
+with a hole becomes a solid with a passage rather than one with a lid over it.
+A hole's ring runs the opposite way round, which is exactly what turns its wall
+to face into the passage, so no case analysis is needed for it.
+
+`polygon.capBoundaries` is the other capping path and still sees one loop at a
+time, which is right for what it does: it recovers loops from an arbitrary
+surface, where deciding which of them are holes of which would need a
+coplanarity test, and coplanarity of two independently computed loops is not an
+exact question. `solids.extrude` avoids it by never asking: a planar profile's
+rings are coplanar by construction.
 
 Offsetting is the operation that is hardest to do naively. Moving
 each vertex along its angle bisector is correct only while the result does not

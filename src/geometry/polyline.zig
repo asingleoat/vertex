@@ -203,17 +203,17 @@ pub fn loft(
 
 /// Sweeps a polyline along `displacement`, returning the surface it traces.
 ///
-/// This is `loft` between the profile and a copy of it moved by `displacement`,
-/// which is the linear extrusion of a two-dimensional shape when the profile
-/// lies in a plane. It produces the wall only: a closed profile gives an open
-/// tube, which `polygon.capBoundaries` closes into a solid.
+/// This is `loft` between the profile and a copy of it moved by `displacement`.
+/// It produces the swept surface only: a closed profile gives an open tube.
+/// `solids.extrude` is the one that returns a closed solid, and it does not go
+/// through this, since capping a profile with holes needs the rings together.
 ///
 /// The winding follows the extrusion rather than the caller. A profile
 /// enclosing area has a direction of its own, and the faces are wound to point
 /// away from the volume swept whichever way `displacement` runs, so extruding
 /// down does not quietly turn the surface inside out. A profile enclosing no
 /// area, an open one among them, has no such direction and is swept as given.
-pub fn extrude(
+pub fn sweep(
     gpa: std.mem.Allocator,
     profile: Polyline,
     displacement: Vec3,
@@ -481,11 +481,11 @@ test "areaVector does not depend on the order the segments are listed in" {
     try testing.expect(!areaVector(open).eql(forward));
 }
 
-test "extruding a closed profile winds outward whichever way it runs" {
+test "sweeping a closed profile winds outward whichever way it runs" {
     for ([_]f32{ 2, -2 }) |height| {
         const profile = try rectangle(testing.allocator, 2, 2, .centered);
         defer profile.deinit(testing.allocator);
-        const wall = try extrude(testing.allocator, profile, .init(0, 0, height));
+        const wall = try sweep(testing.allocator, profile, .init(0, 0, height));
         defer wall.deinit(testing.allocator);
 
         var vertices: std.ArrayList(Vec3) = .empty;
@@ -503,7 +503,7 @@ test "extruding a closed profile winds outward whichever way it runs" {
     }
 }
 
-test "extruding an open profile sweeps a ribbon" {
+test "sweeping an open profile traces a ribbon" {
     const vertices = try testing.allocator.dupe(Vec3, &.{
         .init(0, 0, 0), .init(1, 0, 0), .init(2, 0, 0),
     });
@@ -511,7 +511,7 @@ test "extruding an open profile sweeps a ribbon" {
     const open: Polyline = .{ .vertices = vertices, .segments = segments };
     defer open.deinit(testing.allocator);
 
-    const ribbon = try extrude(testing.allocator, open, .init(0, 0, 1));
+    const ribbon = try sweep(testing.allocator, open, .init(0, 0, 1));
     defer ribbon.deinit(testing.allocator);
     try testing.expectEqual(4, ribbon.faces.len);
     try testing.expectEqual(6, ribbon.vertices.len);
@@ -520,11 +520,11 @@ test "extruding an open profile sweeps a ribbon" {
 fn rectangleAllocationCase(gpa: std.mem.Allocator) !void {
     const outline = try rectangle(gpa, 1, 2, .centered);
     defer outline.deinit(gpa);
-    const wall = try extrude(gpa, outline, .init(0, 0, 1));
+    const wall = try sweep(gpa, outline, .init(0, 0, 1));
     defer wall.deinit(gpa);
     if (wall.faces.len != 8) return error.TestUnexpectedResult;
 }
 
-test "rectangle and extrude handle every allocation failure" {
+test "rectangle and sweep handle every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, rectangleAllocationCase, .{});
 }

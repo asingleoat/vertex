@@ -118,9 +118,9 @@ pub const rectangle = polyline.rectangle;
 /// Generates a closed square in the z = 0 plane. `rectangle` with equal sides.
 pub const square = polyline.square;
 
-/// Sweeps a polyline along a displacement, which is the linear extrusion of a
-/// two-dimensional profile. Produces the wall; `capBoundaries` closes it.
-pub const extrude = polyline.extrude;
+/// Sweeps a polyline along a displacement, returning the surface it traces.
+/// `extrude` is the one that returns a closed solid.
+pub const sweep = polyline.sweep;
 
 /// The area vector of a closed polyline: its magnitude the area enclosed, its
 /// direction the normal its winding gives. Zero for one enclosing no area.
@@ -129,6 +129,10 @@ pub const areaVector = polyline.areaVector;
 /// Builds the triangulated surface spanning two polylines, pairing their
 /// segments. Use it for tubes, cones, extrusions and ribbons.
 pub const loft = polyline.loft;
+
+/// Extrudes a closed two-dimensional profile into a solid, preserving holes: a
+/// profile with an inner ring becomes a solid with a passage through it.
+pub const extrude = @import("../geometry/solids.zig").extrude;
 
 /// Builds a closed cylinder standing on the z = 0 plane, wound outward and
 /// ready to use as a boolean operand. Place it with `translate`.

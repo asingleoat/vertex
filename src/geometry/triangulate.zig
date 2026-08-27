@@ -30,29 +30,35 @@ pub const Error = error{
     OutOfMemory,
 };
 
-/// Triangulates a simple polygon and returns the triangles written.
+/// Triangulates a polygon given as one or more closed rings.
 ///
-/// `points` are the polygon's vertices in order, winding counter-clockwise;
-/// `epsilon` is the tolerance below which points are treated as coincident,
-/// where a negative value selects Manifold's own. Triangles are written to
-/// `out` as indices into `points`, and `out` must hold at least
-/// `points.len - 2` of them, which is the exact count a simple polygon of that
-/// size produces. Fewer than three points yields an empty result.
+/// `points` holds the rings end to end and `ring_lengths` divides them. A
+/// counter-clockwise ring bounds material and a clockwise ring inside it is a
+/// hole, which the result leaves empty rather than covering; that is what makes
+/// this more than `simplePolygon` repeated. `epsilon` is the tolerance below
+/// which points are treated as coincident, where a negative value selects
+/// Manifold's own.
+///
+/// Triangles are written to `out` as indices into the concatenated point array,
+/// and `out` must hold at least `triangleCapacity(points.len, ring_lengths.len)`
+/// of them. Fewer than three points in total yields an empty result.
 ///
 /// The returned slice aliases `out`. Nothing is allocated on this side of the
-/// call and neither argument is retained.
-pub fn simplePolygon(
+/// call and no argument is retained.
+pub fn polygon(
     points: []const [2]f64,
+    ring_lengths: []const u32,
     epsilon: f64,
     out: [][3]u32,
 ) Error![][3]u32 {
-    if (points.len < 3) return out[0..0];
-    std.debug.assert(out.len >= points.len - 2);
+    if (points.len < 3 or ring_lengths.len == 0) return out[0..0];
+    std.debug.assert(out.len >= triangleCapacity(points.len, ring_lengths.len));
 
     var written: usize = 0;
-    const status = vertexTriangulatePolygon(
+    const status = vertexTriangulatePolygons(
         @ptrCast(points.ptr),
-        points.len,
+        ring_lengths.ptr,
+        ring_lengths.len,
         epsilon,
         @ptrCast(out.ptr),
         out.len,
@@ -62,17 +68,45 @@ pub fn simplePolygon(
         ok => out[0..written],
         invalid => error.InvalidPolygon,
         out_of_memory => error.OutOfMemory,
-        // Only a caller ignoring the `points.len - 2` contract reaches this,
-        // and the assertion above has already caught that in a safe build.
+        // Only a caller ignoring `triangleCapacity` reaches this, and the
+        // assertion above has already caught that in a safe build.
         overflow => unreachable,
         else => unreachable,
     };
 }
 
+/// Triangulates a single closed ring, which is `polygon` with one length.
+///
+/// `out` must hold at least `triangleCount(points.len)` triangles, which for
+/// one ring is exact rather than an upper bound.
+pub fn simplePolygon(
+    points: []const [2]f64,
+    epsilon: f64,
+    out: [][3]u32,
+) Error![][3]u32 {
+    if (points.len < 3) return out[0..0];
+    const lengths = [_]u32{@intCast(points.len)};
+    return polygon(points, &lengths, epsilon, out);
+}
+
 /// The number of triangles a simple polygon of `n` points produces, and so the
 /// length `simplePolygon` requires of its `out`. Zero below three points.
 pub fn triangleCount(n: usize) usize {
-    return if (n < 3) 0 else n - 2;
+    return triangleCapacity(n, 1);
+}
+
+/// An upper bound on the triangles `polygon` produces, and so the length it
+/// requires of its `out`.
+///
+/// One ring is the exact `n - 2`, there being nothing to nest. Beyond that the
+/// bound is not exact: one outer ring with `h` holes gives `n + 2h - 2` and
+/// several separate outer rings give fewer, so `n + 2k` covers every
+/// arrangement of `k` rings without knowing which of them are holes, which is
+/// what the triangulation is being asked to work out.
+pub fn triangleCapacity(point_count: usize, ring_count: usize) usize {
+    if (point_count < 3 or ring_count == 0) return 0;
+    if (ring_count == 1) return point_count - 2;
+    return point_count + 2 * ring_count;
 }
 
 /// The status codes `manifold_shim.cpp` returns.
@@ -82,9 +116,10 @@ const overflow = 2;
 const out_of_memory = 3;
 
 /// Declared in `manifold_shim.cpp`, which build.zig compiles into this module.
-extern fn vertexTriangulatePolygon(
+extern fn vertexTriangulatePolygons(
     xy: [*]const f64,
-    point_count: usize,
+    ring_lengths: [*]const u32,
+    ring_count: usize,
     epsilon: f64,
     triangles: [*]u32,
     capacity: usize,
