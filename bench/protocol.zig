@@ -1,8 +1,8 @@
 const std = @import("std");
 const vertex = @import("vertex");
 
-const protocol = vertex.protocol;
-const layout = vertex.layout;
+const protocol = vertex.internal.protocol;
+const layout = vertex.internal.layout;
 const sample_count = 21;
 
 const Stats = struct {

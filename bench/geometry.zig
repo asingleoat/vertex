@@ -4,7 +4,7 @@ const vertex = @import("vertex");
 const harness = @import("lib/harness.zig");
 
 const Vec3 = vertex.Vec3;
-const all_layouts = [_]vertex.layout.Layout{ .aos3, .aos4, .soa };
+const all_layouts = [_]vertex.internal.layout.Layout{ .aos3, .aos4, .soa };
 
 /// Runs every geometry kernel over roughly 1K, 100K, and 1M vertices.
 pub fn main() !void {
@@ -15,7 +15,7 @@ pub fn main() !void {
     }
 }
 
-fn benchLayout(comptime l: vertex.layout.Layout, io: std.Io) !void {
+fn benchLayout(comptime l: vertex.internal.layout.Layout, io: std.Io) !void {
     const grids = [_][2]u32{
         .{ 31, 31 },
         .{ 315, 315 },
@@ -24,8 +24,8 @@ fn benchLayout(comptime l: vertex.layout.Layout, io: std.Io) !void {
     for (grids) |grid| try benchGrid(l, io, grid[0], grid[1]);
 }
 
-fn benchGrid(comptime l: vertex.layout.Layout, io: std.Io, nx: u32, ny: u32) !void {
-    const F = vertex.fixtures.Fixtures(l);
+fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny: u32) !void {
+    const F = vertex.internal.fixtures.Fixtures(l);
     const gpa = std.heap.page_allocator;
     var mesh = try F.grid(gpa, nx, ny, 10);
     defer mesh.deinit(gpa);
@@ -110,8 +110,8 @@ fn iterationCount(vertex_count: u64) usize {
     return 1;
 }
 
-fn BoundsContext(comptime l: vertex.layout.Layout) type {
-    const G = vertex.geometry.Geometry(l);
+fn BoundsContext(comptime l: vertex.internal.layout.Layout) type {
+    const G = vertex.internal.geometry.Geometry(l);
     return struct {
         positions: G.P.Const,
 
@@ -121,8 +121,8 @@ fn BoundsContext(comptime l: vertex.layout.Layout) type {
     };
 }
 
-fn FaceNormalsContext(comptime l: vertex.layout.Layout) type {
-    const G = vertex.geometry.Geometry(l);
+fn FaceNormalsContext(comptime l: vertex.internal.layout.Layout) type {
+    const G = vertex.internal.geometry.Geometry(l);
     return struct {
         positions: G.P.Const,
         faces: []const [3]u32,
@@ -135,8 +135,8 @@ fn FaceNormalsContext(comptime l: vertex.layout.Layout) type {
     };
 }
 
-fn VertexNormalsContext(comptime l: vertex.layout.Layout) type {
-    const G = vertex.geometry.Geometry(l);
+fn VertexNormalsContext(comptime l: vertex.internal.layout.Layout) type {
+    const G = vertex.internal.geometry.Geometry(l);
     return struct {
         positions: G.P.Const,
         faces: []const [3]u32,
@@ -149,8 +149,8 @@ fn VertexNormalsContext(comptime l: vertex.layout.Layout) type {
     };
 }
 
-fn UniqueEdgesContext(comptime l: vertex.layout.Layout) type {
-    const G = vertex.geometry.Geometry(l);
+fn UniqueEdgesContext(comptime l: vertex.internal.layout.Layout) type {
+    const G = vertex.internal.geometry.Geometry(l);
     return struct {
         gpa: std.mem.Allocator,
         faces: []const [3]u32,
