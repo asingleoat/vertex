@@ -23,6 +23,8 @@ const layout = @import("../geometry/layout.zig");
 const geometry = @import("../geometry/geometry.zig");
 const fixtures = @import("../geometry/fixtures.zig");
 const polygon = @import("../geometry/polygon.zig");
+const mesh = @import("../geometry/mesh.zig");
+const polyline = @import("../geometry/polyline.zig");
 
 /// A point or direction in three dimensions, and the value type every stream
 /// accessor takes and returns. Construct one with `Vec3.init(x, y, z)` or
@@ -92,10 +94,27 @@ pub const CapStrategy = polygon.Strategy;
 /// Options for `capBoundaries`: the strategy and the coincidence tolerance.
 pub const CapOptions = polygon.CapOptions;
 
+/// A triangle mesh under construction, owning plain slices of vertices and
+/// triangles. This is what `loft`, `indexSoup` and `stl.decode` return, and
+/// what the geometry operations build with; a `Positions` stream is made from
+/// one only when it is sent.
+pub const Mesh = mesh.Mesh;
 
+/// Moves every vertex by an offset, in place. Connectivity is unaffected, so it
+/// applies to the vertex array of any geometric type.
+pub const translate = mesh.translate;
 
+/// A sequence of vertices joined by segments, owning both. The segments are the
+/// polyline; the vertices are the table their ends index.
+pub const Polyline = polyline.Polyline;
 
+/// Generates a closed regular polygon inscribed in a circle in the z = 0 plane,
+/// wound counter-clockwise about +z.
+pub const circle = polyline.circle;
 
+/// Builds the triangulated surface spanning two polylines, pairing their
+/// segments. Use it for tubes, cones, extrusions and ribbons.
+pub const loft = polyline.loft;
 
 
 
@@ -108,10 +127,13 @@ pub const CapOptions = polygon.CapOptions;
 /// defined or is ill-conditioned.
 pub const newellNormal = polygon.newellNormal;
 
-
-/// A generated mesh owning its `positions` and its `faces`, returned by the
-/// generators below and released with `deinit`.
-pub const Mesh = fixtures.current.Mesh;
+/// A generated mesh holding a `Positions` stream rather than a slice of
+/// vertices, returned by the generators below and released with `deinit`.
+/// ---
+/// The generators are parameterized by vertex layout and build the stream
+/// directly, which is what lets `bench/` run all three layouts over the same
+/// inputs. Everything else builds a `Mesh` and converts once, at the send.
+pub const FixtureMesh = fixtures.current.Mesh;
 
 /// Generates a flat `nx` by `ny` triangulated grid in the XY plane, spanning
 /// `size` and centred on the origin. The starting surface for height fields,

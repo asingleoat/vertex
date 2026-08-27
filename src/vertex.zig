@@ -54,8 +54,10 @@ pub const Positions = shapes.Positions;
 pub const Vec3 = shapes.Vec3;
 /// An axis-aligned bounding box; see `shapes.Aabb`.
 pub const Aabb = shapes.Aabb;
-/// A generated mesh owning its positions and faces; see `shapes.Mesh`.
+/// A triangle mesh under construction, vertices and faces; see `shapes.Mesh`.
 pub const Mesh = shapes.Mesh;
+/// A generated mesh holding a `Positions` stream; see `shapes.FixtureMesh`.
+pub const FixtureMesh = shapes.FixtureMesh;
 
 /// Exports a stepping sketch's C ABI for viewer-driven stepping; see
 /// `client/dylib.zig`. Used only by `steps/*.zig`.
@@ -70,6 +72,10 @@ pub const internal = struct {
     pub const geometry = @import("geometry/geometry.zig");
     /// Pure: procedural meshes and point sets, parameterized by layout.
     pub const fixtures = @import("geometry/fixtures.zig");
+    /// Pure: the mesh under construction, and the transforms over its vertices.
+    pub const mesh = @import("geometry/mesh.zig");
+    /// Pure: polylines, and the surfaces lofted between them.
+    pub const polyline = @import("geometry/polyline.zig");
     /// Pure: boundary recovery and capping of open surfaces.
     pub const polygon = @import("geometry/polygon.zig");
     /// Edge: polygon triangulation, which is Manifold behind a C ABI.

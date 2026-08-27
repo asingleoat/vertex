@@ -14,7 +14,7 @@ const Positions = vertex.Positions;
 /// Owned smoothing state. `deinit` releases every allocation through the same
 /// allocator that `init` received; position access is layout-independent.
 pub const State = struct {
-    sphere: vertex.shapes.Mesh,
+    sphere: vertex.shapes.FixtureMesh,
     next_positions: Positions.Mut,
     edges: std.ArrayList([2]u32),
     neighbor_offsets: []u32,
