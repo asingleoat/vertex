@@ -280,6 +280,10 @@ fn baseMeshPipeline(shader: sg.Shader, label: [*c]const u8) sg.PipelineDesc {
         .depth = .{ .compare = .LESS_EQUAL, .write_enabled = true },
         .index_type = .UINT32,
         .cull_mode = .NONE,
+        // Counter-clockwise is front. Sokol defaults to clockwise, and nothing
+        // here culls, but the fragment shader tints back faces and so depends
+        // on this matching the outward-normal convention geometry is built to.
+        .face_winding = .CCW,
         .label = label,
     };
 }

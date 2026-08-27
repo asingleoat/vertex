@@ -22,10 +22,16 @@ layout(binding=1) uniform fs_params {
 };
 in vec3 world_pos;
 out vec4 frag_color;
+// Back faces are tinted toward red. Shading alone cannot distinguish them: the
+// normal comes from screen-space derivatives of the world position, which carry
+// no winding information, so gl_FrontFacing is the only available signal.
+const vec3 back_face_tint = vec3(0.75, 0.18, 0.15);
 void main() {
     vec3 n = normalize(cross(dFdx(world_pos), dFdy(world_pos)));
     float ndl = abs(dot(n, normalize(light_dir.xyz)));
-    frag_color = vec4(color.rgb * (0.25 + 0.75 * ndl), color.a);
+    vec3 rgb = color.rgb;
+    if (!gl_FrontFacing) rgb = mix(rgb, back_face_tint, 0.75);
+    frag_color = vec4(rgb * (0.25 + 0.75 * ndl), color.a);
 }
 @end
 
