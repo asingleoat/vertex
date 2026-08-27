@@ -116,8 +116,18 @@ pub const circle = polyline.circle;
 /// segments. Use it for tubes, cones, extrusions and ribbons.
 pub const loft = polyline.loft;
 
+/// Builds a closed cylinder standing on the z = 0 plane, wound outward and
+/// ready to use as a boolean operand. Place it with `translate`.
+pub const cylinder = @import("../geometry/solids.zig").cylinder;
 
+/// Builds a closed rectangular prism from three side lengths, wound outward.
+/// `Placement` says whether it is centred on the origin, has its minimum corner
+/// there, or stands on the z = 0 plane.
+pub const box = @import("../geometry/solids.zig").box;
 
+/// Where `box` sits relative to the origin: `.centered`, `.corner` or
+/// `.on_plane`.
+pub const Placement = @import("../geometry/solids.zig").Placement;
 
 /// Mesh booleans: union, difference and intersection over closed surfaces.
 /// ---
