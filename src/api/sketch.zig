@@ -29,6 +29,8 @@
 //! point.
 const std = @import("std");
 const stl_file = @import("../io/stl_file.zig");
+const mesh_mod = @import("../geometry/mesh.zig");
+const polyline_mod = @import("../geometry/polyline.zig");
 const layout = @import("../geometry/layout.zig");
 const platform = @import("../platform/platform.zig");
 const protocol = @import("../protocol/protocol.zig");
@@ -238,6 +240,49 @@ pub const Connection = struct {
     /// call returns.
     pub fn meshPositions(self: *Connection, name: []const u8, positions: layout.Positions.Const) Error!void {
         return self.state.meshPositions(self.currentSink(), name, positions);
+    }
+
+    /// Registers a `Mesh` under `name`, copying it into a stream on the way.
+    ///
+    /// This is `mesh` for geometry held the way it is built, in plain slices of
+    /// vertices, rather than in a `Positions` stream. The copy is what the wire
+    /// format needs and is made into a temporary the call frees before
+    /// returning, so `gpa` is borrowed only for the duration.
+    ///
+    /// A caller sending large geometry repeatedly should reach for
+    /// `sharedPositions` and `mesh` instead, which places the vertices in memory
+    /// the viewer maps rather than copying them; this convenience always copies.
+    pub fn registerMesh(
+        self: *Connection,
+        gpa: std.mem.Allocator,
+        name: []const u8,
+        value: mesh_mod.Mesh,
+        options: GeometryOptions,
+    ) (Error || std.mem.Allocator.Error)!void {
+        const stream = try layout.Positions.alloc(gpa, @intCast(value.vertices.len));
+        defer stream.free(gpa);
+        stream.setAll(value.vertices);
+        return self.mesh(name, stream.toConst(), value.faces, options);
+    }
+
+    /// Registers a `Polyline` under `name` as a set of line segments, copying
+    /// it into a stream on the way.
+    ///
+    /// This is `lines` for a polyline held the way it is built. The segments are
+    /// passed through unchanged, so a polyline that is closed, open, or several
+    /// disjoint runs all register as what they are. See `registerMesh` on the
+    /// copy and on avoiding it.
+    pub fn registerPolyline(
+        self: *Connection,
+        gpa: std.mem.Allocator,
+        name: []const u8,
+        value: polyline_mod.Polyline,
+        options: GeometryOptions,
+    ) (Error || std.mem.Allocator.Error)!void {
+        const stream = try layout.Positions.alloc(gpa, @intCast(value.vertices.len));
+        defer stream.free(gpa);
+        stream.setAll(value.vertices);
+        return self.lines(name, stream.toConst(), value.segments, options);
     }
 
     /// Registers a point cloud under `name`, replacing any geometry previously
@@ -614,11 +659,29 @@ test "live unix socket round-trip delivers the frame sequence" {
     try connection.step();
     try connection.log(.info, "hi");
 
+    // The convenience sends produce the same frames as the calls above; what
+    // they add is the copy out of a Mesh or a Polyline into a stream.
+    var corner_vertices = [_]layout.Vec3{ .init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0) };
+    var corner_faces = [_][3]u32{.{ 0, 1, 2 }};
+    try connection.registerMesh(
+        testing.allocator,
+        "corner",
+        .{ .vertices = &corner_vertices, .faces = &corner_faces },
+        .{},
+    );
+    var ring_segments = [_][2]u32{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 0 } };
+    try connection.registerPolyline(
+        testing.allocator,
+        "ring",
+        .{ .vertices = &corner_vertices, .segments = &ring_segments },
+        .{},
+    );
+
     try connection.finish();
     thread.join();
 
     try testing.expect(!live.failed);
-    const expected = [_]protocol.Kind{ .hello, .begin_run, .mesh, .mesh_positions, .end_frame, .begin_frame, .log, .end_frame, .end_run };
+    const expected = [_]protocol.Kind{ .hello, .begin_run, .mesh, .mesh_positions, .end_frame, .begin_frame, .log, .mesh, .lines, .end_frame, .end_run };
     try testing.expectEqualSlices(protocol.Kind, &expected, live.kinds[0..live.len]);
     try testing.expectEqual(@as(u32, 3), live.mesh_vertex_count);
     // A ratchet, not a tolerance: the day a platform gains shared memory the
