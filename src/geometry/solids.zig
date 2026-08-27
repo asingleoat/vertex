@@ -11,20 +11,10 @@ const mesh_mod = @import("mesh.zig");
 const polyline = @import("polyline.zig");
 const polygon = @import("polygon.zig");
 
+const Placement = mesh_mod.Placement;
+
 const Vec3 = layout.Vec3;
 const Mesh = mesh_mod.Mesh;
-
-/// Where a solid sits relative to the origin.
-pub const Placement = enum {
-    /// Centred on the origin, spanning half its size either side on every axis.
-    centered,
-    /// Its minimum corner at the origin, spanning zero to its size on every
-    /// axis, so the whole solid lies in the positive octant.
-    corner,
-    /// Centred in x and y with its base on the z = 0 plane, which is where
-    /// `cylinder` puts itself and how a part sits on a print bed.
-    on_plane,
-};
 
 /// Failure of a solid: allocation, or the triangulation of a cap.
 pub const Error = polygon.CapError;
@@ -47,13 +37,9 @@ pub fn cylinder(
 ) Error!Mesh {
     if (segment_count < 3) return .empty;
 
-    const bottom = try polyline.circle(gpa, radius, segment_count);
-    defer bottom.deinit(gpa);
-    const top = try bottom.clone(gpa);
-    defer top.deinit(gpa);
-    mesh_mod.translate(top.vertices, .init(0, 0, height));
-
-    const wall = try polyline.loft(gpa, bottom, top, 0, false);
+    const profile = try polyline.circle(gpa, radius, segment_count);
+    defer profile.deinit(gpa);
+    const wall = try polyline.extrude(gpa, profile, .init(0, 0, height));
     defer wall.deinit(gpa);
 
     var vertices: std.ArrayList(Vec3) = .empty;

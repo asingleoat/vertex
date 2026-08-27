@@ -112,6 +112,20 @@ pub const Polyline = polyline.Polyline;
 /// wound counter-clockwise about +z.
 pub const circle = polyline.circle;
 
+/// Generates a closed rectangle in the z = 0 plane, wound counter-clockwise.
+pub const rectangle = polyline.rectangle;
+
+/// Generates a closed square in the z = 0 plane. `rectangle` with equal sides.
+pub const square = polyline.square;
+
+/// Sweeps a polyline along a displacement, which is the linear extrusion of a
+/// two-dimensional profile. Produces the wall; `capBoundaries` closes it.
+pub const extrude = polyline.extrude;
+
+/// The area vector of a closed polyline: its magnitude the area enclosed, its
+/// direction the normal its winding gives. Zero for one enclosing no area.
+pub const areaVector = polyline.areaVector;
+
 /// Builds the triangulated surface spanning two polylines, pairing their
 /// segments. Use it for tubes, cones, extrusions and ribbons.
 pub const loft = polyline.loft;
@@ -125,9 +139,9 @@ pub const cylinder = @import("../geometry/solids.zig").cylinder;
 /// there, or stands on the z = 0 plane.
 pub const box = @import("../geometry/solids.zig").box;
 
-/// Where `box` sits relative to the origin: `.centered`, `.corner` or
-/// `.on_plane`.
-pub const Placement = @import("../geometry/solids.zig").Placement;
+/// Where a generated shape sits relative to the origin: `.centered`,
+/// `.corner` or `.on_plane`.
+pub const Placement = mesh.Placement;
 
 /// Mesh booleans: union, difference and intersection over closed surfaces.
 /// ---

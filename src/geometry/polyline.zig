@@ -67,6 +67,45 @@ pub fn circle(
     return .{ .vertices = vertices, .segments = segments };
 }
 
+/// Generates a closed rectangle of `width` along x and `height` along y, in the
+/// z = 0 plane, wound counter-clockwise about +z.
+///
+/// `placement` says where it sits, as it does for `box`; a rectangle has no
+/// height to raise, so `.centered` and `.on_plane` give the same shape. Either
+/// side may be zero, which yields a closed polyline of no area rather than an
+/// error, and neither may be negative.
+pub fn rectangle(
+    gpa: std.mem.Allocator,
+    width: f32,
+    height: f32,
+    placement: mesh_mod.Placement,
+) std.mem.Allocator.Error!Polyline {
+    std.debug.assert(width >= 0 and height >= 0);
+    const min: Vec3 = switch (placement) {
+        .corner => .zero,
+        .centered, .on_plane => .init(-width / 2, -height / 2, 0),
+    };
+    const vertices = try gpa.dupe(Vec3, &.{
+        .init(min.x, min.y, 0),
+        .init(min.x + width, min.y, 0),
+        .init(min.x + width, min.y + height, 0),
+        .init(min.x, min.y + height, 0),
+    });
+    errdefer gpa.free(vertices);
+    const segments = try gpa.dupe([2]u32, &.{ .{ 0, 1 }, .{ 1, 2 }, .{ 2, 3 }, .{ 3, 0 } });
+    return .{ .vertices = vertices, .segments = segments };
+}
+
+/// Generates a closed square of the given `side`. This is `rectangle` with both
+/// sides equal.
+pub fn square(
+    gpa: std.mem.Allocator,
+    side: f32,
+    placement: mesh_mod.Placement,
+) std.mem.Allocator.Error!Polyline {
+    return rectangle(gpa, side, side, placement);
+}
+
 /// Builds the triangulated surface spanning two polylines.
 ///
 /// Traversal is over segments rather than over vertices, so a closed polyline
@@ -159,6 +198,45 @@ pub fn loft(
     }
 
     return .{ .vertices = vertices, .faces = faces };
+}
+
+/// Sweeps a polyline along `displacement`, returning the surface it traces.
+///
+/// This is `loft` between the profile and a copy of it moved by `displacement`,
+/// which is the linear extrusion of a two-dimensional shape when the profile
+/// lies in a plane. It produces the wall only: a closed profile gives an open
+/// tube, which `polygon.capBoundaries` closes into a solid.
+///
+/// The winding follows the extrusion rather than the caller. A profile
+/// enclosing area has a direction of its own, and the faces are wound to point
+/// away from the volume swept whichever way `displacement` runs, so extruding
+/// down does not quietly turn the surface inside out. A profile enclosing no
+/// area, an open one among them, has no such direction and is swept as given.
+pub fn extrude(
+    gpa: std.mem.Allocator,
+    profile: Polyline,
+    displacement: Vec3,
+) std.mem.Allocator.Error!Mesh {
+    const far = try profile.clone(gpa);
+    defer far.deinit(gpa);
+    mesh_mod.translate(far.vertices, displacement);
+    return loft(gpa, profile, far, 0, displacement.dot(areaVector(profile)) < 0);
+}
+
+/// The area vector of a closed polyline: its magnitude is the area enclosed and
+/// its direction the normal the winding gives, by the right-hand rule.
+///
+/// This is Newell's sum taken over the segments rather than over an ordered
+/// loop, so it needs no traversal and does not care what order the segments are
+/// listed in. It is zero for a polyline enclosing no area, an open one
+/// included, which is what makes it usable as a test for having a direction at
+/// all. Allocates nothing.
+pub fn areaVector(profile: Polyline) Vec3 {
+    var sum: Vec3 = .zero;
+    for (profile.segments) |segment| {
+        sum = sum.add(profile.vertices[segment[0]].cross(profile.vertices[segment[1]]));
+    }
+    return sum.scale(0.5);
 }
 
 /// Marks a vertex that no surviving face refers to.
@@ -341,4 +419,97 @@ fn loftAllocationCase(gpa: std.mem.Allocator) !void {
 
 test "circle and loft handle every allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, loftAllocationCase, .{});
+}
+
+test "a rectangle is closed, flat and counter-clockwise" {
+    const outline = try rectangle(testing.allocator, 3, 2, .corner);
+    defer outline.deinit(testing.allocator);
+    try testing.expectEqual(4, outline.vertices.len);
+    try testing.expectEqual(4, outline.segments.len);
+    for (outline.vertices) |v| try testing.expectEqual(@as(f32, 0), v.z);
+    // Its area vector is the enclosed area, pointing along +z.
+    try testing.expect(areaVector(outline).eql(.init(0, 0, 6)));
+}
+
+test "each placement puts the rectangle where it says" {
+    const cornered = try rectangle(testing.allocator, 2, 4, .corner);
+    defer cornered.deinit(testing.allocator);
+    try testing.expect(cornered.vertices[0].eql(.zero));
+    try testing.expect(cornered.vertices[2].eql(.init(2, 4, 0)));
+
+    // A flat shape has no height to raise, so these two coincide.
+    for ([_]mesh_mod.Placement{ .centered, .on_plane }) |placement| {
+        const middle = try rectangle(testing.allocator, 2, 4, placement);
+        defer middle.deinit(testing.allocator);
+        try testing.expect(middle.vertices[0].eql(.init(-1, -2, 0)));
+        try testing.expect(middle.vertices[2].eql(.init(1, 2, 0)));
+    }
+}
+
+test "a square is a rectangle with equal sides" {
+    const s = try square(testing.allocator, 5, .centered);
+    defer s.deinit(testing.allocator);
+    const r = try rectangle(testing.allocator, 5, 5, .centered);
+    defer r.deinit(testing.allocator);
+    for (s.vertices, r.vertices) |a, b| try testing.expect(a.eql(b));
+}
+
+test "areaVector does not depend on the order the segments are listed in" {
+    const outline = try rectangle(testing.allocator, 3, 2, .centered);
+    defer outline.deinit(testing.allocator);
+    const forward = areaVector(outline);
+    std.mem.reverse([2]u32, outline.segments);
+    try testing.expect(areaVector(outline).eql(forward));
+    // An open polyline encloses nothing and so has no direction.
+    const open: Polyline = .{ .vertices = outline.vertices, .segments = outline.segments[0..2] };
+    try testing.expect(!areaVector(open).eql(forward));
+}
+
+test "extruding a closed profile winds outward whichever way it runs" {
+    const polygon = @import("polygon.zig");
+    for ([_]f32{ 2, -2 }) |height| {
+        const profile = try rectangle(testing.allocator, 2, 2, .centered);
+        defer profile.deinit(testing.allocator);
+        const wall = try extrude(testing.allocator, profile, .init(0, 0, height));
+        defer wall.deinit(testing.allocator);
+
+        var vertices: std.ArrayList(Vec3) = .empty;
+        defer vertices.deinit(testing.allocator);
+        try vertices.appendSlice(testing.allocator, wall.vertices);
+        var faces: std.ArrayList([3]u32) = .empty;
+        defer faces.deinit(testing.allocator);
+        try faces.appendSlice(testing.allocator, wall.faces);
+        try polygon.capBoundaries(testing.allocator, &vertices, &faces, .{ .strategy = .fan });
+
+        // Positive either way: the volume is the same box and the faces point
+        // out of it, which extruding downward would otherwise invert.
+        const solid: Mesh = .{ .vertices = vertices.items, .faces = faces.items };
+        try testing.expectApproxEqRel(@as(f64, 8), signedVolume(solid), 1e-5);
+    }
+}
+
+test "extruding an open profile sweeps a ribbon" {
+    const vertices = try testing.allocator.dupe(Vec3, &.{
+        .init(0, 0, 0), .init(1, 0, 0), .init(2, 0, 0),
+    });
+    const segments = try testing.allocator.dupe([2]u32, &.{ .{ 0, 1 }, .{ 1, 2 } });
+    const open: Polyline = .{ .vertices = vertices, .segments = segments };
+    defer open.deinit(testing.allocator);
+
+    const ribbon = try extrude(testing.allocator, open, .init(0, 0, 1));
+    defer ribbon.deinit(testing.allocator);
+    try testing.expectEqual(4, ribbon.faces.len);
+    try testing.expectEqual(6, ribbon.vertices.len);
+}
+
+fn rectangleAllocationCase(gpa: std.mem.Allocator) !void {
+    const outline = try rectangle(gpa, 1, 2, .centered);
+    defer outline.deinit(gpa);
+    const wall = try extrude(gpa, outline, .init(0, 0, 1));
+    defer wall.deinit(gpa);
+    if (wall.faces.len != 8) return error.TestUnexpectedResult;
+}
+
+test "rectangle and extrude handle every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, rectangleAllocationCase, .{});
 }

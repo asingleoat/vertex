@@ -11,6 +11,19 @@ const layout = @import("layout.zig");
 
 const Vec3 = layout.Vec3;
 
+/// Where a generated shape sits relative to the origin.
+pub const Placement = enum {
+    /// Centred on the origin, spanning half its size either side on every axis.
+    centered,
+    /// Its minimum corner at the origin, spanning zero to its size on every
+    /// axis, so the whole solid lies in the positive octant.
+    corner,
+    /// Centred in x and y with its base on the z = 0 plane, which is where
+    /// `cylinder` puts itself and how a part sits on a print bed. A flat shape
+    /// has no height to raise, so for one this and `.centered` coincide.
+    on_plane,
+};
+
 /// A triangle mesh owning its vertices and its faces.
 /// ---
 /// `faces` indexes `vertices`; no other invariant is imposed, so a mesh may be
