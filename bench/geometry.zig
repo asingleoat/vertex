@@ -40,7 +40,6 @@ fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny:
 
     const vertex_count: u64 = mesh.positions.len();
     const face_count: u64 = mesh.faces.len;
-    const iters = iterationCount(vertex_count);
     const layout_tag = @tagName(l);
 
     var bounds_context: BoundsContext(l) = .{ .positions = mesh.positions.toConst() };
@@ -49,7 +48,7 @@ fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny:
         "geometry/bounds",
         layout_tag,
         vertex_count,
-        iters,
+
         .{ .elements = vertex_count, .unit = "verts/s" },
         &bounds_context,
         BoundsContext(l).run,
@@ -65,7 +64,7 @@ fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny:
         "geometry/faceNormals",
         layout_tag,
         vertex_count,
-        iters,
+
         .{ .elements = face_count, .unit = "faces/s" },
         &face_context,
         FaceNormalsContext(l).run,
@@ -81,7 +80,7 @@ fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny:
         "geometry/vertexNormals",
         layout_tag,
         vertex_count,
-        iters,
+
         .{ .elements = vertex_count, .unit = "verts/s" },
         &vertex_context,
         VertexNormalsContext(l).run,
@@ -97,17 +96,11 @@ fn benchGrid(comptime l: vertex.internal.layout.Layout, io: std.Io, nx: u32, ny:
         "geometry/uniqueEdges",
         layout_tag,
         vertex_count,
-        iters,
+
         .{ .elements = face_count, .unit = "faces/s" },
         &edges_context,
         UniqueEdgesContext(l).run,
     );
-}
-
-fn iterationCount(vertex_count: u64) usize {
-    if (vertex_count <= 2_000) return 20;
-    if (vertex_count <= 200_000) return 4;
-    return 1;
 }
 
 fn BoundsContext(comptime l: vertex.internal.layout.Layout) type {

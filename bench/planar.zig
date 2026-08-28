@@ -37,7 +37,7 @@ pub fn main() !void {
         vertex.internal.mesh.translate(b.vertices, .init(0.5, 0, 0));
 
         var context: Boolean = .{ .gpa = gpa, .a = a, .b = b };
-        harness.bench(io, "planar/boolean two rings", "-", n, 8, .{ .elements = n, .unit = "verts/s" }, &context, Boolean.run);
+        harness.bench(io, "planar/boolean two rings", "-", n, .{ .elements = n, .unit = "verts/s" }, &context, Boolean.run);
     }
 
     for ([_]struct { label: []const u8, stagger: f32 }{
@@ -53,7 +53,7 @@ pub fn main() !void {
 
             const n = 4 * m;
             var context: Boolean = .{ .gpa = gpa, .a = a, .b = b };
-            harness.bench(io, arrangement.label, "-", n, 8, .{ .elements = n, .unit = "verts/s" }, &context, Boolean.run);
+            harness.bench(io, arrangement.label, "-", n, .{ .elements = n, .unit = "verts/s" }, &context, Boolean.run);
         }
     }
 
@@ -61,7 +61,7 @@ pub fn main() !void {
         const a = try vertex.internal.polyline.circle(gpa, 1, n);
         defer a.deinit(gpa);
         var context: Offset = .{ .gpa = gpa, .profile = a };
-        harness.bench(io, "planar/offset one ring", "-", n, 8, .{ .elements = n, .unit = "verts/s" }, &context, Offset.run);
+        harness.bench(io, "planar/offset one ring", "-", n, .{ .elements = n, .unit = "verts/s" }, &context, Offset.run);
     }
 }
 

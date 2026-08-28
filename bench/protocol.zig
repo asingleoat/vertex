@@ -1,19 +1,19 @@
+//! Wire protocol encode and decode benchmark, over all three vertex layouts.
+//!
+//! Encoding copies the payload; decoding does not, being a view over bytes
+//! already in memory, so the two are reported in different units and only the
+//! first has a meaningful rate.
 const std = @import("std");
 const vertex = @import("vertex");
+const harness = @import("lib/harness.zig");
 
 const protocol = vertex.internal.protocol;
 const layout = vertex.internal.layout;
-const sample_count = 21;
-
-const Stats = struct {
-    min_ns: u64,
-    median_ns: u64,
-};
 
 pub fn main() !void {
     const gpa = std.heap.smp_allocator;
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+    var io_state: harness.Io = .{};
+    const io = io_state.get();
 
     inline for ([_]u32{ 1_000, 100_000, 1_000_000 }) |n| {
         try benchmarkSize(gpa, io, n);
@@ -42,29 +42,45 @@ fn benchmarkSize(gpa: std.mem.Allocator, io: std.Io, n: u32) !void {
     const header = try protocol.decodeHeader(frame);
     _ = try protocol.decodeInline(header, payload_storage);
 
-    const encode_iterations: u32 = switch (n) {
-        1_000 => 200,
-        100_000 => 8,
-        else => 2,
+    const tag = @tagName(layout.layout);
+    var encode_context: Encode = .{
+        .encoded = &encoded,
+        .frame_storage = frame_storage,
+        .positions = positions.toConst(),
+        .faces = faces,
     };
-    const decode_iterations: u32 = switch (n) {
-        1_000 => 20_000,
-        100_000 => 10_000,
-        else => 5_000,
-    };
+    harness.bench(io, "protocol/encode", tag, n, .{ .elements = frame.len, .unit = "bytes/s" }, &encode_context, Encode.run);
 
-    const encode_stats = try measureEncode(
-        io,
-        &encoded,
-        frame_storage,
-        positions.toConst(),
-        faces,
-        encode_iterations,
-    );
-    const decode_stats = try measureDecode(io, frame, payload_storage, decode_iterations);
-    report("encode", n, encoded.totalLen(), encode_stats);
-    report("decode", n, null, decode_stats);
+    var decode_context: Decode = .{ .frame = frame, .payload = payload_storage };
+    harness.bench(io, "protocol/decode", tag, n, .{ .elements = 1, .unit = "views/s" }, &decode_context, Decode.run);
 }
+
+const Encode = struct {
+    encoded: *protocol.Encoded,
+    frame_storage: []align(protocol.section_alignment) u8,
+    positions: layout.Positions.Const,
+    faces: []const [3]u32,
+
+    fn run(self: *Encode) usize {
+        protocol.encodeMesh(self.encoded, "grid", .d3, self.positions, self.faces);
+        const frame = self.encoded.writeTo(self.frame_storage);
+        std.mem.doNotOptimizeAway(frame[frame.len - 1]);
+        return frame.len;
+    }
+};
+
+const Decode = struct {
+    frame: []const u8,
+    payload: []align(protocol.payload_alignment) const u8,
+
+    fn run(self: *Decode) usize {
+        const header = protocol.decodeHeader(self.frame) catch return 0;
+        const message = protocol.decodeInline(header, self.payload) catch return 0;
+        std.mem.doNotOptimizeAway(message.mesh.positions.bytes().ptr);
+        std.mem.doNotOptimizeAway(message.mesh.faces.ptr);
+        return message.mesh.faces.len;
+    }
+};
 
 fn fillGrid(positions: layout.Positions.Mut) void {
     for (0..positions.len()) |i| {
@@ -88,87 +104,5 @@ fn fillFaces(vertex_count: u32, faces: [][3]u32) void {
             random.uintLessThan(u32, vertex_count),
             random.uintLessThan(u32, vertex_count),
         };
-    }
-}
-
-fn measureEncode(
-    io: std.Io,
-    encoded: *protocol.Encoded,
-    frame_storage: []align(protocol.section_alignment) u8,
-    positions: layout.Positions.Const,
-    faces: []const [3]u32,
-    iterations: u32,
-) !Stats {
-    for (0..3) |_| {
-        protocol.encodeMesh(encoded, "grid", .d3, positions, faces);
-        const frame = encoded.writeTo(frame_storage);
-        std.mem.doNotOptimizeAway(frame.ptr);
-    }
-
-    var samples: [sample_count]u64 = undefined;
-    for (&samples) |*sample| {
-        const t0 = std.Io.Clock.awake.now(io);
-        for (0..iterations) |_| {
-            protocol.encodeMesh(encoded, "grid", .d3, positions, faces);
-            const frame = encoded.writeTo(frame_storage);
-            std.mem.doNotOptimizeAway(frame.ptr);
-            std.mem.doNotOptimizeAway(frame[frame.len - 1]);
-        }
-        const elapsed: i96 = t0.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
-        sample.* = @intCast(@divTrunc(elapsed, iterations));
-    }
-    return summarize(&samples);
-}
-
-fn measureDecode(
-    io: std.Io,
-    frame: []const u8,
-    payload: []align(protocol.payload_alignment) const u8,
-    iterations: u32,
-) !Stats {
-    for (0..3) |_| {
-        const header = try protocol.decodeHeader(frame);
-        const message = try protocol.decodeInline(header, payload);
-        std.mem.doNotOptimizeAway(message.mesh.positions.bytes().ptr);
-    }
-
-    var samples: [sample_count]u64 = undefined;
-    for (&samples) |*sample| {
-        const t0 = std.Io.Clock.awake.now(io);
-        for (0..iterations) |_| {
-            const header = try protocol.decodeHeader(frame);
-            const message = try protocol.decodeInline(header, payload);
-            std.mem.doNotOptimizeAway(message.mesh.positions.bytes().ptr);
-            std.mem.doNotOptimizeAway(message.mesh.faces.ptr);
-        }
-        const elapsed: i96 = t0.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds();
-        sample.* = @intCast(@divTrunc(elapsed, iterations));
-    }
-    return summarize(&samples);
-}
-
-fn summarize(samples: *[sample_count]u64) Stats {
-    std.mem.sort(u64, samples, {}, std.sort.asc(u64));
-    return .{
-        .min_ns = samples[0],
-        .median_ns = samples[samples.len / 2],
-    };
-}
-
-/// `byte_count` null: the operation is O(1) (decode is a zero-copy view), so
-/// throughput in bytes would be meaningless; report time only.
-fn report(op: []const u8, n: u32, byte_count: ?usize, stats: Stats) void {
-    if (byte_count) |bytes| {
-        const gb_per_second = @as(f64, @floatFromInt(bytes)) /
-            @as(f64, @floatFromInt(@max(stats.min_ns, 1)));
-        std.debug.print(
-            "protocol/{s} layout={s} n={d} min={d} med={d} {d:.3}GB/s\n",
-            .{ op, @tagName(layout.layout), n, stats.min_ns, stats.median_ns, gb_per_second },
-        );
-    } else {
-        std.debug.print(
-            "protocol/{s} layout={s} n={d} min={d} med={d} (O(1) view)\n",
-            .{ op, @tagName(layout.layout), n, stats.min_ns, stats.median_ns },
-        );
     }
 }

@@ -49,23 +49,23 @@ pub fn main() !void {
     defer gpa.free(out_faces);
 
     var decode_binary: DecodeBinary = .{ .bytes = binary, .vertices = out_vertices, .faces = out_faces };
-    harness.bench(io, "stl/decodeBinary", "-", facets, 16, .{ .elements = facets, .unit = "facets/s" }, &decode_binary, DecodeBinary.run);
+    harness.bench(io, "stl/decodeBinary", "-", facets, .{ .elements = facets, .unit = "facets/s" }, &decode_binary, DecodeBinary.run);
 
     var encode_binary: EncodeBinary = .{ .vertices = vertices, .faces = source.faces, .out = binary };
-    harness.bench(io, "stl/encodeBinary", "-", facets, 16, .{ .elements = facets, .unit = "facets/s" }, &encode_binary, EncodeBinary.run);
+    harness.bench(io, "stl/encodeBinary", "-", facets, .{ .elements = facets, .unit = "facets/s" }, &encode_binary, EncodeBinary.run);
 
     var decode_ascii: DecodeAscii = .{ .gpa = gpa, .bytes = ascii.items };
-    harness.bench(io, "stl/decodeAscii", "-", facets, 4, .{ .elements = facets, .unit = "facets/s" }, &decode_ascii, DecodeAscii.run);
+    harness.bench(io, "stl/decodeAscii", "-", facets, .{ .elements = facets, .unit = "facets/s" }, &decode_ascii, DecodeAscii.run);
 
     var encode_ascii: EncodeAscii = .{ .gpa = gpa, .vertices = vertices, .faces = source.faces };
-    harness.bench(io, "stl/encodeAscii", "-", facets, 4, .{ .elements = facets, .unit = "facets/s" }, &encode_ascii, EncodeAscii.run);
+    harness.bench(io, "stl/encodeAscii", "-", facets, .{ .elements = facets, .unit = "facets/s" }, &encode_ascii, EncodeAscii.run);
 
     // Recovering the index array is what an imported mesh needs before it is a
     // surface, and it runs over three vertices per facet.
     try stl.decodeBinary(binary, out_vertices, out_faces, null);
     const soup_vertices: u64 = out_vertices.len;
     var index_soup: IndexSoup = .{ .gpa = gpa, .vertices = out_vertices, .faces = out_faces };
-    harness.bench(io, "indexing/indexSoup", "-", soup_vertices, 8, .{ .elements = soup_vertices, .unit = "verts/s" }, &index_soup, IndexSoup.run);
+    harness.bench(io, "indexing/indexSoup", "-", soup_vertices, .{ .elements = soup_vertices, .unit = "verts/s" }, &index_soup, IndexSoup.run);
 
     const indexed = try vertex.internal.indexing.indexSoup(gpa, out_vertices, out_faces);
     defer indexed.deinit(gpa);
