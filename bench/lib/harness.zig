@@ -127,4 +127,37 @@ pub fn bench(
         "{s} layout={s} n={d} ps={d} repeat={d} samples={d} {s}={d}\n",
         .{ name, layout_tag, n, picoseconds, repeat, samples, throughput.unit, rate },
     );
+    record(io, name, layout_tag, n, picoseconds, repeat, samples);
+}
+
+/// Writes one measurement to standard output as a line of JSON.
+///
+/// The human-readable line goes to standard error and this to standard output,
+/// which is the whole of the machine-readable arrangement: `zig build bench >
+/// results.jsonl` collects every measurement of a run, from all of its
+/// executables, in order, with no file for them to contend over and nothing to
+/// truncate first.
+///
+/// One object per line rather than one array, so that appending is
+/// concatenation and a truncated run is still readable up to where it stopped.
+/// A failed write is ignored: a run that cannot record is still a run, and the
+/// comparison notices the measurement missing.
+///
+/// O(1), over one write.
+fn record(
+    io: std.Io,
+    name: []const u8,
+    layout_tag: []const u8,
+    n: u64,
+    picoseconds: u64,
+    repeat: u64,
+    samples: usize,
+) void {
+    var line: [512]u8 = undefined;
+    const text = std.fmt.bufPrint(
+        &line,
+        "{{\"name\":\"{s}\",\"layout\":\"{s}\",\"n\":{d},\"ps\":{d},\"repeat\":{d},\"samples\":{d}}}\n",
+        .{ name, layout_tag, n, picoseconds, repeat, samples },
+    ) catch return;
+    std.Io.File.stdout().writeStreamingAll(io, text) catch {};
 }

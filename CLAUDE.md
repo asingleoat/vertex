@@ -25,6 +25,9 @@ Read before writing code:
   5. Every allocating core function has a `checkAllAllocationFailures` test, and
      every hot path has an entry in `bench/`.
 - `HANDOFF-macos.md` — the state of the macOS port and what remains.
+- `MAINTENANCE.md` — what to do and when: the recurring obligations that come
+  with adding a function, an operation on a hot path, a dependency or a shader,
+  and what to run before calling a change done.
 
 Comments and documentation are plain technical English: full sentences,
 established terminology, and a statement of behaviour, arguments, return value,

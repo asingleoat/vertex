@@ -138,6 +138,10 @@ pub fn build(b: *Build) !void {
 
     // ---- benches: one ReleaseFast exe per bench/*.zig ----
     const bench_step = b.step("bench", "Build and run all benchmarks (ReleaseFast)");
+    const bench_check_step = b.step("bench-check", "Run the benchmarks and compare against bench/baseline.jsonl");
+    const check = b.addSystemCommand(&.{ "python3", "scripts/bench-check.py", "bench/baseline.jsonl" });
+    const record_step = b.step("bench-baseline", "Run the benchmarks and replace bench/baseline.jsonl");
+    const record = b.addSystemCommand(&.{ "python3", "scripts/bench-record.py" });
     if (try listZigFiles(b, "bench")) |names| for (names) |name| {
         const mod_bench_vertex = b.createModule(.{
             .root_source_file = b.path("src/vertex.zig"),
@@ -160,7 +164,17 @@ pub fn build(b: *Build) !void {
         const run = b.addRunArtifact(exe);
         run.has_side_effects = true;
         bench_step.dependOn(&run.step);
+
+        // The same executables again, with their machine-readable output
+        // captured. A separate run because the one above prints to the
+        // terminal, and a captured run is not a run anybody watches.
+        const measured = b.addRunArtifact(exe);
+        const captured = measured.captureStdOut(.{ .basename = b.fmt("{s}.jsonl", .{name}) });
+        check.addFileArg(captured);
+        record.addFileArg(captured);
     };
+    bench_check_step.dependOn(&check.step);
+    record_step.dependOn(&record.step);
 
     // ---- shaders: regenerate src/viewer/shaders/*.zig from *.glsl via sokol-shdc (from PATH) ----
     const shaders_step = b.step("shaders", "Regenerate src/viewer/shaders/*.zig with sokol-shdc (output is checked in)");

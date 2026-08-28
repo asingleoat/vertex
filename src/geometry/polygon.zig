@@ -249,7 +249,13 @@ pub const Strategy = enum {
     ///
     /// It gives no quality guarantee on a ring: the points of a circle are
     /// cocircular, so every triangulation of them is Delaunay, and what comes
-    /// back is the triangulator's tie-breaking rather than a best choice. That
+    /// back is the triangulator's tie-breaking rather than a best choice.
+    ///
+    /// It is also the one that gets slow. Past about twelve thousand points on
+    /// a ring the `f32` grid the coordinates sit on is coarser than the ring's
+    /// own detail, and Manifold's triangulator costs three hundred times what
+    /// it does on the same ring computed in `f64`. The closed forms below are a
+    /// thousand times faster there; see DESIGN.md. That
     /// tie-break is respectable on the cost columns above but is Manifold's to
     /// change.
     general,

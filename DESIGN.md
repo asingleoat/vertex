@@ -323,6 +323,18 @@ only by computing it. It reports a bad operand through `manifold_status` rather
 than by throwing, so an open or self-intersecting mesh comes back as
 `error.NotManifold` rather than as a plausible wrong answer.
 
+The `f32` this project works in has a measured cost at the triangulation seam,
+and it is not the conversion. Converting to `f64` is exact; what it produces is
+a set of values lying on the `f32` grid, and past about twelve thousand points
+on a unit circle that grid is coarser than the ring's own detail. Consecutive
+points become collinear where the circle is not, and Manifold's triangulator
+falls off a cliff: at 16384 points a ring computed in `f64` triangulates in 2.1
+ms and the same ring rounded through `f32` takes 703 ms, three hundred times
+longer. `bench/mesh.zig` keeps both as a pair, so the day the numeric
+parameterization under "Planned" lands the measurement says whether it helped.
+Until then, capping a ring that dense wants `.hierarchical` or `.centroid`,
+which are closed forms and a thousand times faster there than `.general`.
+
 Three properties of the triangulation seam are recorded because they are
 exceptions rather than oversights. `ManifoldVec2` is `double`, so that boundary
 converts `f32` to `f64` and back; the cost is proportional to the ring rather than to the mesh.
@@ -766,6 +778,11 @@ the wire format. Rendering needs no more than `f32`, but robust predicates such
 as orientation and in-circle tests, and coordinates at CAD scale, exceed a
 24-bit mantissa, and an intermediate value computed for those purposes should be
 able to hold `f64`.
+
+This is no longer only a question of precision at CAD scale. The triangulation
+seam has a measured three-hundredfold cliff on a ring of sixteen thousand points
+that exists only because the coordinates were rounded to `f32` first; see
+"Polygon triangulation and caps".
 
 The conversion point already exists and is one call. Intermediate geometry is
 computed in plain slices of vectors, and reaches the viewer through
