@@ -1,4 +1,5 @@
-//! Reading and writing STL, in both the binary and the ASCII form.
+//! Reading and writing STL, in the binary form, the ASCII form, and a wide
+//! variant of this project's own.
 //!
 //! Every function here works on byte slices, not files: decoding takes the
 //! bytes of a file and encoding produces them. The caller reads and writes,
@@ -26,6 +27,16 @@
 //! What is preserved exactly, in every case, is the geometry: the vertex bytes
 //! of a facet make the trip untouched.
 //!
+//! `.stl64` is the binary form with a `u64` facet count and an `f64` in place
+//! of every `f32`, and a comment beginning with `STL64`. It exists because the
+//! narrow form throws away coordinates that the geometry it came from was
+//! carrying, and because rounding to `f32` is not free even when the precision
+//! is not wanted: a ring of sixteen thousand points rounded that way acquires
+//! its first exactly-collinear triple, which costs Manifold's triangulator
+//! three hundred times what the same ring costs in full precision. Writing one
+//! from geometry that is itself `f32` gains nothing today; see the deferred
+//! change under "Planned" in DESIGN.md.
+//!
 //! The facet normal STL stores is unreliable in practice, being zero or wrong
 //! in many files. Decoding returns it only when asked, and encoding computes it
 //! from the winding when the caller does not supply one.
@@ -44,7 +55,34 @@ const native_endian = builtin.cpu.arch.endian();
 
 /// The two forms of the format. They describe the same geometry; binary is
 /// about six times smaller and much faster to read.
-pub const Format = enum { binary, ascii };
+pub const Format = enum {
+    /// The 80-byte comment, a `u32` count, and 50 bytes per facet holding
+    /// `f32` coordinates. What everything else means by STL.
+    binary,
+    /// The text form: `solid`, `facet normal`, `vertex`, and the keywords
+    /// around them.
+    ascii,
+    /// This project's own variant, written `.stl64`. Identical to `binary`
+    /// except that the count is a `u64` and every coordinate an `f64`, and the
+    /// comment begins with `STL64`. See `stl64_magic`.
+    binary64,
+};
+
+/// The five bytes a `.stl64` file begins with.
+///
+/// The variant is otherwise a binary STL with wider numbers, and a reader that
+/// assumed it was one would parse the header as a facet count and walk off the
+/// end. The magic is what a producer is required to write and a consumer is
+/// entitled to check, and `detect` checks it.
+pub const stl64_magic = "STL64";
+
+/// The 80-byte comment at the head of a `.stl64` file, followed by its `u64`
+/// facet count.
+pub const stl64_header_size = 88;
+
+/// One `.stl64` facet: a normal and three vertices as `f64`, and the same
+/// two-byte attribute field the narrow form has.
+pub const stl64_record_size = 98;
 
 /// Failure of any decode.
 ///
@@ -85,6 +123,13 @@ pub const Mesh = mesh_mod.Mesh;
 ///
 /// O(1): the length decides it, and at most 84 bytes are read.
 pub fn detect(bytes: []const u8) ?Format {
+    // The wide variant is checked first and by both of its marks. A file whose
+    // comment says `STL64` and whose length agrees with its own count is one;
+    // nothing else can satisfy both.
+    if (bytes.len >= stl64_header_size and std.mem.startsWith(u8, bytes, stl64_magic)) {
+        const declared = std.mem.readInt(u64, bytes[80..88], .little);
+        if (stl64Size(declared) == bytes.len) return .binary64;
+    }
     if (bytes.len >= binary_header_size) {
         const declared = std.mem.readInt(u32, bytes[80..84], .little);
         if (binarySize(declared) == bytes.len) return .binary;
@@ -109,9 +154,38 @@ pub fn binaryTriangleCount(bytes: []const u8) Error!u32 {
     return declared;
 }
 
+/// The number of facets a `.stl64` file declares, read from its header.
+///
+/// Returns `NotStl` when the comment does not begin with `stl64_magic`, since
+/// a producer is required to write it, and `Truncated` when the bytes are
+/// shorter than the header or than the facets it promises.
+///
+/// O(1), the count being in the header.
 /// The exact byte length of a binary file holding `triangle_count` facets.
 ///
 /// O(1).
+/// The number of facets a `.stl64` file declares, read from its header.
+///
+/// Returns `NotStl` when the comment does not begin with `stl64_magic`, since a
+/// producer is required to write it, and `Truncated` when the bytes are shorter
+/// than the header or than the facets it promises.
+///
+/// O(1), the count being in the header.
+pub fn stl64TriangleCount(bytes: []const u8) Error!u64 {
+    if (bytes.len < stl64_header_size) return error.Truncated;
+    if (!std.mem.startsWith(u8, bytes, stl64_magic)) return error.NotStl;
+    const declared = std.mem.readInt(u64, bytes[80..88], .little);
+    if (bytes.len < stl64Size(declared)) return error.Truncated;
+    return declared;
+}
+
+/// The exact byte length of a `.stl64` file holding `triangle_count` facets.
+///
+/// O(1).
+pub fn stl64Size(triangle_count: u64) usize {
+    return stl64_header_size + @as(usize, @intCast(triangle_count)) * stl64_record_size;
+}
+
 pub fn binarySize(triangle_count: u32) usize {
     return binary_header_size + @as(usize, triangle_count) * binary_record_size;
 }
@@ -182,7 +256,103 @@ pub fn decode(gpa: std.mem.Allocator, bytes: []const u8) Error!Mesh {
             break :blk .{ .vertices = vertices, .faces = faces };
         },
         .ascii => decodeAscii(gpa, bytes, null),
+        .binary64 => blk: {
+            const count = try stl64TriangleCount(bytes);
+            const vertices = try gpa.alloc(Vec3, 3 * @as(usize, @intCast(count)));
+            errdefer gpa.free(vertices);
+            const faces = try gpa.alloc([3]u32, @intCast(count));
+            errdefer gpa.free(faces);
+            try decodeStl64(bytes, vertices, faces, null);
+            break :blk .{ .vertices = vertices, .faces = faces };
+        },
     };
+}
+
+/// Decodes a `.stl64` file into caller-provided storage, allocating nothing.
+///
+/// The shape of the call is `decodeBinary`'s, and so are the sizes required of
+/// `vertices`, `faces` and `normals`. What differs is the arithmetic: every
+/// coordinate is an `f64` in the file and is narrowed to this project's `f32`
+/// on the way in, so a file written at full precision does not arrive at full
+/// precision until the geometry itself is `f64`. Until then the value of the
+/// format is on the way out, and in reading files that other tools wrote.
+///
+/// O(n) in the facet count, nine narrowing conversions each.
+pub fn decodeStl64(
+    bytes: []const u8,
+    vertices: []Vec3,
+    faces: [][3]u32,
+    normals: ?[]Vec3,
+) Error!void {
+    const count = try stl64TriangleCount(bytes);
+    if (faces.len != count) return error.WrongSize;
+    if (vertices.len != 3 * @as(usize, @intCast(count))) return error.WrongSize;
+    if (normals) |n| if (n.len != count) return error.WrongSize;
+
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const record = bytes[stl64_header_size + i * stl64_record_size ..];
+        if (normals) |n| n[i] = readVec3Wide(record[0..24]);
+        for (0..3) |k| {
+            vertices[3 * i + k] = readVec3Wide(record[24 + 24 * k ..][0..24]);
+        }
+        const base: u32 = @intCast(3 * i);
+        faces[i] = .{ base, base + 1, base + 2 };
+    }
+}
+
+/// Encodes a `.stl64` file into caller-provided storage, allocating nothing.
+///
+/// `out` must be exactly `stl64Size(faces.len)` bytes. `header` fills the
+/// 80-byte comment after the `STL64` the format requires, so at most 75 bytes
+/// of it are used. Everything else follows `encodeBinary`: normals are computed
+/// from the winding when none are given, and the attribute field is zeroed.
+///
+/// O(n) in the face count.
+pub fn encodeStl64(
+    vertices: []const Vec3,
+    faces: []const [3]u32,
+    normals: ?[]const Vec3,
+    header: []const u8,
+    out: []u8,
+) Error!void {
+    if (out.len != stl64Size(faces.len)) return error.WrongSize;
+    if (normals) |n| if (n.len != faces.len) return error.WrongSize;
+
+    @memset(out[0..80], 0);
+    @memcpy(out[0..stl64_magic.len], stl64_magic);
+    const room = 80 - stl64_magic.len;
+    const copied = @min(header.len, room);
+    @memcpy(out[stl64_magic.len..][0..copied], header[0..copied]);
+    std.mem.writeInt(u64, out[80..88], @intCast(faces.len), .little);
+
+    for (faces, 0..) |face, i| {
+        const record = out[stl64_header_size + i * stl64_record_size ..][0..stl64_record_size];
+        const a = vertices[face[0]];
+        const b = vertices[face[1]];
+        const c = vertices[face[2]];
+        const normal = if (normals) |n| n[i] else faceNormal(a, b, c);
+        writeVec3Wide(record[0..24], normal);
+        writeVec3Wide(record[24..48], a);
+        writeVec3Wide(record[48..72], b);
+        writeVec3Wide(record[72..96], c);
+        record[96] = 0;
+        record[97] = 0;
+    }
+}
+
+fn readVec3Wide(bytes: *const [24]u8) Vec3 {
+    return .init(
+        @floatCast(@as(f64, @bitCast(std.mem.readInt(u64, bytes[0..8], .little)))),
+        @floatCast(@as(f64, @bitCast(std.mem.readInt(u64, bytes[8..16], .little)))),
+        @floatCast(@as(f64, @bitCast(std.mem.readInt(u64, bytes[16..24], .little)))),
+    );
+}
+
+fn writeVec3Wide(out: *[24]u8, v: Vec3) void {
+    std.mem.writeInt(u64, out[0..8], @bitCast(@as(f64, v.x)), .little);
+    std.mem.writeInt(u64, out[8..16], @bitCast(@as(f64, v.y)), .little);
+    std.mem.writeInt(u64, out[16..24], @bitCast(@as(f64, v.z)), .little);
 }
 
 /// Decodes an ASCII file, allocating the result and optionally the normals.
@@ -587,6 +757,84 @@ fn encodeAsciiAllocationCase(gpa: std.mem.Allocator) !void {
     defer out.deinit(gpa);
     try encodeAscii(gpa, "s", &sample_vertices, &sample_faces, null, &out);
     if (out.items.len == 0) return error.TestUnexpectedResult;
+}
+
+test "stl64 sizes match the format" {
+    try testing.expectEqual(88, stl64_header_size);
+    try testing.expectEqual(98, stl64_record_size);
+    try testing.expectEqual(88, stl64Size(0));
+    try testing.expectEqual(88 + 98 * 3, stl64Size(3));
+    // The wide record is the narrow one with every float doubled and the same
+    // two-byte attribute field left alone.
+    try testing.expectEqual(binary_record_size - 2, (stl64_record_size - 2) / 2);
+}
+
+test "a stl64 file round trips exactly" {
+    const bytes = try testing.allocator.alloc(u8, stl64Size(sample_faces.len));
+    defer testing.allocator.free(bytes);
+    try encodeStl64(&sample_vertices, &sample_faces, null, "vertex test", bytes);
+
+    try testing.expect(std.mem.startsWith(u8, bytes, stl64_magic));
+    try testing.expectEqual(Format.binary64, detect(bytes).?);
+    try testing.expectEqual(sample_faces.len, try stl64TriangleCount(bytes));
+
+    const mesh = try decode(testing.allocator, bytes);
+    defer mesh.deinit(testing.allocator);
+    try expectSample(mesh);
+}
+
+test "stl64 stores a coordinate the narrow form rounds away" {
+    // A value and its neighbour one f64 step apart. The wide form keeps them
+    // apart; the narrow one has no room between them at this magnitude.
+    const value: f64 = 1_000_000.0000000001;
+    const vertices = [_]Vec3{ .init(1_000_000, 0, 0), .init(1, 0, 0), .init(0, 1, 0) };
+    const faces = [_][3]u32{.{ 0, 1, 2 }};
+
+    const bytes = try testing.allocator.alloc(u8, stl64Size(1));
+    defer testing.allocator.free(bytes);
+    try encodeStl64(&vertices, &faces, null, "", bytes);
+    const stored: f64 = @bitCast(std.mem.readInt(u64, bytes[stl64_header_size + 24 ..][0..8], .little));
+
+    // What is stored is exactly the vertex, widened without loss.
+    try testing.expectEqual(@as(f64, 1_000_000), stored);
+    // And the wide field could have held the neighbour, which f32 cannot.
+    try testing.expect(value != @as(f64, @as(f32, @floatCast(value))));
+}
+
+test "a stl64 file without its magic is not one" {
+    const bytes = try testing.allocator.alloc(u8, stl64Size(sample_faces.len));
+    defer testing.allocator.free(bytes);
+    try encodeStl64(&sample_vertices, &sample_faces, null, "", bytes);
+    @memset(bytes[0..5], ' ');
+
+    // Producers are required to write it, so a file that does not is not read
+    // as one.
+    try testing.expectEqual(@as(?Format, null), detect(bytes));
+    try testing.expectError(error.NotStl, stl64TriangleCount(bytes));
+}
+
+test "a truncated stl64 file is reported rather than read past" {
+    const bytes = try testing.allocator.alloc(u8, stl64Size(sample_faces.len));
+    defer testing.allocator.free(bytes);
+    try encodeStl64(&sample_vertices, &sample_faces, null, "", bytes);
+    try testing.expectError(error.Truncated, stl64TriangleCount(bytes[0 .. bytes.len - 1]));
+    try testing.expectError(error.Truncated, stl64TriangleCount(bytes[0..40]));
+}
+
+test "stl64 normals are stored and returned like the narrow form's" {
+    const normals = [_]Vec3{ .init(0, 0, 1), .init(0, 0, 1), .init(0.25, -0.5, 0.75) };
+    const bytes = try testing.allocator.alloc(u8, stl64Size(sample_faces.len));
+    defer testing.allocator.free(bytes);
+    try encodeStl64(&sample_vertices, &sample_faces, &normals, "", bytes);
+
+    const vertices = try testing.allocator.alloc(Vec3, 3 * sample_faces.len);
+    defer testing.allocator.free(vertices);
+    const faces = try testing.allocator.alloc([3]u32, sample_faces.len);
+    defer testing.allocator.free(faces);
+    const read_back = try testing.allocator.alloc(Vec3, sample_faces.len);
+    defer testing.allocator.free(read_back);
+    try decodeStl64(bytes, vertices, faces, read_back);
+    for (read_back, normals) |got, want| try testing.expect(got.eql(want));
 }
 
 test "decode handles every allocation failure in both forms" {

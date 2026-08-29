@@ -324,16 +324,20 @@ than by throwing, so an open or self-intersecting mesh comes back as
 `error.NotManifold` rather than as a plausible wrong answer.
 
 The `f32` this project works in has a measured cost at the triangulation seam,
-and it is not the conversion. Converting to `f64` is exact; what it produces is
-a set of values lying on the `f32` grid, and past about twelve thousand points
-on a unit circle that grid is coarser than the ring's own detail. Consecutive
-points become collinear where the circle is not, and Manifold's triangulator
-falls off a cliff: at 16384 points a ring computed in `f64` triangulates in 2.1
-ms and the same ring rounded through `f32` takes 703 ms, three hundred times
-longer. `bench/mesh.zig` keeps both as a pair, so the day the numeric
-parameterization under "Planned" lands the measurement says whether it helped.
-Until then, capping a ring that dense wants `.hierarchical` or `.centroid`,
-which are closed forms and a thousand times faster there than `.general`.
+and the mechanism is exact rather than vague. Converting to `f64` loses nothing;
+what it produces is a set of values on the `f32` grid. A ring of vertices on a
+unit circle stays strictly convex on that grid up to about twelve thousand
+points and acquires its first exactly-collinear triple at sixteen thousand. One
+such triple is enough: Manifold's triangulator leaves its fast path and takes
+three hundred and fifty times as long, and a second and an eighth cost nothing
+further, so it is a switch rather than a slope. Measured at 16384 points, a ring
+computed in `f64` triangulates in 2.1 ms and the same ring rounded through `f32`
+in 703 ms.
+
+Two things follow. `bench/mesh.zig` keeps both rings as a pair, so the change
+under "Planned" has a number to be judged against. And capping a ring that dense
+wants `.hierarchical` or `.centroid`, which are closed forms written here and a
+thousand times faster there than `.general`.
 
 Three properties of the triangulation seam are recorded because they are
 exceptions rather than oversights. `ManifoldVec2` is `double`, so that boundary
@@ -377,6 +381,14 @@ triangles without a special case: an apex contributes no boundary edges, so a
 cone yields one loop and takes one cap.
 
 ## Mesh files
+
+A third form is this project's own. `.stl64` is the binary form with a `u64`
+facet count and an `f64` in place of every `f32`, and a comment required to
+begin with `STL64`; a file is read as one only when both that magic and the
+`88 + 98n` length agree. It exists because the narrow form discards coordinates
+the geometry was carrying, and because that rounding is not free even where the
+precision is not wanted, as the triangulation cliff above shows. Writing one
+from geometry that is itself `f32` gains nothing until the core is `f64`.
 
 STL is read and written by `io/stl.zig`, which is pure: every function
 takes or produces byte slices and the caller does the file I/O, so a large file
@@ -779,10 +791,17 @@ as orientation and in-circle tests, and coordinates at CAD scale, exceed a
 24-bit mantissa, and an intermediate value computed for those purposes should be
 able to hold `f64`.
 
-This is no longer only a question of precision at CAD scale. The triangulation
-seam has a measured three-hundredfold cliff on a ring of sixteen thousand points
-that exists only because the coordinates were rounded to `f32` first; see
-"Polygon triangulation and caps".
+This is no longer only a question of precision at CAD scale, and it is no longer
+waiting on a second instantiation to justify it. The triangulation seam has a
+measured three-hundred-and-fifty-fold cliff on a ring of sixteen thousand points
+which exists only because the coordinates were rounded to `f32` first: at that
+density the grid introduces a collinear triple that the geometry does not have,
+and one is enough. See "Polygon triangulation and caps".
+
+The intended end state is `f64` throughout the core, narrowed to `f32` at the
+two places that require it: the vertex stream on its way to the GPU, which takes
+no more, and the narrow STL form. `io/stl.zig` already carries `.binary64` for
+the case where narrowing is not wanted.
 
 The conversion point already exists and is one call. Intermediate geometry is
 computed in plain slices of vectors, and reaches the viewer through

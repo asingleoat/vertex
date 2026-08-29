@@ -26,8 +26,9 @@ pub const WriteError = std.Io.Dir.WriteFileError || stl.Error;
 
 /// Reads an STL file and returns it as an indexed mesh.
 ///
-/// The form is detected from the file's contents, so binary and ASCII both
-/// work, including the binary files whose comment begins with `solid`. The
+/// The form is detected from the file's contents, so all three work: binary,
+/// ASCII, and this project's wide `.stl64`, including the binary files whose
+/// comment begins with `solid`. The
 /// facets are then indexed: bit-identical vertices are collapsed, recovering
 /// the connectivity the exporter had, and degenerate facets are dropped. The
 /// caller owns the result and releases it with `deinit` and the same allocator.
@@ -72,11 +73,13 @@ pub fn readSoup(
 
 /// Options for `write`.
 pub const WriteOptions = struct {
-    /// Which form to write. Binary is about a quarter the size and far quicker
-    /// to read back.
+    /// Which form to write. Binary is about a quarter the size of ASCII and far
+    /// quicker to read back; `.binary64` is twice the size of binary and is the
+    /// one that keeps every coordinate it is given.
     format: stl.Format = .binary,
     /// The solid's name, which the ASCII form carries in its opening and
-    /// closing keywords and the binary form in its 80-byte comment.
+    /// closing keywords and the binary forms in their 80-byte comment. In
+    /// `.binary64` it follows the five bytes of `stl.stl64_magic`.
     name: []const u8 = "vertex",
 };
 
@@ -101,6 +104,12 @@ pub fn write(
             const bytes = try gpa.alloc(u8, stl.binarySize(@intCast(mesh.faces.len)));
             defer gpa.free(bytes);
             try stl.encodeBinary(mesh.vertices, mesh.faces, null, options.name, bytes);
+            try dir.writeFile(io, .{ .sub_path = path, .data = bytes });
+        },
+        .binary64 => {
+            const bytes = try gpa.alloc(u8, stl.stl64Size(mesh.faces.len));
+            defer gpa.free(bytes);
+            try stl.encodeStl64(mesh.vertices, mesh.faces, null, options.name, bytes);
             try dir.writeFile(io, .{ .sub_path = path, .data = bytes });
         },
         .ascii => {
