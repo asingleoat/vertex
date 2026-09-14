@@ -44,6 +44,7 @@ vertex/
 │   │   ├── shapes.zig         #   pure: Positions, Vec3, kernels, fixtures
 │   │   └── sketch.zig         #   edge: connect, Connection, the messages
 │   ├── geometry/              # layout.zig (Positions), geometry.zig (kernels), fixtures.zig
+│   ├── io/                    # pure: stl.zig, mesh_format.zig; edges: the *_file.zig beside them
 │   ├── protocol/protocol.zig  # wire format: message types, encode and decode (pure)
 │   ├── scene/                 # scene.zig (structure store, versions, frames), camera.zig
 │   ├── client/
@@ -445,6 +446,88 @@ probing over a table of `u32` slots at a load factor of one half, and runs at
 vertices to the 40962 it was exported from, exactly. Its one canonicalization is that
 negative zero matches positive zero, since they are the same point; without it a
 file that wrote both for one corner would come back with a crack along it.
+
+## The mesh format
+
+STL carries a triangle soup and nothing else. The formats that carry more are
+either text, branded to a tool, or general enough that reading one is a project.
+This is the format written here, `.mesh`, and it holds a simplicial complex: a
+vertex array and four index arrays, one per degree, so a point cloud, an edge
+graph, a triangle mesh and a tetrahedral mesh are the same file with different
+sections populated. It is version 0 and carries no compatibility promise; a
+reader accepts its own version and nothing else, and version 1 is cut when the
+shape stops moving.
+
+A file is a 128-byte header, a metadata region, the vertex array and then the
+four index arrays. Every section begins on a 64-byte boundary and is padded to
+the next one with zeros, which is the alignment the scene store gives its blobs
+and divides the stride of every element the format holds, so a section of a
+mapped file can be cast to its element type rather than copied. The header gives
+the length of every section and of the whole file, so a reader takes 128 bytes,
+learns `total_bytes`, allocates once and reads the rest, and reaches any section
+by arithmetic rather than by scanning. `total_bytes` is derivable from the
+counts and stored anyway: the disagreement between the two is a free check on a
+file that was truncated or edited.
+
+Every scalar is little-endian, which is what x86-64, AArch64 and RISC-V are. The
+header's `flags` is a `u64` whose first bit selects `f64` coordinates over
+`f32`; `dim` is 2 or 3, since planar geometry is first-class here and a column
+of zeros is a third of a planar file. Reserved bits are written zero and ignored
+on read, the version field being what states compatibility. The second flag bit
+is reserved for `u64` indices and is refused rather than misread, which is why
+`vertex_count` and the four simplex counts are already `u64`: widening the
+indices then needs no change to the header, and a count is not bounded by the
+index width in any case, as a point cloud past 2^32 points shows. See "Index
+width becomes a parameter" under "Planned".
+
+Separate arrays per degree rather than one flat array with a tag per simplex. A
+degree-k array is a dense `[k+1]u32` record array of fixed stride, so a mapped
+file casts straight to `[][3]u32` and reaches a GPU index buffer with nothing
+between; a tagged array has to be scanned and compacted first, which is the pass
+a format of this shape exists to avoid. What this closes off is non-simplicial
+cells, quads and general polygons and hexes, which need a flat array with an
+offset array beside it and are a different format.
+
+Closure is neither required nor written. A triangle mesh declares its triangles,
+and its edges and vertices are implied; a file that listed them would be stating
+the same fact twice. The vertex array is storage shared by every degree, so a
+vertex no simplex references is legal and no compaction happens on write. What
+the 0-simplex array names is which vertices the complex holds as standalone
+points, which is not the vertex array and is usually shorter than it.
+
+Nothing derivable is stored. There are no normals, no tangents, no adjacency and
+no bounding box, because recomputing any of them costs what reading them costs
+and storing them adds a second copy that can disagree with the first. Vertex
+normals are the clearest case: every consumer already has the code and has an
+opinion about the weighting, so a stored normal carrying a foreign convention is
+worse than none. The rule is that a file holds what the sketch computed and not
+what a reader can recompute. Whatever a producer wants to record anyway belongs
+in the metadata region, which is uninterpreted, advisory, and placed before the
+geometry so that everything descriptive arrives ahead of the bulk and the
+geometry is one contiguous run ending at the last byte.
+
+The magic is `MESH\x8F\r\n\n`. `MESH` is readable in the first column of a hex
+dump and is unclaimed at offset zero in `file`'s database, which is the closest
+thing to a registry; the four bytes after it detect a transfer that mangled the
+file rather than moved it, `0x8F` being invalid as a UTF-8 leading byte and the
+line endings being what a text-mode transfer or a version control system
+rewrites. It identifies a file and nothing more. What establishes that a file is
+well-formed is the arithmetic: the sections derived from the counts must sum to
+`total_bytes`, and every index must address a vertex that exists. Both checks
+catch a mistake rather than defend against anything, as the threat model above
+requires.
+
+`io/mesh_format.zig` is pure and works on byte slices; `io/mesh_file.zig` is the
+edge that opens paths, and `geometry/complex.zig` holds the `Complex` the format
+decodes to, with `asMesh` and `fromMesh` relating it to the triangle `Mesh` the
+rest of the library builds with. Decoding a file whose coordinates are `f32`
+with a `dim` of 3 is one bulk copy per section, the layout being this project's
+`Vec3` and `u32` arrays exactly, followed by the index scan. Measured over an
+icosphere of 40962 vertices, 40962 points, 122880 edges and 81920 triangles, a
+2.6 MB file: 171 microseconds to decode into caller storage and 65 to encode,
+which is 240M and 630M vertices per second. Widening the coordinates to `f64`
+costs 5 per cent of the decode and a fifth of the file rather than a third,
+positions being 19 per cent of a file with all four sections populated.
 
 ## Viewer internals
 

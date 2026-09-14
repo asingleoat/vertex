@@ -89,10 +89,16 @@ pub const internal = struct {
     pub const boolean = @import("geometry/boolean.zig");
     /// Pure: recovering an index array from a triangle soup by exact equality.
     pub const indexing = @import("geometry/indexing.zig");
+    /// Pure: the simplicial complex, and its views onto a triangle mesh.
+    pub const complex = @import("geometry/complex.zig");
     /// Pure: reading and writing STL, in both the binary and ASCII forms.
     pub const stl = @import("io/stl.zig");
     /// Edge: STL files, over the pure encoder above.
     pub const stl_file = @import("io/stl_file.zig");
+    /// Pure: reading and writing this project's own mesh format.
+    pub const mesh_format = @import("io/mesh_format.zig");
+    /// Edge: mesh format files, over the pure encoder above.
+    pub const mesh_file = @import("io/mesh_file.zig");
     /// Pure: boundary recovery and capping of open surfaces.
     pub const polygon = @import("geometry/polygon.zig");
     /// Edge: polygon triangulation, which is Manifold behind a C ABI.

@@ -1,101 +1,106 @@
-{"name":"boolean/subtract","layout":"-","n":2048,"ps":26383833000,"repeat":1,"samples":5}
-{"name":"boolean/subtract","layout":"-","n":256,"ps":4527250000,"repeat":1,"samples":10}
-{"name":"boolean/subtract","layout":"-","n":32,"ps":653000000,"repeat":1,"samples":32}
-{"name":"geometry/bounds","layout":"aos3","n":1000000,"ps":659167000,"repeat":1,"samples":32}
-{"name":"geometry/bounds","layout":"aos3","n":1024,"ps":591537,"repeat":320,"samples":32}
-{"name":"geometry/bounds","layout":"aos3","n":99856,"ps":65722333,"repeat":3,"samples":32}
-{"name":"geometry/bounds","layout":"aos4","n":1000000,"ps":659417000,"repeat":1,"samples":32}
-{"name":"geometry/bounds","layout":"aos4","n":1024,"ps":628695,"repeat":282,"samples":32}
-{"name":"geometry/bounds","layout":"aos4","n":99856,"ps":65722333,"repeat":3,"samples":32}
-{"name":"geometry/bounds","layout":"soa","n":1000000,"ps":659000000,"repeat":1,"samples":32}
-{"name":"geometry/bounds","layout":"soa","n":1024,"ps":628899,"repeat":299,"samples":32}
-{"name":"geometry/bounds","layout":"soa","n":99856,"ps":65722000,"repeat":3,"samples":32}
-{"name":"geometry/faceNormals","layout":"aos3","n":1000000,"ps":7696917000,"repeat":1,"samples":6}
-{"name":"geometry/faceNormals","layout":"aos3","n":1024,"ps":7445500,"repeat":26,"samples":32}
-{"name":"geometry/faceNormals","layout":"aos3","n":99856,"ps":781666000,"repeat":1,"samples":32}
-{"name":"geometry/faceNormals","layout":"aos4","n":1000000,"ps":7601125000,"repeat":1,"samples":6}
-{"name":"geometry/faceNormals","layout":"aos4","n":1024,"ps":7351851,"repeat":27,"samples":32}
-{"name":"geometry/faceNormals","layout":"aos4","n":99856,"ps":753667000,"repeat":1,"samples":32}
-{"name":"geometry/faceNormals","layout":"soa","n":1000000,"ps":7206958000,"repeat":1,"samples":6}
-{"name":"geometry/faceNormals","layout":"soa","n":1024,"ps":6982142,"repeat":28,"samples":32}
-{"name":"geometry/faceNormals","layout":"soa","n":99856,"ps":698042000,"repeat":1,"samples":32}
-{"name":"geometry/uniqueEdges","layout":"aos3","n":1000000,"ps":171876375000,"repeat":1,"samples":5}
-{"name":"geometry/uniqueEdges","layout":"aos3","n":1024,"ps":93562500,"repeat":2,"samples":32}
-{"name":"geometry/uniqueEdges","layout":"aos3","n":99856,"ps":13855833000,"repeat":1,"samples":5}
-{"name":"geometry/uniqueEdges","layout":"aos4","n":1000000,"ps":173034042000,"repeat":1,"samples":5}
-{"name":"geometry/uniqueEdges","layout":"aos4","n":1024,"ps":93646000,"repeat":2,"samples":32}
-{"name":"geometry/uniqueEdges","layout":"aos4","n":99856,"ps":13740209000,"repeat":1,"samples":5}
-{"name":"geometry/uniqueEdges","layout":"soa","n":1000000,"ps":172127333000,"repeat":1,"samples":5}
-{"name":"geometry/uniqueEdges","layout":"soa","n":1024,"ps":93541500,"repeat":2,"samples":32}
-{"name":"geometry/uniqueEdges","layout":"soa","n":99856,"ps":13848250000,"repeat":1,"samples":5}
-{"name":"geometry/vertexNormals","layout":"aos3","n":1000000,"ps":9542750000,"repeat":1,"samples":5}
-{"name":"geometry/vertexNormals","layout":"aos3","n":1024,"ps":9170619,"repeat":21,"samples":32}
-{"name":"geometry/vertexNormals","layout":"aos3","n":99856,"ps":945875000,"repeat":1,"samples":32}
-{"name":"geometry/vertexNormals","layout":"aos4","n":1000000,"ps":9493958000,"repeat":1,"samples":5}
-{"name":"geometry/vertexNormals","layout":"aos4","n":1024,"ps":9168619,"repeat":21,"samples":32}
-{"name":"geometry/vertexNormals","layout":"aos4","n":99856,"ps":909333000,"repeat":1,"samples":32}
-{"name":"geometry/vertexNormals","layout":"soa","n":1000000,"ps":9534250000,"repeat":1,"samples":5}
-{"name":"geometry/vertexNormals","layout":"soa","n":1024,"ps":9208333,"repeat":21,"samples":32}
-{"name":"geometry/vertexNormals","layout":"soa","n":99856,"ps":938625000,"repeat":1,"samples":32}
-{"name":"indexing/indexSoup","layout":"-","n":245760,"ps":1075375000,"repeat":1,"samples":32}
-{"name":"planar/boolean crossings along a diagonal","layout":"-","n":1024,"ps":598542000,"repeat":1,"samples":32}
-{"name":"planar/boolean crossings along a diagonal","layout":"-","n":16384,"ps":9830500000,"repeat":1,"samples":5}
-{"name":"planar/boolean crossings along a diagonal","layout":"-","n":256,"ps":166167000,"repeat":1,"samples":32}
-{"name":"planar/boolean crossings along a diagonal","layout":"-","n":4096,"ps":2390667000,"repeat":1,"samples":20}
-{"name":"planar/boolean crossings along a diagonal","layout":"-","n":64,"ps":66979500,"repeat":2,"samples":32}
-{"name":"planar/boolean crossings in one band","layout":"-","n":1024,"ps":2223708000,"repeat":1,"samples":22}
-{"name":"planar/boolean crossings in one band","layout":"-","n":16384,"ps":638584042000,"repeat":1,"samples":5}
-{"name":"planar/boolean crossings in one band","layout":"-","n":256,"ps":280083000,"repeat":1,"samples":32}
-{"name":"planar/boolean crossings in one band","layout":"-","n":4096,"ps":39500791000,"repeat":1,"samples":5}
-{"name":"planar/boolean crossings in one band","layout":"-","n":64,"ps":85562500,"repeat":2,"samples":32}
-{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":1024,"ps":5032125000,"repeat":1,"samples":9}
-{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":16384,"ps":1108966000000,"repeat":1,"samples":5}
-{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":256,"ps":357334000,"repeat":1,"samples":32}
-{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":4096,"ps":202512708000,"repeat":1,"samples":5}
-{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":64,"ps":77479000,"repeat":2,"samples":32}
-{"name":"planar/boolean two rings","layout":"-","n":1024,"ps":250042000,"repeat":1,"samples":32}
-{"name":"planar/boolean two rings","layout":"-","n":16384,"ps":3779416000,"repeat":1,"samples":12}
-{"name":"planar/boolean two rings","layout":"-","n":256,"ps":88895500,"repeat":2,"samples":32}
-{"name":"planar/boolean two rings","layout":"-","n":4096,"ps":929916000,"repeat":1,"samples":32}
-{"name":"planar/boolean two rings","layout":"-","n":64,"ps":50680666,"repeat":3,"samples":32}
-{"name":"planar/offset one ring","layout":"-","n":1024,"ps":160542000,"repeat":1,"samples":32}
-{"name":"planar/offset one ring","layout":"-","n":16384,"ps":2487458000,"repeat":1,"samples":19}
-{"name":"planar/offset one ring","layout":"-","n":256,"ps":54264000,"repeat":3,"samples":32}
-{"name":"planar/offset one ring","layout":"-","n":4096,"ps":610000000,"repeat":1,"samples":32}
-{"name":"planar/offset one ring","layout":"-","n":64,"ps":30150000,"repeat":5,"samples":32}
-{"name":"polygon/boundaryLoops","layout":"-","n":1024,"ps":79521000,"repeat":2,"samples":32}
-{"name":"polygon/boundaryLoops","layout":"-","n":4096,"ps":302917000,"repeat":1,"samples":32}
-{"name":"polygon/boundaryLoops","layout":"-","n":64,"ps":3354545,"repeat":55,"samples":32}
-{"name":"polygon/capBoundaries centroid","layout":"-","n":1024,"ps":98208500,"repeat":2,"samples":32}
-{"name":"polygon/capBoundaries centroid","layout":"-","n":4096,"ps":371833000,"repeat":1,"samples":32}
-{"name":"polygon/capBoundaries centroid","layout":"-","n":64,"ps":3748403,"repeat":52,"samples":32}
-{"name":"polygon/capBoundaries fan","layout":"-","n":1024,"ps":93395500,"repeat":2,"samples":32}
-{"name":"polygon/capBoundaries fan","layout":"-","n":4096,"ps":364209000,"repeat":1,"samples":32}
-{"name":"polygon/capBoundaries fan","layout":"-","n":64,"ps":3503924,"repeat":53,"samples":32}
-{"name":"polygon/capBoundaries general","layout":"-","n":1024,"ps":365625000,"repeat":1,"samples":32}
-{"name":"polygon/capBoundaries general","layout":"-","n":4096,"ps":1427083000,"repeat":1,"samples":32}
-{"name":"polygon/capBoundaries general","layout":"-","n":64,"ps":21857142,"repeat":7,"samples":32}
-{"name":"polygon/capBoundaries hierarchical","layout":"-","n":1024,"ps":96833000,"repeat":2,"samples":32}
-{"name":"polygon/capBoundaries hierarchical","layout":"-","n":4096,"ps":379250000,"repeat":1,"samples":32}
-{"name":"polygon/capBoundaries hierarchical","layout":"-","n":64,"ps":3826923,"repeat":52,"samples":32}
-{"name":"polyline/loft","layout":"-","n":1024,"ps":7076923,"repeat":26,"samples":32}
-{"name":"polyline/loft","layout":"-","n":4096,"ps":42823000,"repeat":4,"samples":32}
-{"name":"polyline/loft","layout":"-","n":64,"ps":455539,"repeat":343,"samples":32}
-{"name":"protocol/decode","layout":"aos3","n":1000,"ps":8716,"repeat":200000,"samples":32}
-{"name":"protocol/decode","layout":"aos3","n":100000,"ps":9241,"repeat":4761,"samples":32}
-{"name":"protocol/decode","layout":"aos3","n":1000000,"ps":8994,"repeat":200000,"samples":32}
-{"name":"protocol/encode","layout":"aos3","n":1000,"ps":530728,"repeat":320,"samples":32}
-{"name":"protocol/encode","layout":"aos3","n":100000,"ps":100584000,"repeat":1,"samples":32}
-{"name":"protocol/encode","layout":"aos3","n":1000000,"ps":738125000,"repeat":1,"samples":32}
-{"name":"solids/extrude","layout":"-","n":1024,"ps":144625000,"repeat":1,"samples":32}
-{"name":"solids/extrude","layout":"-","n":4096,"ps":574416000,"repeat":1,"samples":32}
-{"name":"solids/extrude","layout":"-","n":64,"ps":9476833,"repeat":18,"samples":32}
-{"name":"stl/decodeAscii","layout":"-","n":81920,"ps":39828417000,"repeat":1,"samples":5}
-{"name":"stl/decodeBinary","layout":"-","n":81920,"ps":132041000,"repeat":1,"samples":32}
-{"name":"stl/encodeAscii","layout":"-","n":81920,"ps":33525334000,"repeat":1,"samples":5}
-{"name":"stl/encodeBinary","layout":"-","n":81920,"ps":240375000,"repeat":1,"samples":32}
-{"name":"triangulate/ring computed in f64","layout":"-","n":16384,"ps":2249292000,"repeat":1,"samples":22}
-{"name":"triangulate/ring rounded through f32","layout":"-","n":16384,"ps":726529208000,"repeat":1,"samples":5}
-{"name":"triangulate/simplePolygon","layout":"-","n":1024,"ps":133417000,"repeat":1,"samples":32}
-{"name":"triangulate/simplePolygon","layout":"-","n":4096,"ps":520000000,"repeat":1,"samples":32}
-{"name":"triangulate/simplePolygon","layout":"-","n":64,"ps":8982954,"repeat":22,"samples":32}
+{"name":"boolean/subtract","layout":"-","n":2048,"ps":26383833000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"boolean/subtract","layout":"-","n":256,"ps":4527250000,"repeat":1,"samples":10,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"boolean/subtract","layout":"-","n":32,"ps":653000000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos3","n":1000000,"ps":659167000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos3","n":1024,"ps":591537,"repeat":320,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos3","n":99856,"ps":65722333,"repeat":3,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos4","n":1000000,"ps":659417000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos4","n":1024,"ps":628695,"repeat":282,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"aos4","n":99856,"ps":65722333,"repeat":3,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"soa","n":1000000,"ps":659000000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"soa","n":1024,"ps":628899,"repeat":299,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/bounds","layout":"soa","n":99856,"ps":65722000,"repeat":3,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos3","n":1000000,"ps":7696917000,"repeat":1,"samples":6,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos3","n":1024,"ps":7445500,"repeat":26,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos3","n":99856,"ps":781666000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos4","n":1000000,"ps":7601125000,"repeat":1,"samples":6,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos4","n":1024,"ps":7351851,"repeat":27,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"aos4","n":99856,"ps":753667000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"soa","n":1000000,"ps":7206958000,"repeat":1,"samples":6,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"soa","n":1024,"ps":6982142,"repeat":28,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/faceNormals","layout":"soa","n":99856,"ps":698042000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos3","n":1000000,"ps":171876375000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos3","n":1024,"ps":93562500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos3","n":99856,"ps":13855833000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos4","n":1000000,"ps":173034042000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos4","n":1024,"ps":93646000,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"aos4","n":99856,"ps":13740209000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"soa","n":1000000,"ps":172127333000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"soa","n":1024,"ps":93541500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/uniqueEdges","layout":"soa","n":99856,"ps":13848250000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos3","n":1000000,"ps":9542750000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos3","n":1024,"ps":9170619,"repeat":21,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos3","n":99856,"ps":945875000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos4","n":1000000,"ps":9493958000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos4","n":1024,"ps":9168619,"repeat":21,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"aos4","n":99856,"ps":909333000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"soa","n":1000000,"ps":9534250000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"soa","n":1024,"ps":9208333,"repeat":21,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"geometry/vertexNormals","layout":"soa","n":99856,"ps":938625000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"indexing/indexSoup","layout":"-","n":245760,"ps":1075375000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"mesh_format/decode","layout":"-","n":40962,"ps":171041000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"mesh_format/decodeAlloc","layout":"-","n":40962,"ps":308896000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"mesh_format/decodeWide","layout":"-","n":40962,"ps":180438000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"mesh_format/encode","layout":"-","n":40962,"ps":65072833,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"mesh_format/encodeWide","layout":"-","n":40962,"ps":65628250,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings along a diagonal","layout":"-","n":1024,"ps":598542000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings along a diagonal","layout":"-","n":16384,"ps":9830500000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings along a diagonal","layout":"-","n":256,"ps":166167000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings along a diagonal","layout":"-","n":4096,"ps":2390667000,"repeat":1,"samples":20,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings along a diagonal","layout":"-","n":64,"ps":66979500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band","layout":"-","n":1024,"ps":2223708000,"repeat":1,"samples":22,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band","layout":"-","n":16384,"ps":638584042000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band","layout":"-","n":256,"ps":280083000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band","layout":"-","n":4096,"ps":39500791000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band","layout":"-","n":64,"ps":85562500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":1024,"ps":5032125000,"repeat":1,"samples":9,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":16384,"ps":1108966000000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":256,"ps":357334000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":4096,"ps":202512708000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean crossings in one band, nudged","layout":"-","n":64,"ps":77479000,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean two rings","layout":"-","n":1024,"ps":250042000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean two rings","layout":"-","n":16384,"ps":3779416000,"repeat":1,"samples":12,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean two rings","layout":"-","n":256,"ps":88895500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean two rings","layout":"-","n":4096,"ps":929916000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/boolean two rings","layout":"-","n":64,"ps":50680666,"repeat":3,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/offset one ring","layout":"-","n":1024,"ps":160542000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/offset one ring","layout":"-","n":16384,"ps":2487458000,"repeat":1,"samples":19,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/offset one ring","layout":"-","n":256,"ps":54264000,"repeat":3,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/offset one ring","layout":"-","n":4096,"ps":610000000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"planar/offset one ring","layout":"-","n":64,"ps":30150000,"repeat":5,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/boundaryLoops","layout":"-","n":1024,"ps":79521000,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/boundaryLoops","layout":"-","n":4096,"ps":302917000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/boundaryLoops","layout":"-","n":64,"ps":3354545,"repeat":55,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries centroid","layout":"-","n":1024,"ps":98208500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries centroid","layout":"-","n":4096,"ps":371833000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries centroid","layout":"-","n":64,"ps":3748403,"repeat":52,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries fan","layout":"-","n":1024,"ps":93395500,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries fan","layout":"-","n":4096,"ps":364209000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries fan","layout":"-","n":64,"ps":3503924,"repeat":53,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries general","layout":"-","n":1024,"ps":365625000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries general","layout":"-","n":4096,"ps":1427083000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries general","layout":"-","n":64,"ps":21857142,"repeat":7,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries hierarchical","layout":"-","n":1024,"ps":96833000,"repeat":2,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries hierarchical","layout":"-","n":4096,"ps":379250000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polygon/capBoundaries hierarchical","layout":"-","n":64,"ps":3826923,"repeat":52,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polyline/loft","layout":"-","n":1024,"ps":7076923,"repeat":26,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polyline/loft","layout":"-","n":4096,"ps":42823000,"repeat":4,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"polyline/loft","layout":"-","n":64,"ps":455539,"repeat":343,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/decode","layout":"aos3","n":1000,"ps":8716,"repeat":200000,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/decode","layout":"aos3","n":100000,"ps":9241,"repeat":4761,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/decode","layout":"aos3","n":1000000,"ps":8994,"repeat":200000,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/encode","layout":"aos3","n":1000,"ps":530728,"repeat":320,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/encode","layout":"aos3","n":100000,"ps":100584000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"protocol/encode","layout":"aos3","n":1000000,"ps":738125000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"solids/extrude","layout":"-","n":1024,"ps":144625000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"solids/extrude","layout":"-","n":4096,"ps":574416000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"solids/extrude","layout":"-","n":64,"ps":9476833,"repeat":18,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"stl/decodeAscii","layout":"-","n":81920,"ps":39828417000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"stl/decodeBinary","layout":"-","n":81920,"ps":132041000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"stl/encodeAscii","layout":"-","n":81920,"ps":33525334000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"stl/encodeBinary","layout":"-","n":81920,"ps":240375000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"triangulate/ring computed in f64","layout":"-","n":16384,"ps":2249292000,"repeat":1,"samples":22,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"triangulate/ring rounded through f32","layout":"-","n":16384,"ps":726529208000,"repeat":1,"samples":5,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"triangulate/simplePolygon","layout":"-","n":1024,"ps":133417000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"triangulate/simplePolygon","layout":"-","n":4096,"ps":520000000,"repeat":1,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
+{"name":"triangulate/simplePolygon","layout":"-","n":64,"ps":8982954,"repeat":22,"samples":32,"host":"Apple M1 Max / aarch64-darwin"}
